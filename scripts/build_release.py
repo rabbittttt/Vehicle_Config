@@ -1,0 +1,16 @@
+import argparse, hashlib, json, re
+from pathlib import Path
+ROOT=Path(__file__).resolve().parents[1]
+def build(destination,version):
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,79}',version) or version.endswith('.'):raise ValueError('版本号无效')
+    names=['server.py','catalog.py','requirements.txt','README.md','start.ps1','启动车型配置.cmd','web/index.html','web/app.js','web/style.css']
+    snapshots={name:(ROOT/name).read_bytes() for name in names}
+    files=[{'path':name,'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()} for name,raw in sorted(snapshots.items())]
+    manifest={'schemaVersion':1,'appId':'vehicle-config','version':version,'type':'service','basePath':'/vehicle-config/','entryPoint':'server.py','sourceRevision':'payload-sha256:'+hashlib.sha256(json.dumps(files).encode()).hexdigest(),'dataMode':'external','healthPath':'/healthz','files':files}
+    destination.mkdir(parents=True,exist_ok=False)
+    for name,raw in snapshots.items():
+        target=destination/'payload'/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(raw)
+    (destination/'app-release.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+    return manifest
+if __name__=='__main__':
+    p=argparse.ArgumentParser();p.add_argument('--destination',type=Path,required=True);p.add_argument('--version',required=True);a=p.parse_args();print(json.dumps(build(a.destination,a.version),ensure_ascii=False))
