@@ -1,0 +1,187 @@
+"""Structured XLSX interchange for the five shared_config rule constants."""
+import base64
+import copy
+import io
+import json
+import math
+import uuid
+import zipfile
+from xml.etree.ElementTree import ParseError
+
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.utils import get_column_letter
+
+from shared_rules import validate, diff_rules
+
+FIELDS = {
+    'gen_names': ['id', 'source', 'target'],
+    'merge_groups': ['id', 'name', 'members'],
+    'battery_rules': ['id', 'priority', 'generation', 'version', 'sku', 'capacity'],
+    'option_names': ['id', 'source', 'target'],
+    'option_prices': ['id', 'generation', 'category', 'name', 'price', 'default', 'versions', 'match_versions', 'seat'],
+}
+SHEETS = {'gen_names':'代际显示名称', 'merge_groups':'代际合并', 'battery_rules':'电池包规则', 'option_names':'选配名称合并', 'option_prices':'选配金'}
+LABELS = {'id':'编号', 'source':'原名称', 'target':'标准名称', 'name':'名称', 'members':'源代际（每行一项）',
+          'priority':'优先级', 'generation':'代际', 'version':'动力和版本关键词（每行一项）', 'sku':'SKU关键词（每行一项）',
+          'capacity':'电池容量', 'category':'选配分类', 'price':'金额', 'default':'默认选配',
+          'versions':'版本包含（每行一项）', 'match_versions':'版本精确（每行一项）', 'seat':'座位类型'}
+LIST_FIELDS = {'members', 'version', 'sku', 'versions', 'match_versions'}
+
+
+def is_list(table, field):
+    return field in LIST_FIELDS or (table == 'battery_rules' and field == 'generation')
+
+
+def label(table, field):
+    return '代际关键词（每行一项）' if table == 'battery_rules' and field == 'generation' else LABELS[field]
+
+
+def rules_excel(data, template=False):
+    errors = validate(data)
+    if errors: raise ValueError('\n'.join(errors))
+    wb = Workbook(); wb.remove(wb.active)
+    for table, fields in FIELDS.items():
+        ws = wb.create_sheet(SHEETS[table]); ws.append([label(table, f) for f in fields])
+        if not template:
+            for i, item in enumerate(data[table], 1):
+                row = []
+                for field in fields:
+                    value = i if field == 'priority' else item[field]
+                    if is_list(table, field):
+                        value = json.dumps(value, ensure_ascii=False) if not value or any('\n' in s or '\r' in s for s in value) else '\n'.join(value)
+                    if field == 'default': value = '是' if value else '否'
+                    row.append(value)
+                ws.append(row)
+        ws.freeze_panes = 'B2'; ws.auto_filter.ref = ws.dimensions
+        for cell in ws[1]:
+            cell.font = Font(name='Microsoft YaHei', bold=True, color='FFFFFF')
+            cell.fill = PatternFill('solid', fgColor='2859F5')
+        for i, field in enumerate(fields, 1):
+            ws.column_dimensions[get_column_letter(i)].width = 38 if is_list(table, field) or field == 'id' else 25
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                if isinstance(cell.value, str): cell.data_type = 's'  # formula-like names are literal text
+                cell.alignment = Alignment(vertical='top', wrap_text=True)
+        for field, kind, first in [('default','list','"是,否"'), ('price','decimal','0'), ('priority','whole','1')]:
+            if field not in fields: continue
+            dv = DataValidation(type=kind, formula1=first, operator='greaterThanOrEqual' if kind != 'list' else None, allow_blank=True)
+            dv.showErrorMessage = True; dv.errorTitle = '值无效'; dv.error = '请填写有效值'
+            ws.add_data_validation(dv); col = get_column_letter(fields.index(field)+1); dv.add(f'{col}2:{col}10001')
+    out = io.BytesIO(); wb.save(out); return out.getvalue()
+
+
+def _value(table, field, value):
+    if is_list(table, field):
+        text = str(value).strip()
+        if text.startswith('['):
+            result = json.loads(text)
+            if not isinstance(result, list) or any(not isinstance(x, str) for x in result): raise ValueError('须为文本列表')
+            return result
+        return [x.strip() for x in text.splitlines() if x.strip()]
+    if field == 'default':
+        if isinstance(value, bool): return value
+        text = str(value).strip().lower()
+        if text in ['是','true','1']: return True
+        if text in ['否','false','0']: return False
+        raise ValueError('默认选配须为是或否')
+    if field in ['price','priority']:
+        if isinstance(value, bool): raise ValueError('须为数字')
+        number = float(value)
+        if not math.isfinite(number) or number < 0: raise ValueError('须为非负有限数字')
+        if field == 'priority' and (number < 1 or not number.is_integer()): raise ValueError('优先级须为正整数')
+        return int(number) if number.is_integer() else number
+    if isinstance(value, float) and value.is_integer(): return str(int(value))
+    return str(value).strip()
+
+
+def _key(table, row):
+    fields = {'gen_names':['source'], 'option_names':['source'], 'merge_groups':['name'],
+              'battery_rules':['generation','version','sku'],
+              'option_prices':['generation','category','name','versions','match_versions','seat']}[table]
+    return json.dumps([row.get(f, [] if is_list(table, f) else '') for f in fields], ensure_ascii=False)
+
+
+def preview_rules_import(base, files):
+    result = copy.deepcopy(base); issues = []; records = []; total_bytes = expanded = total_rows = 0
+    def issue(source, field, message):
+        issues.append({**source, 'field':field, 'message':message})
+    if not isinstance(files, list) or not 1 <= len(files) <= 10: raise ValueError('每批须有 1–10 个 Excel 文件')
+    for index, file in enumerate(files, 1):
+        source = {'file':str(file.get('name', f'文件{index}.xlsx'))[:200], 'sheet':'', 'row':0} if isinstance(file, dict) else {'file':f'文件{index}', 'sheet':'', 'row':0}
+        wb = None
+        try:
+            if not isinstance(file, dict): raise ValueError('文件格式无效')
+            raw = file.get('raw') if 'raw' in file else base64.b64decode(file.get('content',''), validate=True)
+            if not isinstance(raw, bytes) or not raw: raise ValueError('文件内容为空或无效')
+            total_bytes += len(raw)
+            if total_bytes > 8_000_000: raise ValueError('文件总大小超过 8MB')
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive: expanded += sum(f.file_size for f in archive.infolist())
+            if expanded > 40_000_000: raise ValueError('Excel 解压后合计超过 40MB')
+            wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=False)
+            for ws in wb:
+                source = {**source, 'sheet':ws.title, 'row':1}
+                table = next((t for t, title in SHEETS.items() if ws.title in [t, title]), None)
+                if not table: issue(source, '', '未知规则工作表'); continue
+                if ws.max_column and ws.max_column > len(FIELDS[table])+8: issue(source, '', '列数超出模板范围'); continue
+                rows = ws.iter_rows(); headers = list(next(rows, ()))
+                while headers and headers[-1].value is None: headers.pop()
+                aliases = {label(table,f):f for f in FIELDS[table]} | {f:f for f in FIELDS[table]}
+                fields = [aliases.get(str(cell.value).strip()) for cell in headers]
+                if not fields or None in fields or len(fields) != len(set(fields)):
+                    issue(source, '', '表头缺失、重复或包含未知列'); continue
+                for number, cells in enumerate(rows, 2):
+                    source = {**source, 'row':number}; total_rows += 1
+                    if number > 10001 or total_rows > 20000: raise ValueError('单表最多 10000 行，每批最多 20000 行')
+                    if any(c.value is not None for c in cells[len(fields):]): issue(source, '', '存在无表头的数据列'); continue
+                    values = {}; invalid = False
+                    for field, cell in zip(fields, cells):
+                        value = cell.value
+                        if value is None or (isinstance(value,str) and not value.strip()): continue
+                        try:
+                            if cell.data_type == 'f': raise ValueError('不接受公式，请粘贴为值')
+                            if len(str(value)) > 8000: raise ValueError('单元格超过 8000 字符')
+                            values[field] = _value(table, field, value)
+                        except (ValueError, TypeError) as exc: issue(source, label(table,field), str(exc)); invalid = True
+                    if values and not invalid: records.append((table, values, dict(source)))
+        except (ValueError, TypeError, OSError, KeyError, zipfile.BadZipFile, ParseError) as exc:
+            issue(source, '', str(exc))
+        finally:
+            if wb is not None: wb.close()
+    seen = {}; touched = set(); ranks = {r['id']:i for i,r in enumerate(base['battery_rules'],1)}
+    for table, values, source in records:
+        defaults = {f:[] if is_list(table,f) else False if f=='default' else 0 if f=='price' else '' for f in FIELDS[table] if f!='priority'}
+        by_id = {r['id']:r for r in result[table]}
+        item = by_id.get(values.get('id'))
+        if not item and not values.get('id'):
+            candidates = [r for r in result[table] if _key(table,r) == _key(table, defaults|values)]
+            if len(candidates)>1: issue(source, '编号', '无法唯一匹配，请填写编号'); continue
+            item = candidates[0] if candidates else None
+        if item is None:
+            item = defaults | {'id':values.get('id') or str(uuid.uuid4())}; result[table].append(item)
+            if table=='battery_rules': ranks[item['id']] = len(ranks)+1
+        identity = (table,item['id']); touched.add(identity)
+        for field, value in values.items():
+            if field=='id': continue
+            signature = (*identity,field)
+            if signature in seen and seen[signature] != value:
+                issue(source,label(table,field),'同一规则在本批文件中的值冲突'); continue
+            seen[signature] = value
+            if field=='priority': ranks[item['id']] = value
+            else: item[field] = value
+        row_errors = validate({t:[item] if t==table else [] for t in FIELDS})
+        for error in row_errors: issue(source,'',error)
+    if any(field=='priority' for _,_,field in seen):
+        if len(set(ranks.values())) != len(ranks): issue({'file':'','sheet':SHEETS['battery_rules'],'row':0},'优先级','优先级重复，请为受影响规则设置不同序号')
+        result['battery_rules'].sort(key=lambda r:ranks[r['id']])
+    for error in validate(result):
+        if not any(i['message']==error for i in issues): issue({'file':'','sheet':'','row':0},'',error)
+    changes = diff_rules(base,result)
+    counts = {'added':0, 'updated':0, 'unchanged':0}
+    for table, ident in touched:
+        before = next((r for r in base[table] if r['id']==ident),None)
+        after = next(r for r in result[table] if r['id']==ident)
+        changed = before != after or (table=='battery_rules' and before is not None and [r['id'] for r in base[table]].index(ident) != [r['id'] for r in result[table]].index(ident))
+        counts['added' if before is None else 'updated' if changed else 'unchanged'] += 1
+    return {'data':result,'changes':changes,'errors':[i['message'] for i in issues],'issues':issues,'summary':counts}

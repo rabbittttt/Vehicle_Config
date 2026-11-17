@@ -4,10 +4,13 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from excel_io import excel, read_excel, preview_import
 from catalog import Store, validate, diff, Conflict
+from shared_rules import RuleStore, validate as validate_rules
+from rules_excel import rules_excel, preview_rules_import
 ROOT=Path(__file__).resolve().parent
 
-def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origins=(),readonly=False,proxy_secret=None):
+def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origins=(),readonly=False,proxy_secret=None,rules=None):
     token=secrets.token_urlsafe(32)
+    rules=rules or RuleStore(store.root,None)
     class Handler(BaseHTTPRequestHandler):
         def send(self,status,obj,kind='application/json; charset=utf-8'):
             raw=obj if isinstance(obj,bytes) else json.dumps(obj,ensure_ascii=False).encode()
@@ -37,15 +40,20 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 if path=='/healthz':return self.send(200,{'ok':True,'app':'vehicle-config','public_prefix':prefix})
                 self.actor()
                 if path=='/api/state':return self.send(200,{**store.get(),'csrf':token,'readonly':readonly})
+                if path=='/api/rules/state':return self.send(200,rules.get())
+                if path.startswith('/api/rules/history/'):return self.send(200,rules.history(int(path.rsplit('/',1)[1])))
+                if path=='/api/rules/template':return self.send(200,rules_excel(rules.get()['draft']['data'],template=True),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 if path.startswith('/api/history/'):return self.send(200,store.history(int(path.rsplit('/',1)[1])))
                 if path=='/api/template':return self.send(200,excel(store.get()['draft']['data'],template=True),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 if path=='/api/export':return self.send(200,excel(store.get()['draft']['data']),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-                files={'/':'index.html','/app.js':'app.js','/style.css':'style.css'}
+                files={'/':'index.html','/rules.html':'rules.html','/app.js':'app.js','/rules.js':'rules.js','/style.css':'style.css'}
                 if path not in files:return self.send(404,{'error':'未找到'})
-                ext={'/':'text/html; charset=utf-8','/app.js':'text/javascript; charset=utf-8','/style.css':'text/css; charset=utf-8'}
+                ext={'/':'text/html; charset=utf-8','/rules.html':'text/html; charset=utf-8','/app.js':'text/javascript; charset=utf-8','/rules.js':'text/javascript; charset=utf-8','/style.css':'text/css; charset=utf-8'}
                 self.send(200,(ROOT/'web'/files[path]).read_bytes(),ext[path])
             except PermissionError as e:self.send(403,{'error':str(e)})
             except (ValueError,KeyError) as e:self.send(400,{'error':str(e)})
+            except Exception as e:
+                print(type(e).__name__,str(e),file=sys.stderr);self.send(500,{'error':'读取失败，请检查服务日志'})
         def do_POST(self):
             try:
                 self.check_host()
@@ -55,7 +63,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 if origin and origin not in allowed:raise PermissionError('来源不受信任')
                 if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''),token):raise PermissionError('请求校验失败，请刷新页面')
                 path=self.route()
-                if readonly and path!='/api/export':raise PermissionError('服务维护中，暂不可写入')
+                if readonly and path not in ['/api/export','/api/rules/export']:raise PermissionError('服务维护中，暂不可写入')
                 size=int(self.headers.get('Content-Length',0))
                 if size<=0 or size>8_000_000:raise ValueError('请求大小须在 1–8MB 内')
                 raw=self.rfile.read(size);path=self.route()
@@ -63,6 +71,20 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     state=store.get()['draft']
                     return self.send(200,{**preview_import(state['data'],[{'name':'导入文件.xlsx','raw':raw}]),'revision':state['revision']})
                 body=json.loads(raw)
+                if path.startswith('/api/rules/'):
+                    if not isinstance(body,dict):raise ValueError('规则请求格式无效')
+                    action=path.rsplit('/',1)[1]
+                    if action=='validate':return self.send(200,{'errors':validate_rules(body['data'])})
+                    if action=='export':return self.send(200,rules_excel(body['data']),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                    if action=='save':return self.send(200,rules.save(body['data'],body['revision'],actor))
+                    if action=='preview':return self.send(200,rules.preview(body['data'],body['revision']))
+                    if action=='publish':return self.send(200,rules.publish(body['data'],body['revision'],body['source_hash'],actor))
+                    if action=='reload':return self.send(200,rules.reload(body['revision'],body['source_hash'],actor))
+                    if action=='import':
+                        state=rules.get()['draft']
+                        if body.get('revision')!=state['revision']:raise Conflict('规则草稿已被其他人修改，请重新载入后导入')
+                        return self.send(200,{**preview_rules_import(state['data'],body.get('files')),'revision':state['revision']})
+                    return self.send(404,{'error':'未找到'})
                 if path=='/api/import-batch':
                     if not isinstance(body,dict):raise ValueError('导入请求格式无效')
                     state=store.get()['draft']
@@ -77,10 +99,14 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
             except (ValueError,KeyError,TypeError,zipfile.BadZipFile) as e:self.send(400,{'error':str(e)})
             except Exception as e:
                 print(type(e).__name__,str(e),file=sys.stderr);self.send(500,{'error':'保存或读取失败，请重新载入核对状态并检查服务日志'})
-    return ThreadingHTTPServer((host,port),Handler)
+    class Server(ThreadingHTTPServer):
+        def server_close(self):
+            super().server_close()
+            rules.db.close()
+    return Server((host,port),Handler)
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--host',default='127.0.0.1');p.add_argument('--port',type=int,default=8790);p.add_argument('--public-prefix',default='/vehicle-config/');p.add_argument('--data-dir');p.add_argument('--public-origin',action='append',default=[]);p.add_argument('--read-only',action='store_true');p.add_argument('--require-proxy-identity',action='store_true');a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--host',default='127.0.0.1');p.add_argument('--port',type=int,default=8790);p.add_argument('--public-prefix',default='/vehicle-config/');p.add_argument('--data-dir');p.add_argument('--shared-config');p.add_argument('--public-origin',action='append',default=[]);p.add_argument('--read-only',action='store_true');p.add_argument('--require-proxy-identity',action='store_true');a=p.parse_args()
     if a.host not in ['127.0.0.1','::1']:p.error('仅允许回环监听，通过部门门户代理访问')
     if not a.public_prefix.startswith('/') or not a.public_prefix.endswith('/') or '..' in a.public_prefix:p.error('公共前缀格式无效')
     workspace=next((x for x in ROOT.parents if x.name=='Project'),None)
@@ -96,7 +122,8 @@ def main():
     else:
         import fcntl
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    store=Store(root);server=make_server(store,a.host,a.port,a.public_prefix,a.public_origin,a.read_only,secret)
+    source=a.shared_config or os.environ.get('VEHICLE_CONFIG_SHARED_CONFIG') or (workspace/'订单分析'/'scripts'/'config'/'shared_config.py' if workspace else None)
+    store=Store(root);rules=RuleStore(root,source);server=make_server(store,a.host,a.port,a.public_prefix,a.public_origin,a.read_only,secret,rules)
     print(f'车型配置管理 http://{a.host}:{a.port}{a.public_prefix} | {root}',flush=True)
     try:server.serve_forever()
     except KeyboardInterrupt:pass
