@@ -30,9 +30,10 @@ with sync_playwright() as p:
     page.set_viewport_size({'width':1440,'height':1000})
     page.locator('[data-tab="models"]').click();page.get_by_role('button',name='复制年款').click();page.locator('[name="year"]').fill('2027');page.locator('#confirm').click();page.locator('#save').click();page.wait_for_function("() => document.querySelector('#status').textContent.includes('已保存')")
     page.reload();page.wait_for_function("() => document.querySelector('#status').textContent.includes('已保存')");assert page.locator('#content tbody tr').count()==2
-    with page.expect_download() as event:page.locator('#export').click()
+    page.locator('#export').click()
+    with page.expect_download() as event:page.get_by_role('button',name='下载 Excel',exact=True).click()
     download=event.value;download.save_as(str(out/'roundtrip.xlsx'))
-    page.locator('#file').set_input_files(str(out/'roundtrip.xlsx'));page.get_by_role('button',name='应用到编辑区').wait_for();page.locator('#confirm').click();page.locator('#save').click();page.wait_for_function("() => document.querySelector('#status').textContent.includes('已保存')")
-    page.locator('[data-tab="history"]').click();page.locator('[data-history]').first.click();page.get_by_role('button',name='恢复到草稿').click();assert '未保存' in page.locator('#status').inner_text()
+    page.locator('#file').set_input_files(str(out/'roundtrip.xlsx'));page.get_by_text('没有变更',exact=True).wait_for();page.locator('#close').click()
+    page.locator('[data-tab="history"]').click();page.locator('[data-history="2"]').click();page.get_by_role('button',name='恢复到草稿').click();assert '未保存' in page.locator('#status').inner_text()
     assert not errors,errors
     browser.close();print('Browser checks passed: matrix, publish, copy, reload, XLSX import/export, history restore, desktop/mobile. Test data only.')

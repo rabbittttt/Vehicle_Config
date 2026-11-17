@@ -1,36 +1,10 @@
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-import argparse, getpass, io, json, os, secrets, sys, zipfile
+import argparse, getpass, json, os, secrets, sys, zipfile
 from pathlib import Path
 from urllib.parse import urlsplit
-from openpyxl import Workbook, load_workbook
-from catalog import Store, TABLES, validate, diff, merge, Conflict
+from excel_io import excel, read_excel, preview_import
+from catalog import Store, validate, diff, Conflict
 ROOT=Path(__file__).resolve().parent
-
-def excel(data):
-    wb=Workbook();wb.remove(wb.active)
-    for table,fields in TABLES.items():
-        ws=wb.create_sheet(table);ws.append(fields);ws.freeze_panes='A2';ws.auto_filter.ref=f'A1:{ws.cell(1,len(fields)).column_letter}1'
-        for row in data[table]:
-            ws.append([row.get(f,'') for f in fields])
-            for cell in ws[ws.max_row]:cell.data_type='s'
-        for col in ws.columns:ws.column_dimensions[col[0].column_letter].width=22
-    stream=io.BytesIO();wb.save(stream);return stream.getvalue()
-def read_excel(raw):
-    with zipfile.ZipFile(io.BytesIO(raw)) as z:
-        if sum(f.file_size for f in z.infolist())>40_000_000:raise ValueError('Excel 解压后过大')
-    wb=load_workbook(io.BytesIO(raw),read_only=True,data_only=False);data={}
-    try:
-        for ws in wb:
-            if ws.title not in TABLES:raise ValueError('未知工作表：'+ws.title)
-            rows=ws.iter_rows(values_only=True);fields=next(rows,())
-            if len(set(fields))!=len(fields) or any(f not in TABLES[ws.title] for f in fields):raise ValueError('表头无效：'+ws.title)
-            data[ws.title]=[]
-            for i,values in enumerate(rows):
-                if i>10000:raise ValueError('单表超过 10000 行')
-                if any(isinstance(v,str) and v.startswith('=') for v in values):raise ValueError('不接受公式，请粘贴为值')
-                if any(v is not None for v in values):data[ws.title].append(dict(zip(fields,values)))
-    finally:wb.close()
-    return data
 
 def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origins=(),readonly=False,proxy_secret=None):
     token=secrets.token_urlsafe(32)
@@ -64,6 +38,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 self.actor()
                 if path=='/api/state':return self.send(200,{**store.get(),'csrf':token,'readonly':readonly})
                 if path.startswith('/api/history/'):return self.send(200,store.history(int(path.rsplit('/',1)[1])))
+                if path=='/api/template':return self.send(200,excel(store.get()['draft']['data'],template=True),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 if path=='/api/export':return self.send(200,excel(store.get()['draft']['data']),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 files={'/':'index.html','/app.js':'app.js','/style.css':'style.css'}
                 if path not in files:return self.send(404,{'error':'未找到'})
@@ -79,14 +54,20 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 allowed=set(origins)|{'http://'+self.headers.get('Host','')}
                 if origin and origin not in allowed:raise PermissionError('来源不受信任')
                 if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''),token):raise PermissionError('请求校验失败，请刷新页面')
-                if readonly:raise PermissionError('服务维护中，暂不可写入')
+                path=self.route()
+                if readonly and path!='/api/export':raise PermissionError('服务维护中，暂不可写入')
                 size=int(self.headers.get('Content-Length',0))
                 if size<=0 or size>8_000_000:raise ValueError('请求大小须在 1–8MB 内')
                 raw=self.rfile.read(size);path=self.route()
                 if path=='/api/import':
-                    state=store.get()['draft'];data=merge(state['data'],read_excel(raw))
-                    return self.send(200,{'data':data,'revision':state['revision'],'changes':diff(state['data'],data),'errors':validate(data)})
+                    state=store.get()['draft']
+                    return self.send(200,{**preview_import(state['data'],[{'name':'导入文件.xlsx','raw':raw}]),'revision':state['revision']})
                 body=json.loads(raw)
+                if path=='/api/import-batch':
+                    if not isinstance(body,dict):raise ValueError('导入请求格式无效')
+                    state=store.get()['draft']
+                    if body.get('revision')!=state['revision']:raise Conflict('草稿已被其他人修改，请重新载入后导入')
+                    return self.send(200,{**preview_import(state['data'],body.get('files')),'revision':state['revision']})
                 if path=='/api/export':return self.send(200,excel(body['data']),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 if path=='/api/preview':return self.send(200,{'errors':validate(body['data'],True),'changes':diff(store.get()['published']['data'],body['data'])})
                 if path in ['/api/save','/api/publish']:return self.send(200,store.save(body['data'],body['revision'],actor,path.endswith('publish')))
