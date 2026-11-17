@@ -1,5 +1,7 @@
 # 车型配置管理
 
+持久目录统一为同级工作区的 `工作台数据/database/vehicle-config/`；独立运行与门户运行读取同一位置。可用 `PLANHUB_DATA_ROOT` 指定数据根（相对路径按应用根解析），应用原有显式数据目录参数继续优先。程序发布不携带业务数据库；发布版使用 `planhub-runtime/database/vehicle-config/`。共享 Excel 仍在原共享目录，数据库集中不改变业务口径。首次升级必须停服迁移，旧目录改名为 `.pre-central-*` 恢复备份，不再参与运行。
+
 第一版独立维护车型、发布阶段、版本与配置适用关系、名称映射、汇总规则及变更历史。前端无外网依赖。不会自动生成 SKU，也不会更改订单、预测或 SOP 的历史资料。
 
 ## 启动与停止
@@ -32,7 +34,7 @@
 
 ## 持久数据与发布口径
 
-数据路径优先使用 `--data-dir`；其次 `SHARED_DATA_ROOT/车型配置`；开发默认 `Project/共享数据/车型配置`。工作台发布包的 Windows 试运行和 Docker 均应把 `--data-dir` 指向配置的共享根下的 `车型配置/`，默认 `planhub-runtime/shared/车型配置/`；不要另存到 `data/vehicle-config/`。相对参数按进程工作目录解析。正式包不依赖开发工作区，必须显式指定外部数据路径或共享根。
+数据路径优先使用 `--data-dir`；否则使用 `PLANHUB_DATA_ROOT/database/vehicle-config`，未设置根目录时为同级 `工作台数据/database/vehicle-config`。发布包统一传入 `planhub-runtime/database/vehicle-config`；旧版共享目录中的数据须先停服迁移。相对 `--data-dir` 仍按进程目录解析；相对 `PLANHUB_DATA_ROOT` 按项目根解析。
 
 `catalog.sqlite3` 为事务主存储，包含草稿、已发布配置和操作记录；`current.json` 是已发布快照（revision 与 data），`drafts/current.json` 是草稿快照，`history/*.json` 是历史记录。快照以原子替换方式导出；若文件写入失败，接口报错，数据库已提交状态在重启时重新导出。消费者仅读取 current.json，不扫描草稿。备份应在服务停止后备份整个目录；不能只备份 current.json。持久目录不可放在发布包内。OS 生命周期锁阻止新旧进程同时打开同一目录，服务停止后操作系统自动释放锁。
 

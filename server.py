@@ -110,8 +110,10 @@ def main():
     if a.host not in ['127.0.0.1','::1']:p.error('仅允许回环监听，通过部门门户代理访问')
     if not a.public_prefix.startswith('/') or not a.public_prefix.endswith('/') or '..' in a.public_prefix:p.error('公共前缀格式无效')
     workspace=next((x for x in ROOT.parents if x.name=='Project'),None)
-    directory=a.data_dir or (str(Path(os.environ['SHARED_DATA_ROOT'])/'车型配置') if os.environ.get('SHARED_DATA_ROOT') else str(workspace/'共享数据'/'车型配置') if workspace else None)
-    if not directory:p.error('发布模式必须指定 --data-dir 或 SHARED_DATA_ROOT')
+    data_root=(ROOT / os.environ['PLANHUB_DATA_ROOT']).resolve() if os.environ.get('PLANHUB_DATA_ROOT') else ROOT.parent/'工作台数据'
+    directory=a.data_dir or str(data_root/'database'/'vehicle-config')
+    legacy=(workspace/'共享数据'/'车型配置') if workspace else None
+    if not a.data_dir and not Path(directory).exists() and legacy and (legacy/'catalog.sqlite3').exists():p.error('旧车型配置数据库尚未迁移，不会创建空库。')
     secret=os.environ.get('VEHICLE_CONFIG_PROXY_SECRET')
     if a.require_proxy_identity and not secret:p.error('缺少 VEHICLE_CONFIG_PROXY_SECRET')
     # Lifetime OS lock prevents two versions writing the same persistent catalog.

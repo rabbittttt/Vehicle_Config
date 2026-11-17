@@ -22,3 +22,6 @@ service.lock
 .venv/
 data/
 logs/
+
+# Offline storage migration recovery copies.
+*.pre-central-*/
