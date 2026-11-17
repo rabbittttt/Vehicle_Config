@@ -16,3 +16,4 @@ footer{background:var(--surface);padding:12px 28px}footer>div{align-items:center
 footer{z-index:10}
 nav a{display:inline-flex;align-items:center;text-decoration:none}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-width:60vw}.script-diff{max-height:40vh;overflow:auto;background:#f5f6fa;padding:14px}#body textarea{width:100%;min-width:180px}#content td:last-child{min-width:180px}
 .rules-page #content table{min-width:1000px}.rules-page #content td{min-width:120px;white-space:normal;overflow-wrap:normal}.rules-page #content th{white-space:nowrap}.rules-page pre{max-width:100%;font-size:13px}.rules-page #body form{max-height:55vh;overflow:auto}
+.product-title{display:flex;align-items:center;gap:10px}.title-icon{display:block;width:24px;height:24px;flex-shrink:0;color:var(--blue)}
