@@ -14,7 +14,7 @@
 
 ## 持久数据与发布口径
 
-数据路径优先使用 `--data-dir`；其次 `SHARED_DATA_ROOT/车型配置`；开发默认 `Project/共享数据/车型配置`。相对参数按进程工作目录解析。正式包不依赖开发工作区，必须显式指定外部数据路径或共享根。
+数据路径优先使用 `--data-dir`；其次 `SHARED_DATA_ROOT/车型配置`；开发默认 `Project/共享数据/车型配置`。工作台发布包的 Windows 试运行和 Docker 均应把 `--data-dir` 指向配置的共享根下的 `车型配置/`，默认 `planhub-runtime/shared/车型配置/`；不要另存到 `data/vehicle-config/`。相对参数按进程工作目录解析。正式包不依赖开发工作区，必须显式指定外部数据路径或共享根。
 
 `catalog.sqlite3` 为事务主存储，包含草稿、已发布配置和操作记录；`current.json` 是已发布快照（revision 与 data），`drafts/current.json` 是草稿快照，`history/*.json` 是历史记录。快照以原子替换方式导出；若文件写入失败，接口报错，数据库已提交状态在重启时重新导出。消费者仅读取 current.json，不扫描草稿。备份应在服务停止后备份整个目录；不能只备份 current.json。持久目录不可放在发布包内。OS 生命周期锁阻止新旧进程同时打开同一目录，服务停止后操作系统自动释放锁。
 
