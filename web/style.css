@@ -69,3 +69,33 @@ header nav :is(button, a) svg { width: 18px; height: 18px; flex: 0 0 18px; color
   header nav :is(button, a) { transition: none; }
 }
 header nav svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Shared vertical rhythm of the embedded dashboards. */
+:root {
+  --toolbar-height: 64px;
+  --navigation-height: 56px;
+  --dashboard-gap: 16px;
+}
+@media (max-width: 640px) {
+  :root { --dashboard-gap: 12px; }
+}
+header {
+  padding-block: 0;
+  border-bottom: 0;
+  box-shadow: inset 0 -1px var(--border);
+}
+header .heading {
+  height: var(--toolbar-height);
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+header .heading > * { flex: none; }
+header .top-actions { width: auto; flex-wrap: nowrap; }
+header nav {
+  height: var(--navigation-height);
+  align-items: center;
+  margin-block: 0;
+  padding-block: 0;
+}
+main { padding-top: var(--dashboard-gap); }
