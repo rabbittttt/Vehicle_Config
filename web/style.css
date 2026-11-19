@@ -99,3 +99,7 @@ header nav {
   padding-block: 0;
 }
 main { padding-top: var(--dashboard-gap); }
+
+.heading h1, header nav :is(button, a), .view-tabs button {
+  font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+}
