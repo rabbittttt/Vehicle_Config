@@ -13,6 +13,7 @@ base='http://127.0.0.1:'+str(server.server_port)
 with sync_playwright() as p:
     browser=p.chromium.launch(channel='msedge');page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
     page.goto(base+'/vehicle-config/');page.wait_for_function("() => document.querySelector('#status').textContent.includes('已保存')")
+    assert page.locator('#published').is_hidden()
     page.locator('.panel-head [data-action="add:models"]').click()
     for field,value in {'brand':'验收品牌','series':'验收车型','generation':'第一代','year':'2026','energy':'纯电','tier':'中大型'}.items():page.locator(f'[name="{field}"]').fill(value)
     page.locator('#confirm').click();page.locator('[data-tab="matrix"]').click()
@@ -23,7 +24,8 @@ with sync_playwright() as p:
     cells=page.locator('#content select')
     for i in range(cells.count()):cells.nth(i).select_option(['标配','选配','不可选','未配置'][i%4])
     page.locator('#save').click();page.wait_for_function("() => document.querySelector('#status').textContent.includes('已保存')")
-    page.locator('#publish').click();page.get_by_role('button',name='确认发布',exact=True).click();page.wait_for_function("() => document.querySelector('#published').textContent==='已发布 v1'")
+    page.locator('#publish').click();page.get_by_role('button',name='确认发布',exact=True).click()
+    page.get_by_text('已发布配置 v1',exact=True).wait_for(state='visible')
     page.screenshot(path=str(out/'desktop-matrix.png'),full_page=True)
     page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(out/'mobile-matrix.png'),full_page=True)
     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'mobile overflow'

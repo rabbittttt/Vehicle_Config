@@ -53,7 +53,10 @@ function accept(s) {
   data=s.draft.data; revision=s.draft.revision;published=s.published;history=s.history;
   savedJSON=JSON.stringify(data);dirty=false;undoStack=[];redoStack=[];selected.clear();
   if(s.csrf)csrf=s.csrf;if('readonly' in s)readonly=s.readonly;
-  $('#published').textContent=published.revision?`已发布 v${published.revision}`:'尚未发布';render();
+  const publishedBadge=$('#published');
+  publishedBadge.hidden=!published.revision;
+  publishedBadge.textContent=published.revision?`已发布配置 v${published.revision}`:'';
+  render();
 }
 function modelIds() {return new Set(data.models.filter(r=>(!model||r.id===model)&&(!year||r.year===year)).map(r=>r.id));}
 function matches(r) {return !query || [...Object.values(r),r.model_id?display('models',r.model_id):'',r.target_id?referenceName(r.target_type,r.target_id):''].join(' ').toLocaleLowerCase().includes(query.toLocaleLowerCase());}
