@@ -39,3 +39,33 @@ table, th, td,
 .badge,
 .muted, th small, td small,
 .pagination, #status { font-size: var(--type-note); }
+
+header nav { gap: 6px; }
+
+header nav :is(button, a) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--type-body);
+  font-weight: 600;
+  line-height: 1.4;
+  text-decoration: none;
+  white-space: nowrap;
+  box-shadow: none;
+  transition: color 160ms, background-color 160ms;
+}
+header nav :is(button, a):not(:disabled):hover { background: var(--bg); color: var(--text); }
+header nav :is(button, a).active:not(:disabled) { background: var(--selected); color: #2049d4; font-weight: 600; }
+header nav :is(button, a):focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+header nav :is(button, a) svg { width: 18px; height: 18px; flex: 0 0 18px; color: inherit; opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  header nav :is(button, a) { transition: none; }
+}
+header nav svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }

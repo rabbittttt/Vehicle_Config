@@ -15,7 +15,7 @@ function modal(title,body,fn,caption='确定'){$('#dialog-title').textContent=ti
 function change(fn){undo.push(JSON.stringify(data));if(undo.length>20)undo.shift();fn();render();}
 function diffHTML(changes){return '<div class="scroll"><table><thead><tr><th>类别</th><th>修改前</th><th>修改后</th></tr></thead><tbody>'+changes.map(c=>`<tr><td>${esc(titles[c.table])}</td><td><pre>${esc(JSON.stringify(c.before,null,2))}</pre></td><td><pre>${esc(JSON.stringify(c.after,null,2))}</pre></td></tr>`).join('')+'</tbody></table></div>';}
 function render(){
- $('#tabs').innerHTML=Object.entries(titles).map(([k,v])=>`<button data-tab="${k}" class="${tab===k?'active':''}">${v}</button>`).join('');$('#title').textContent=titles[tab];$('#batch').hidden=!['gen_names','option_names'].includes(tab);$('#add').hidden=tab==='history';
+ $('#tabs').innerHTML=Object.entries(titles).map(([k,v])=>`<button data-tab="${k}" class="${tab===k?'active':''}"${tab===k?' aria-current="page"':''}>${v}</button>`).join('');$('#title').textContent=titles[tab];$('#batch').hidden=!['gen_names','option_names'].includes(tab);$('#add').hidden=tab==='history';
  $('#badge').textContent=state.source.external_modified?'脚本已在外部修改':state.source.available?(state.published.revision?'脚本配置 v'+state.published.revision:'已读取脚本'):'脚本不可用';$('#notice').textContent=state.source.error||'';
  if(tab==='history'){$('#content').innerHTML='<table><tbody>'+state.history.map(h=>`<tr><td>${esc(h.time)}</td><td>${esc(h.actor)}</td><td>${esc(h.kind)}</td><td><button data-history="${h.id}">查看</button></td></tr>`).join('')+'</tbody></table>';flags();return;}
  const q=$('#search').value.toLowerCase(),rows=data[tab].filter(r=>JSON.stringify(r).toLowerCase().includes(q));
