@@ -15,7 +15,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
         def send(self,status,obj,kind='application/json; charset=utf-8'):
             raw=obj if isinstance(obj,bytes) else json.dumps(obj,ensure_ascii=False).encode()
             self.send_response(status);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(raw)))
-            for k,v in {'Cache-Control':'no-store','X-Frame-Options':'SAMEORIGIN','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'none'"}.items():self.send_header(k,v)
+            for k,v in {'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'"}.items():self.send_header(k,v)
             if kind.startswith('application/vnd'):self.send_header('Content-Disposition','attachment; filename="vehicle-config.xlsx"')
             self.end_headers();self.wfile.write(raw)
         def route(self):
