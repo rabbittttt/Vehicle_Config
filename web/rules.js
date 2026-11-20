@@ -1,39 +1,322 @@
 'use strict';
-const $=s=>document.querySelector(s), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const titles={gen_names:'代际显示名称',merge_groups:'代际合并',battery_rules:'电池包规则',option_names:'选配名称合并',option_prices:'选配金',history:'变更记录'};
-const fields={gen_names:['source','target'],merge_groups:['name','members'],battery_rules:['generation','version','sku','capacity'],option_names:['source','target'],option_prices:['generation','category','name','price','default','versions','match_versions','seat']};
-const labels={source:'原名称',target:'标准名称',name:'名称',members:'源代际（每行一项）',generation:'代际',version:'动力及版本关键词（每行一项）',sku:'SKU关键词（每行一项）',capacity:'电池容量',category:'选配分类',price:'金额',default:'默认选配',versions:'版本包含（每行一项）',match_versions:'版本精确（每行一项）',seat:'座位类型'};
-let state,data,csrf,readonly=false,busy=false,tab='gen_names',saved='',undo=[],action;
-const dirty=()=>!!data&&JSON.stringify(data)!==saved;
-const list=(t,f)=>['members','version','sku','versions','match_versions'].includes(f)||(t==='battery_rules'&&f==='generation');
-const text=v=>Array.isArray(v)?v.join(' / '):typeof v==='boolean'?(v?'是':'否'):v;
-function flags(){document.querySelectorAll('button,input,select,textarea').forEach(e=>{e.disabled=busy||readonly&&e.hasAttribute('data-write');});$('#save').disabled=busy||readonly||!dirty();$('#publish').disabled=busy||readonly||!state?.source.available;$('#undo').disabled=busy||readonly||!undo.length;document.body.setAttribute('aria-busy',String(busy));$('#status').textContent=busy?'正在处理…':readonly?'只读':dirty()?'有未保存修改':`草稿 r${state?.draft.revision??0} · 已保存`;}
-async function run(fn){if(busy)return;busy=true;flags();try{await fn();}catch(e){const el=$('#dialog').open?$('#error'):$('#notice');el.textContent=e.message;if($('#dialog').open)el.focus();}finally{busy=false;flags();}}
-async function api(path,body){const r=await fetch('api/'+path,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:body===undefined?undefined:JSON.stringify(body)});const value=await r.json();if(!r.ok)throw Error(value.error);return value;}
-function accept(s){state=s;data=structuredClone(s.draft.data);saved=JSON.stringify(data);undo=[];render();}
-function modal(title,body,fn,caption='确定'){$('#dialog-title').textContent=title;$('#body').innerHTML=body;$('#error').textContent='';action=fn;$('#confirm').textContent=caption;$('#confirm').hidden=!fn;$('#dialog').showModal();}
-function change(fn){undo.push(JSON.stringify(data));if(undo.length>20)undo.shift();fn();render();}
-function diffHTML(changes){return '<div class="scroll"><table><thead><tr><th>类别</th><th>修改前</th><th>修改后</th></tr></thead><tbody>'+changes.map(c=>`<tr><td>${esc(titles[c.table])}</td><td><pre>${esc(JSON.stringify(c.before,null,2))}</pre></td><td><pre>${esc(JSON.stringify(c.after,null,2))}</pre></td></tr>`).join('')+'</tbody></table></div>';}
-function render(){
- $('#tabs').innerHTML=Object.entries(titles).map(([k,v])=>`<button data-tab="${k}" class="${tab===k?'active':''}"${tab===k?' aria-current="page"':''}>${v}</button>`).join('');$('#title').textContent=titles[tab];$('#batch').hidden=!['gen_names','option_names'].includes(tab);$('#add').hidden=tab==='history';
- $('#badge').textContent=state.source.external_modified?'脚本已在外部修改':state.source.available?(state.published.revision?'脚本配置 v'+state.published.revision:'已读取脚本'):'脚本不可用';$('#notice').textContent=state.source.error||'';
- if(tab==='history'){$('#content').innerHTML='<table><tbody>'+state.history.map(h=>`<tr><td>${esc(h.time)}</td><td>${esc(h.actor)}</td><td>${esc(h.kind)}</td><td><button data-history="${h.id}">查看</button></td></tr>`).join('')+'</tbody></table>';flags();return;}
- const q=$('#search').value.toLowerCase(),rows=data[tab].filter(r=>JSON.stringify(r).toLowerCase().includes(q));
- $('#content').innerHTML='<table><thead><tr>'+fields[tab].map(f=>`<th>${esc(labels[f])}</th>`).join('')+'<th>操作</th></tr></thead><tbody>'+rows.map(r=>`<tr>${fields[tab].map(f=>`<td>${esc(text(r[f]))}</td>`).join('')}<td><button data-write data-edit="${esc(r.id)}">编辑</button><button data-write data-copy="${esc(r.id)}">复制</button><button data-write data-delete="${esc(r.id)}">删除</button>${tab==='battery_rules'?`<button data-write data-up="${esc(r.id)}">上移</button><button data-write data-down="${esc(r.id)}">下移</button>`:''}</td></tr>`).join('')+'</tbody></table>';flags();
-}
-function edit(id,copy=false){const original=data[tab].find(r=>r.id===id),r=original||{};modal(copy?'复制规则':id?'编辑规则':'新增规则','<form class="form">'+fields[tab].map(f=>`<label>${esc(tab==='battery_rules'&&f==='generation'?'代际关键词（每行一项）':labels[f])}${list(tab,f)?`<textarea name="${f}" rows="3">${esc((r[f]||[]).join('\n'))}</textarea>`:f==='default'?`<select name="${f}"><option value="false">否</option><option value="true" ${r[f]?'selected':''}>是</option></select>`:`<input name="${f}" ${f==='price'?'type="number" min="0" step="any"':'maxlength="4000"'} value="${esc(r[f]??(f==='price'?0:''))}" ${['seat'].includes(f)?'':'required'}>`}</label>`).join('')+'</form>',async values=>{const row={id:!id||copy?crypto.randomUUID():id};for(const f of fields[tab]){const v=values.get(f);row[f]=list(tab,f)?String(v).split(/\r?\n/).map(x=>x.trim()).filter(Boolean):f==='price'?Number(v):f==='default'?v==='true':String(v).trim();}const candidate=structuredClone(data),index=candidate[tab].findIndex(x=>x.id===row.id);if(index<0)candidate[tab].push(row);else candidate[tab][index]=row;const result=await api('rules/validate',{data:candidate});const errors=result.errors;if(errors.length)throw Error(errors.join('\n'));change(()=>data=candidate);});}
-async function save(){accept(await api('rules/save',{data,revision:state.draft.revision}));}
-async function download(path,body,name){const r=await fetch('api/rules/'+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:body===undefined?undefined:JSON.stringify(body)});if(!r.ok)throw Error((await r.json()).error);const url=URL.createObjectURL(await r.blob()),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
-$('#confirm').onclick=()=>{const form=$('#body form');if(form&&!form.reportValidity())return;const values=form?new FormData(form):null;run(async()=>{if(action){const done=await action(values);if(done!==false)$('#dialog').close();}});};
-$('#cancel').onclick=$('#close').onclick=()=>{if(!busy)$('#dialog').close();};$('#dialog').addEventListener('cancel',e=>{if(busy)e.preventDefault();});
-document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||busy)return;if(b.dataset.tab){tab=b.dataset.tab;render();}if(b.dataset.history)run(async()=>{const h=await api('rules/history/'+b.dataset.history);modal('变更记录',diffHTML(h.changes),readonly?null:()=>change(()=>data=h.data),'恢复到编辑区');});if(readonly)return;if(b.dataset.edit)edit(b.dataset.edit);if(b.dataset.copy)edit(b.dataset.copy,true);if(b.dataset.delete)modal('删除规则',`<pre>${esc(JSON.stringify(data[tab].find(r=>r.id===b.dataset.delete),null,2))}</pre>`,()=>change(()=>data[tab]=data[tab].filter(r=>r.id!==b.dataset.delete)),'删除');for(const [key,delta] of [['up',-1],['down',1]])if(b.dataset[key]){const i=data[tab].findIndex(r=>r.id===b.dataset[key]),j=i+delta;if(j>=0&&j<data[tab].length)change(()=>[data[tab][i],data[tab][j]]=[data[tab][j],data[tab][i]]);}});
-$('#add').onclick=()=>edit();$('#search').oninput=render;$('#undo').onclick=()=>{data=JSON.parse(undo.pop());render();};$('#save').onclick=()=>run(save);
-$('#publish').onclick=()=>run(async()=>{const snapshot=structuredClone(data),revision=state.draft.revision,p=await api('rules/preview',{data:snapshot,revision});modal('发布并更新脚本',`<div>${esc(state.source.path)}</div><div class="error">${esc(p.errors.join('\n'))}</div>${diffHTML(p.changes)}<pre class="script-diff">${esc(p.script_diff)}</pre>`,p.errors.length||!p.changes.length?null:async()=>{accept(await api('rules/publish',{data:snapshot,revision,source_hash:p.source_hash}));$('#notice').textContent='脚本已更新 · 业务报表未重新生成';},'确认发布');});
-$('#reload').onclick=()=>{const fn=async()=>accept(await api('rules/state'));if(dirty())modal('放弃未保存修改？','',fn);else run(fn);};
-$('#sync').onclick=()=>run(async()=>{const current=await api('rules/state');modal('从脚本重新载入',`<div>${esc(current.source.path)}</div><p>替换规则草稿和当前脚本基线</p>`,async()=>accept(await api('rules/reload',{revision:state.draft.revision,source_hash:current.source.hash})));});
-$('#batch').onclick=()=>modal('批量粘贴','<form><label>原名称 ⇥ 标准名称（每行一组）<textarea name="rows" rows="12" required></textarea></label></form>',values=>{const rows=String(values.get('rows')).split(/\r?\n/).filter(x=>x.trim()).map(x=>x.split('\t').map(s=>s.trim()));if(rows.length>200||rows.some(r=>r.length!==2||r.some(x=>!x)))throw Error('每次最多200行，每行须有两列');if(new Set(rows.map(r=>r[0])).size!==rows.length)throw Error('原名称重复');change(()=>{for(const [source,target] of rows){const existing=data[tab].find(r=>r.source===source);if(existing)existing.target=target;else data[tab].push({id:crypto.randomUUID(),source,target});}});});
-$('#template').onclick=()=>run(()=>download('template',undefined,'订单规则-模板.xlsx'));$('#export').onclick=()=>run(()=>download('export',{data},'订单规则.xlsx'));$('#import').onclick=()=>$('#file').click();
-$('#file').onchange=e=>{const files=[...e.target.files];e.target.value='';if(!files.length)return;const fn=async()=>{if(files.length>10||files.reduce((n,f)=>n+f.size,0)>5500000)throw Error('最多10个文件、合计5.5MB');if(dirty())await save();const payload=await Promise.all(files.map(async f=>({name:f.name,content:await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(f);})})));const p=await api('rules/import',{files:payload,revision:state.draft.revision});modal('导入预览',`<div>新增 ${p.summary.added} · 更新 ${p.summary.updated} · 未变更 ${p.summary.unchanged}</div><div class="error">${p.issues.map(i=>esc(`${i.file} / ${i.sheet} 第${i.row}行 ${i.field}：${i.message}`)).join('<br>')}</div>${diffHTML(p.changes)}`,p.errors.length||!p.changes.length?null:async()=>{const fresh=await api('rules/state');if(fresh.draft.revision!==p.revision)throw Error('草稿已变化，请重新导入');change(()=>data=p.data);},'应用到编辑区');return false;};if(dirty())modal('保存草稿后导入','当前编辑有未保存修改',fn,'保存并预览');else run(fn);};
-for(const id of ['add','batch','save','publish','sync','undo','import'])$('#'+id).setAttribute('data-write','');
-window.addEventListener('beforeunload',e=>{if(dirty()){e.preventDefault();e.returnValue='';}});window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();if(!readonly&&dirty()&&!$('#dialog').open)run(save);}});
-run(async()=>{const s=await api('state');csrf=s.csrf;readonly=s.readonly;accept(await api('rules/state'));});
+
+const orderRules = (() => {
+  const titles = {
+    gen_names: '代际显示名称',
+    merge_groups: '代际合并',
+    battery_rules: '电池包规则',
+    option_names: '选配名称合并',
+    option_prices: '选配金',
+    rule_history: '脚本变更记录',
+  };
+  const fields = {
+    gen_names: ['source', 'target'],
+    merge_groups: ['name', 'members'],
+    battery_rules: ['generation', 'version', 'sku', 'capacity'],
+    option_names: ['source', 'target'],
+    option_prices: ['generation', 'category', 'name', 'price', 'default', 'versions', 'match_versions', 'seat'],
+  };
+  const labels = {
+    source: '原名称', target: '标准名称', name: '名称', members: '源代际', generation: '代际',
+    version: '动力及版本关键词', sku: 'SKU 关键词', capacity: '电池容量', category: '选配分类',
+    price: '金额', default: '默认选配', versions: '版本包含', match_versions: '版本精确', seat: '座位类型',
+  };
+
+  let state, draft, saved = '', modified = false;
+  let undoStack = [], redoStack = [];
+
+  const ready = () => Boolean(state);
+  const isDirty = () => modified;
+  const canPublish = () => Boolean(state?.source.available);
+  const canUndo = () => undoStack.length > 0;
+  const canRedo = () => redoStack.length > 0;
+  const status = () => !ready() ? '脚本规则未载入' : isDirty() ? '有未保存的规则修改' : `规则草稿 r${state.draft.revision} · 已保存`;
+  const list = (table, field) => ['members', 'version', 'sku', 'versions', 'match_versions'].includes(field) ||
+    (table === 'battery_rules' && field === 'generation');
+  const text = value => Array.isArray(value) ? value.join(' / ') : typeof value === 'boolean' ? (value ? '是' : '否') : value;
+  const label = (table, field) => table === 'battery_rules' && field === 'generation' ? '代际关键词' : labels[field];
+
+  function accept(next) {
+    state = next;
+    draft = structuredClone(next.draft.data);
+    saved = JSON.stringify(draft);
+    modified = false;
+    undoStack = [];
+    redoStack = [];
+    render();
+  }
+
+  async function load() {
+    accept(await api('rules/state'));
+  }
+
+  function reload() {
+    const refresh = async () => {
+      await load();
+      notice();
+    };
+    if (isDirty()) {
+      modal('放弃未保存的规则修改？', '<div class="selection-summary">重新载入服务器草稿</div>', refresh, '重新载入');
+    } else {
+      run(refresh);
+    }
+  }
+
+  function change(next) {
+    const before = JSON.stringify(draft);
+    const after = JSON.stringify(next);
+    if (before === after) return;
+    undoStack.push(before);
+    while (undoStack.length > 20 || undoStack.reduce((size, item) => size + item.length, 0) > 8_000_000) undoStack.shift();
+    redoStack = [];
+    draft = next;
+    modified = after !== saved;
+    render();
+  }
+
+  function undo() {
+    if (busy || readonly || !canUndo()) return;
+    redoStack.push(JSON.stringify(draft));
+    const previous = undoStack.pop();
+    draft = JSON.parse(previous);
+    modified = previous !== saved;
+    render();
+    notice('已撤销规则修改');
+  }
+
+  function redo() {
+    if (busy || readonly || !canRedo()) return;
+    undoStack.push(JSON.stringify(draft));
+    const next = redoStack.pop();
+    draft = JSON.parse(next);
+    modified = next !== saved;
+    render();
+    notice('已重做规则修改');
+  }
+
+  function ruleButton(action, caption, { id = '', disabled = false, inline = false } = {}) {
+    return `<button ${inline ? 'class="link"' : ''} data-rule-action="${action}" data-rule-id="${esc(id)}" ${disabled ? 'disabled' : ''}>${caption}</button>`;
+  }
+
+  function sourceAlert() {
+    const warning = state.sync?.error || (!state.source.available ? state.source.error || '脚本不可用' :
+      state.source.external_modified ? '源文件已被其他程序修改，请先重新载入' : '');
+    return warning ? `<div class="rule-source-status error" role="status">${esc(warning)}</div>` : '';
+  }
+
+  function renderHistory(query) {
+    const rows = state.history.filter(record => [record.id, record.kind, record.actor, record.time].join(' ').toLocaleLowerCase().includes(query));
+    const range = paginator(rows.length);
+    $('#count').textContent = `${rows.length} 条记录`;
+    $('#content').innerHTML = sourceAlert() + (rows.length ? `<div class="scroll"><table><thead><tr><th>记录</th><th>操作</th><th>操作人</th><th>时间</th><th></th></tr></thead><tbody>${rows.slice(...range).map(record => `
+      <tr><td>#${esc(record.id)}</td><td>${esc(record.kind)}</td><td>${esc(record.actor)}</td><td>${esc(new Date(record.time).toLocaleString())}</td>
+      <td>${ruleButton('history', '差异与恢复', {id: record.id, inline: true})}</td></tr>
+    `).join('')}</tbody></table></div>` : '<div class="empty"><strong>暂无变更记录</strong></div>');
+  }
+
+  function renderView(table, query) {
+    $('#count').textContent = '';
+    $('#actions').innerHTML = '';
+    if (!ready()) {
+      $('#pagination').innerHTML = '';
+      $('#content').innerHTML = '<div class="empty"><strong>脚本规则未载入</strong></div>';
+      return;
+    }
+
+    const search = query.toLocaleLowerCase();
+    if (table === 'rule_history') {
+      renderHistory(search);
+      return;
+    }
+
+    const mapping = ['gen_names', 'option_names'].includes(table);
+    $('#actions').innerHTML = ruleButton('sync', '从脚本重新载入', {disabled: readonly || !state.source.available}) +
+      (mapping ? ruleButton('batch', '批量粘贴', {disabled: readonly}) : '') +
+      ruleButton('add', '新增规则', {disabled: readonly});
+
+    const rows = draft[table]
+      .map((row, index) => ({row, index}))
+      .filter(({row}) => Object.values(row).map(text).join(' ').toLocaleLowerCase().includes(search));
+    const range = paginator(rows.length);
+    $('#count').textContent = `${rows.length} 条记录`;
+    if (!rows.length) {
+      $('#content').innerHTML = sourceAlert() + '<div class="empty"><strong>没有匹配的规则</strong></div>';
+      return;
+    }
+
+    const battery = table === 'battery_rules';
+    const headings = fields[table].map(field => `<th>${esc(label(table, field))}</th>`).join('');
+    const body = rows.slice(...range).map(({row, index}) => {
+      const controls = ['edit', 'copy', 'delete'].map((name, i) =>
+        ruleButton(name, ['编辑', '复制', '删除'][i], {id: row.id, inline: true, disabled: readonly}));
+      if (battery) {
+        controls.push(ruleButton('up', '上移', {id: row.id, inline: true, disabled: readonly || index === 0}));
+        controls.push(ruleButton('down', '下移', {id: row.id, inline: true, disabled: readonly || index === draft[table].length - 1}));
+      }
+      const cells = fields[table].map(field => `<td>${esc(text(row[field]))}</td>`).join('');
+      return `<tr>${battery ? `<td>${index + 1}</td>` : ''}${cells}<td class="operation"><div class="rule-actions">${controls.join('')}</div></td></tr>`;
+    }).join('');
+    $('#content').innerHTML = sourceAlert() + `<div class="scroll"><table class="rule-table"><thead><tr>${battery ? '<th>顺序</th>' : ''}${headings}<th>操作</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+
+  function diffHTML(changes) {
+    if (!changes.length) return '<div class="empty">没有变更</div>';
+    const describe = value => value == null ? '—' : Array.isArray(value) ? text(value) :
+      Object.entries(value).filter(([key]) => key !== 'id').map(([key, item]) => `${labels[key] || key}：${text(item)}`).join('\n');
+    return `<div class="scroll"><table class="diff"><thead><tr><th>规则 / 字段</th><th>修改前</th><th>修改后</th></tr></thead><tbody>${changes.map(change => `
+      <tr><td>${esc(titles[change.table])}<small>${esc(change.field)}</small></td><td>${esc(describe(change.before))}</td><td>${esc(describe(change.after))}</td></tr>`
+    ).join('')}</tbody></table></div>`;
+  }
+
+  function edit(table, id, copy = false) {
+    const current = draft[table].find(row => row.id === id) || {};
+    const controls = fields[table].map(field => {
+      const caption = label(table, field);
+      if (list(table, field)) {
+        return `<label>${esc(caption)}（每行一项）<textarea name="${field}" rows="3">${esc((current[field] || []).join('\n'))}</textarea></label>`;
+      }
+      if (field === 'default') {
+        return `<label>${caption}<select name="${field}"><option value="false">否</option><option value="true" ${current[field] ? 'selected' : ''}>是</option></select></label>`;
+      }
+      const attrs = field === 'price' ? 'type="number" min="0" step="any"' : 'maxlength="4000"';
+      return `<label>${caption}<input name="${field}" ${attrs} value="${esc(current[field] ?? (field === 'price' ? 0 : ''))}" ${field === 'seat' ? '' : 'required'}></label>`;
+    });
+    modal(copy ? '复制规则' : id ? '编辑规则' : '新增规则', `<form id="rule-form" class="form">${controls.join('')}</form>`, async values => {
+      const row = {id: id && !copy ? id : newId()};
+      for (const field of fields[table]) {
+        const value = values.get(field);
+        if (list(table, field)) row[field] = String(value).split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+        else if (field === 'price') row[field] = Number(value);
+        else if (field === 'default') row[field] = value === 'true';
+        else row[field] = String(value).trim();
+      }
+      const next = structuredClone(draft);
+      const index = next[table].findIndex(item => item.id === row.id);
+      if (index < 0) next[table].push(row);
+      else next[table][index] = row;
+      await validate(next);
+      change(next);
+    });
+    $('#rule-form').onsubmit = event => {
+      event.preventDefault();
+      $('#confirm').click();
+    };
+  }
+
+  async function validate(next) {
+    const {errors} = await api('rules/validate', {data: next});
+    if (errors.length) throw Error(errors.join('\n'));
+  }
+
+  function batch(table) {
+    modal('批量粘贴', '<form><label>原名称 ⇥ 标准名称（每行一组）<textarea name="rows" rows="12" required></textarea></label></form>', async values => {
+      const rows = String(values.get('rows')).split(/\r?\n/).filter(line => line.trim()).map(line => line.split('\t').map(value => value.trim()));
+      if (!rows.length || rows.length > 200 || rows.some(row => row.length !== 2 || row.some(value => !value))) {
+        throw Error('每次最多粘贴 200 行，每行须有两个非空名称');
+      }
+      if (new Set(rows.map(row => row[0])).size !== rows.length) throw Error('原名称重复');
+      const next = structuredClone(draft);
+      for (const [source, target] of rows) {
+        const existing = next[table].find(row => row.source === source);
+        if (existing) existing.target = target;
+        else next[table].push({id: newId(), source, target});
+      }
+      await validate(next);
+      change(next);
+    }, '应用到编辑区');
+  }
+
+  function syncFromScript() {
+    return run(async () => {
+      const current = await api('rules/state');
+      modal('从脚本重新载入', `<div>${esc(current.source.path)}</div><p>替换规则草稿和当前脚本基线</p>`, async () => {
+        accept(await api('rules/reload', {revision: state.draft.revision, source_hash: current.source.hash}));
+        notice('已从脚本重新载入');
+      }, '重新载入');
+    });
+  }
+
+  function handleClick(button, table) {
+    const {ruleAction: action, ruleId: id} = button.dataset;
+    if (!ready() || busy || button.disabled || !action) return;
+    if (action === 'history') {
+      return run(async () => {
+        const record = await api('rules/history/' + id);
+        modal('脚本变更记录 #' + id, diffHTML(record.changes), readonly ? null : () => {
+          change(record.data);
+          notice('规则已恢复到编辑区，尚未保存');
+        }, '恢复到编辑区');
+      });
+    }
+    if (readonly) return;
+    if (action === 'sync') return syncFromScript();
+    if (action === 'batch') return batch(table);
+    if (action === 'add') return edit(table);
+    if (action === 'edit' || action === 'copy') return edit(table, id, action === 'copy');
+    if (action === 'delete') {
+      const record = draft[table].find(row => row.id === id);
+      const caption = fields[table].map(field => text(record[field])).filter(Boolean).join(' · ');
+      return modal('删除规则', `<div class="selection-summary">${esc(caption)}</div>`, () => {
+        change({...draft, [table]: draft[table].filter(row => row.id !== id)});
+      }, '删除');
+    }
+    if (action === 'up' || action === 'down') {
+      const rows = [...draft[table]];
+      const index = rows.findIndex(row => row.id === id);
+      const target = index + (action === 'up' ? -1 : 1);
+      if (index >= 0 && target >= 0 && target < rows.length) {
+        [rows[index], rows[target]] = [rows[target], rows[index]];
+        change({...draft, [table]: rows});
+      }
+    }
+  }
+
+  async function save() {
+    accept(await api('rules/save', {data: draft, revision: state.draft.revision}));
+    notice('规则草稿已保存');
+  }
+
+  async function previewPublish() {
+    const snapshot = structuredClone(draft);
+    const revision = state.draft.revision;
+    const result = await api('rules/preview', {data: snapshot, revision});
+    const failure = result.errors.length ? `<p class="error">${esc(result.errors.join('\n'))}</p>` : '';
+    const scriptDiff = result.script_diff ? `<pre class="script-diff">${esc(result.script_diff)}</pre>` : '';
+    modal('发布并更新脚本', `<div>${esc(state.source.path)}</div>${failure}${diffHTML(result.changes)}${scriptDiff}`,
+      result.errors.length || !result.changes.length ? null : async () => {
+        accept(await api('rules/publish', {data: snapshot, revision, source_hash: result.source_hash}));
+        notice('脚本已更新 · 业务报表未重新生成');
+      }, '确认发布');
+  }
+
+  const openExport = () => download('rules/export', {data: draft}, '订单规则.xlsx');
+  const template = () => download('rules/template', undefined, '订单规则-模板.xlsx');
+
+  async function importFiles(files) {
+    if (!files.length) return;
+    if (files.length > 10) throw Error('每批最多 10 个 Excel 文件');
+    if (files.some(file => !file.name.toLowerCase().endsWith('.xlsx'))) throw Error('请选择 .xlsx 文件');
+    if (files.reduce((size, file) => size + file.size, 0) > 5_500_000) throw Error('本批文件总大小不能超过 5.5 MB');
+    const payload = await Promise.all(files.map(async file => ({name: file.name, content: await fileBase64(file)})));
+    const result = await api('rules/import', {files: payload, revision: state.draft.revision});
+    const {summary, issues, changes, errors} = result;
+    const problemList = issues.length ? `<div class="scroll"><table class="diff"><thead><tr><th>文件 / 工作表</th><th>位置</th><th>问题</th></tr></thead><tbody>${issues.map(issue => `
+      <tr><td>${esc(issue.file)}<small>${esc(issue.sheet)}</small></td><td>${issue.row ? '第 ' + esc(issue.row) + ' 行' : ''} ${esc(issue.field)}</td><td class="error">${esc(issue.message)}</td></tr>`
+    ).join('')}</tbody></table></div>` : '';
+    modal('导入预览', `<div class="file-list">${files.map(file => `<span>${esc(file.name)}</span>`).join('')}</div>
+      <div class="import-summary"><span>新增 <b>${summary.added}</b></span><span>更新 <b>${summary.updated}</b></span><span>未变更 <b>${summary.unchanged}</b></span><span>问题 <b>${issues.length}</b></span></div>
+      ${problemList}${diffHTML(changes)}`, errors.length || !changes.length ? null : async () => {
+        const fresh = await api('rules/state');
+        if (fresh.draft.revision !== result.revision || state.draft.revision !== result.revision) {
+          throw Error('规则草稿已被其他人修改，请重新载入后再次导入');
+        }
+        change(result.data);
+        notice('导入内容已应用，尚未保存');
+      }, '应用到编辑区');
+  }
+
+  return {
+    titles, ready, isDirty, canPublish, canUndo, canRedo, status, load, render: renderView,
+    handleClick, save, previewPublish, reload, undo, redo, openExport, template, importFiles,
+  };
+})();

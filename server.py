@@ -46,9 +46,15 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 if path.startswith('/api/history/'):return self.send(200,store.history(int(path.rsplit('/',1)[1])))
                 if path=='/api/template':return self.send(200,excel(store.get()['draft']['data'],template=True),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 if path=='/api/export':return self.send(200,excel(store.get()['draft']['data']),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-                files={'/':'index.html','/rules.html':'rules.html','/app.js':'app.js','/rules.js':'rules.js','/style.css':'style.css'}
+                if path=='/rules.html':
+                    self.send_response(302)
+                    self.send_header('Location','./')
+                    self.send_header('Content-Length','0')
+                    self.end_headers()
+                    return
+                files={'/':'index.html','/app.js':'app.js','/rules.js':'rules.js','/style.css':'style.css'}
                 if path not in files:return self.send(404,{'error':'未找到'})
-                ext={'/':'text/html; charset=utf-8','/rules.html':'text/html; charset=utf-8','/app.js':'text/javascript; charset=utf-8','/rules.js':'text/javascript; charset=utf-8','/style.css':'text/css; charset=utf-8'}
+                ext={'/':'text/html; charset=utf-8','/app.js':'text/javascript; charset=utf-8','/rules.js':'text/javascript; charset=utf-8','/style.css':'text/css; charset=utf-8'}
                 self.send(200,(ROOT/'web'/files[path]).read_bytes(),ext[path])
             except PermissionError as e:self.send(403,{'error':str(e)})
             except (ValueError,KeyError) as e:self.send(400,{'error':str(e)})

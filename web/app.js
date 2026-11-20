@@ -2,6 +2,18 @@
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const names = {models:'车型档案', phases:'发布阶段', versions:'版本', options:'配置项目', matrix:'配置适用关系', aliases:'名称映射', groups:'汇总规则', history:'变更记录'};
+const sections = {
+  models: ['models', 'phases'],
+  matrix: ['matrix', 'versions', 'options', 'battery_rules', 'option_prices'],
+  aliases: ['aliases', 'gen_names', 'option_names'],
+  groups: ['groups', 'merge_groups'],
+  history: ['history', 'rule_history'],
+};
+const viewLabels = {
+  ...names, ...orderRules.titles,
+  aliases: '业务名称映射', groups: '车型汇总组', history: '配置变更记录',
+};
+const isRuleView = () => Object.hasOwn(orderRules.titles, view);
 const labels = {id:'编号',brand:'品牌',series:'车系',generation:'代际',subgeneration:'二级代际',year:'年款',energy:'能源类型',tier:'产品档位',status:'状态',model_id:'车型',name:'名称',presale_date:'小订日期',sale_date:'首销日期',power:'动力',battery:'电池包',category:'类别',source:'来源',target_type:'对象类型',target_id:'标准对象',scope:'生效范围',start_date:'生效日期',end_date:'截止日期',members:'成员',version_id:'版本',option_id:'配置项目',state:'适用状态'};
 const fields = {models:['brand','series','generation','subgeneration','year','energy','tier','status'], phases:['model_id','name','presale_date','sale_date'], versions:['model_id','name','power','battery','status'], options:['model_id','category','name','status'], aliases:['source','name','target_type','target_id'], groups:['name','scope','start_date','end_date','members']};
 const required = {models:['brand','series','generation','year','energy','status'], phases:['model_id','name'], versions:['model_id','name','status'], options:['model_id','category','name','status'], aliases:['source','name','target_type','target_id'], groups:['name','scope','members']};
@@ -14,6 +26,7 @@ const states = ['未配置','标配','选配','不可选'];
 const categories = ['动力','电池包','外观','内饰','轮毂','其他'];
 let data, revision, csrf, published, history=[], savedJSON='', tab='models', view='models';
 let model='', year='', query='', statusFilter='', categoryFilter='', stateFilter='', page=1;
+let ruleQuery='';
 let dirty=false, busy=false, readonly=false, selected=new Set(), undoStack=[], redoStack=[], confirmAction=null;
 const pageSize=40;
 const matrixKey=(v,o)=>JSON.stringify([v,o]);
@@ -29,12 +42,19 @@ async function api(path,body) {
 // Disable all live inputs for the entire request, including dialogs. Never let a save response replace newer edits.
 function flags() {
   document.querySelectorAll('[data-request-disabled]').forEach(e=>{e.disabled=e.dataset.requestDisabled==='true';delete e.dataset.requestDisabled;});
-  $('#save').disabled=readonly||!dirty||!data;
-  $('#publish').disabled=readonly||!data;
-  $('#import').disabled=readonly||!data;
-  $('#export').disabled=$('#template').disabled=!data;
-  $('#undo').disabled=readonly||!undoStack.length; $('#redo').disabled=readonly||!redoStack.length;
-  $('#status').textContent=busy?'正在处理…':readonly?'维护中 · 只读':dirty?'有未保存的修改':`草稿 r${revision} · 已保存`;
+  const rules = isRuleView();
+  const ready = rules ? orderRules.ready() : Boolean(data);
+  const changed = rules ? orderRules.isDirty() : dirty;
+  $('#save').disabled = readonly || !ready || !changed;
+  $('#publish').disabled = readonly || !ready || (rules && !orderRules.canPublish());
+  $('#publish').textContent = rules ? '发布并更新脚本' : '发布配置';
+  $('#import').disabled = readonly || !ready;
+  $('#export').disabled = $('#template').disabled = !ready;
+  $('#undo').disabled = readonly || !(rules ? orderRules.canUndo() : undoStack.length);
+  $('#redo').disabled = readonly || !(rules ? orderRules.canRedo() : redoStack.length);
+  const status = rules ? orderRules.status() : dirty ? '有未保存的修改' : `草稿 r${revision} · 已保存`;
+  const otherDraft = rules ? dirty && '车型配置有未保存修改' : orderRules.isDirty() && '脚本规则有未保存修改';
+  $('#status').textContent = busy ? '正在处理…' : readonly ? '维护中 · 只读' : [status, otherDraft].filter(Boolean).join(' · ');
   document.body.setAttribute('aria-busy',String(busy));
   if(busy) document.querySelectorAll('button,input,select,textarea').forEach(e=>{e.dataset.requestDisabled=String(e.disabled);e.disabled=true;});
 }
@@ -72,21 +92,72 @@ function scopedRows(table,search=true) {
   });
 }
 function filters() {
+  const rules = isRuleView();
+  const modelScope = !rules && view !== 'history';
+  $('#model').closest('label').hidden = !modelScope;
+  $('#year').closest('label').hidden = !modelScope;
   if(model&&!data.models.some(r=>r.id===model))model='';
   $('#model').innerHTML=option('','全部车型',model)+data.models.map(r=>option(r.id,modelName(r)+(r.status==='停用'?' · 停用':''),model)).join('');
   $('#year').innerHTML=option('','全部年款',year)+[...new Set(data.models.map(r=>r.year).filter(Boolean))].sort().reverse().map(y=>option(y,y+'款',year)).join('');
   $('#status-filter-label').hidden=!['models','versions','options','matrix'].includes(view);
-  $('#search').placeholder=view==='matrix'?'配置项目、类别或编号':'名称、品牌或编号';
+  $('#category-filter-label').hidden = $('#state-filter-label').hidden = view !== 'matrix';
+  if (view === 'matrix') {
+    $('#category-filter').innerHTML = option('', '全部类别', categoryFilter) + categories.map(c => option(c,c,categoryFilter)).join('');
+    $('#state-filter').innerHTML = option('', '全部状态', stateFilter) + states.map(s => option(s,s,stateFilter)).join('');
+  }
+  $('#search').placeholder = rules ? '搜索当前规则或记录' : view === 'history' ? '记录、操作人或时间' : view === 'matrix' ? '配置项目、类别或编号' : '名称、品牌或编号';
+  $('#consumer').textContent = rules ? '业务报表：未重新生成' : '业务报表：尚未接入';
 }
 function actionButton(action,text) {return `<button data-action="${action}" ${readonly?'disabled':''}>${text}</button>`;}
-function switchView(nextTab,nextView=nextTab) {tab=nextTab;view=nextView;selected.clear();page=1;render();}
+function switchView(nextTab, nextView=nextTab) {
+  tab = nextTab;
+  view = nextView;
+  selected.clear();
+  page = 1;
+  $('#search').value = isRuleView() ? ruleQuery : query;
+  notice();
+  render();
+  if (isRuleView() && !orderRules.ready()) {
+    run(orderRules.load);
+  }
+}
+function revealActiveTab(row) {
+  const active = row.querySelector('.active');
+  if (!active || row.scrollWidth <= row.clientWidth) return;
+  const bounds = row.getBoundingClientRect();
+  const item = active.getBoundingClientRect();
+  if (item.left < bounds.left) row.scrollLeft += item.left - bounds.left;
+  else if (item.right > bounds.right) row.scrollLeft += item.right - bounds.right;
+}
+const nav = $('header nav');
+const viewTabs = $('#view-tabs');
+const tabSizes = new ResizeObserver(entries => entries.forEach(entry => revealActiveTab(entry.target)));
+tabSizes.observe(nav);
+tabSizes.observe(viewTabs);
 function render() {
   if(!data)return;filters();
-  document.querySelectorAll('[data-tab]').forEach(b=>{b.classList.toggle('active',b.dataset.tab===tab);b.setAttribute('aria-current',b.dataset.tab===tab?'page':'false');});
-  $('#title').textContent=names[view];
-  const tabs=tab==='matrix'?['matrix','versions','options']:tab==='models'?['models','phases']:[];
-  $('#view-tabs').innerHTML=tabs.map(t=>`<button data-view="${t}" class="${t===view?'active':''}" aria-pressed="${t===view}">${names[t]}</button>`).join('');
-  $('#view-tabs').hidden=!tabs.length;
+  if (nav.dataset.active !== tab) {
+    nav.querySelectorAll('[data-tab]').forEach(b=>{b.classList.toggle('active',b.dataset.tab===tab);b.setAttribute('aria-current',b.dataset.tab===tab?'page':'false');});
+    nav.dataset.active = tab;
+    viewTabs.innerHTML = sections[tab].map(t => `<button data-view="${t}">${viewLabels[t]}</button>`).join('');
+    revealActiveTab(nav);
+  }
+  if (viewTabs.dataset.active !== view) {
+    for (const button of viewTabs.children) {
+      const active = button.dataset.view === view;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    }
+    viewTabs.dataset.active = view;
+    revealActiveTab(viewTabs);
+  }
+  $('#title').textContent=viewLabels[view];
+  if (isRuleView()) {
+    $('#bulkbar').hidden = true;
+    orderRules.render(view, ruleQuery);
+    flags();
+    return;
+  }
   $('#actions').innerHTML=view==='matrix'?actionButton('add:versions','新增版本')+actionButton('add:options','新增配置'):view==='history'?'':(['versions','options'].includes(view)?actionButton('batch-add:'+view,'批量新增'):'')+actionButton('add:'+view,'新增'+names[view]);
   if(view==='matrix')renderMatrix();else if(view==='history')renderHistory();else renderTable();
   flags();
@@ -130,10 +201,8 @@ function renderMatrix() {
   const {versions,options,index}=matrixRows(),range=paginator(options.length);
   $('#count').textContent=`${options.length} 项配置 · ${versions.length} 个版本`;
   $('#bulkbar').hidden=false;
-  selectionToolbar(options,`<label class="inline-label">类别<select id="category-filter">${option('','全部类别',categoryFilter)+categories.map(c=>option(c,c,categoryFilter)).join('')}</select></label><label class="inline-label">配置状态<select id="state-filter">${option('','全部状态',stateFilter)+states.map(s=>option(s,s,stateFilter)).join('')}</select></label><button id="batch-matrix" ${readonly||!selected.size||!versions.length?'disabled':''}>批量设置</button>`);
+  selectionToolbar(options,`<button id="batch-matrix" ${readonly||!selected.size||!versions.length?'disabled':''}>批量设置</button>`);
   $('#batch-matrix').disabled=readonly||!selected.size||!versions.length;$('#batch-matrix').onclick=batchMatrix;
-  $('#category-filter').onchange=e=>{categoryFilter=e.target.value;selected.clear();page=1;render();};
-  $('#state-filter').onchange=e=>{stateFilter=e.target.value;selected.clear();page=1;render();};
   $('#content').innerHTML=versions.length&&options.length?`<div class="scroll matrix-scroll"><table class="matrix-table"><thead><tr><th class="check-cell"></th><th class="sticky-col">配置项目</th>${versions.map(v=>`<th>${esc(v.name)}<small>${esc(display('models',v.model_id))}</small></th>`).join('')}</tr></thead><tbody>${options.slice(...range).map(o=>`<tr class="${selected.has(o.id)?'selected':''}"><td class="check-cell">${checkbox(o.id,'选择 '+o.name)}</td><td class="sticky-col"><small>${esc(o.category)}</small>${esc(o.name)}</td>${versions.map(v=>{
     if(v.model_id!==o.model_id)return '<td class="inapplicable">—</td>';
     const state=index.get(matrixKey(v.id,o.id))?.state||'未配置';
@@ -260,8 +329,9 @@ $('#close').onclick=$('#cancel').onclick=()=>{if(!busy)$('#dialog').close();};
 $('#dialog').addEventListener('cancel',e=>{if(busy)e.preventDefault();});
 document.addEventListener('click',e=>{
   if(busy)return;const b=e.target.closest('button');if(!b)return;
-  if(b.dataset.tab)switchView(b.dataset.tab);
-  if(b.dataset.view){view=b.dataset.view;selected.clear();page=1;render();}
+  if(b.dataset.tab)return switchView(b.dataset.tab);
+  if(b.dataset.view)return switchView(tab,b.dataset.view);
+  if(b.dataset.ruleAction && isRuleView())return orderRules.handleClick(b,view);
   if(b.dataset.action&&!readonly){const [action,t]=b.dataset.action.split(':');if(action==='add')edit(t);else if(action==='batch-add')batchAdd(t);}
   if(b.dataset.edit&&!readonly){const [t,id]=b.dataset.edit.split(':');edit(t,id);}
   if(b.dataset.copy&&!readonly)edit('models',b.dataset.copy,true);
@@ -279,21 +349,58 @@ $('#content').onchange=e=>{
   const id=e.target.dataset.select;if(id){e.target.checked?selected.add(id):selected.delete(id);render();return;}
   const v=e.target.dataset.v,o=e.target.dataset.o;if(v){const state=e.target.value;mutate(()=>setMatrix(v,o,state));}
 };
-function clearFilters() {model=year=query=statusFilter=categoryFilter=stateFilter='';$('#search').value='';$('#status-filter').value='';selected.clear();page=1;render();}
+function clearFilters() {
+  if (isRuleView()) {
+    ruleQuery = '';
+  } else {
+    model=year=query=statusFilter=categoryFilter=stateFilter='';
+    $('#status-filter').value='';
+  }
+  $('#search').value='';
+  selected.clear();
+  page=1;
+  render();
+}
 $('#clear-filters').onclick=clearFilters;
-for(const [id,assign] of [['model',v=>model=v],['year',v=>year=v],['status-filter',v=>statusFilter=v]])$('#'+id).onchange=e=>{if(busy)return;assign(e.target.value);selected.clear();page=1;render();};
-$('#search').oninput=e=>{if(busy)return;query=e.target.value.trim();selected.clear();page=1;render();};
-$('#save').onclick=()=>run(saveDraft);$('#publish').onclick=()=>run(previewPublish);
-$('#reload').onclick=()=>{const load=async()=>{accept(await api('state'));notice();};if(dirty)modal('放弃未保存修改？','<div class="selection-summary">重新载入服务器草稿</div>',load,'重新载入');else run(load);};
-$('#undo').onclick=()=>{if(busy||readonly||!undoStack.length)return;redoStack.push(JSON.stringify(data));data=JSON.parse(undoStack.pop());dirty=JSON.stringify(data)!==savedJSON;selected.clear();render();notice('已撤销');};
-$('#redo').onclick=()=>{if(busy||readonly||!redoStack.length)return;undoStack.push(JSON.stringify(data));data=JSON.parse(redoStack.pop());dirty=JSON.stringify(data)!==savedJSON;selected.clear();render();notice('已重做');};
-$('#export').onclick=openExport;$('#template').onclick=()=>run(()=>download('template',undefined,'车型配置-导入模板.xlsx'));
+for(const [id,assign] of [['model',v=>model=v],['year',v=>year=v],['status-filter',v=>statusFilter=v],
+  ['category-filter',v=>categoryFilter=v],['state-filter',v=>stateFilter=v]]) {
+  $('#'+id).onchange=e=>{if(busy)return;assign(e.target.value);selected.clear();page=1;render();};
+}
+$('#search').oninput=e=>{
+  if(busy)return;
+  if(isRuleView())ruleQuery=e.target.value.trim();else query=e.target.value.trim();
+  selected.clear();page=1;render();
+};
+$('#save').onclick=()=>run(isRuleView()?orderRules.save:saveDraft);
+$('#publish').onclick=()=>run(isRuleView()?orderRules.previewPublish:previewPublish);
+$('#reload').onclick=()=>{
+  if(isRuleView())return orderRules.reload();
+  const load=async()=>{accept(await api('state'));notice();};
+  if(dirty)modal('放弃未保存修改？','<div class="selection-summary">重新载入服务器草稿</div>',load,'重新载入');else run(load);
+};
+$('#undo').onclick=()=>{
+  if(isRuleView())return orderRules.undo();
+  if(busy||readonly||!undoStack.length)return;
+  redoStack.push(JSON.stringify(data));data=JSON.parse(undoStack.pop());dirty=JSON.stringify(data)!==savedJSON;selected.clear();render();notice('已撤销');
+};
+$('#redo').onclick=()=>{
+  if(isRuleView())return orderRules.redo();
+  if(busy||readonly||!redoStack.length)return;
+  undoStack.push(JSON.stringify(data));data=JSON.parse(redoStack.pop());dirty=JSON.stringify(data)!==savedJSON;selected.clear();render();notice('已重做');
+};
+$('#export').onclick=()=>isRuleView()?run(orderRules.openExport):openExport();
+$('#template').onclick=()=>run(isRuleView()?orderRules.template:()=>download('template',undefined,'车型配置-导入模板.xlsx'));
 $('#import').onclick=requestImport;
 $('#file').onchange=e=>{
   const files=[...e.target.files];e.target.value='';if(!files.length)return;
-  if(dirty)modal('保存草稿后导入','<div class="selection-summary">当前编辑有未保存的修改</div>',async()=>{await saveDraft();await importFiles(files);return false;},'保存并预览导入');
-  else run(()=>importFiles(files));
+  const rules=isRuleView(), importer=rules?orderRules.importFiles:importFiles;
+  if(rules?orderRules.isDirty():dirty) {
+    modal('保存草稿后导入','<div class="selection-summary">当前编辑有未保存的修改</div>',async()=>{
+      if(rules)await orderRules.save();else await saveDraft();
+      await importer(files);return false;
+    },'保存并预览导入');
+  } else run(()=>importer(files));
 };
-window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();if(!busy&&!readonly&&dirty&&!$('#dialog').open)run(saveDraft);}});
-window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
+window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();if(!busy&&!$('#dialog').open&&!$('#save').disabled)$('#save').click();}});
+window.addEventListener('beforeunload',e=>{if(dirty||orderRules.isDirty()){e.preventDefault();e.returnValue='';}});
 run(async()=>accept(await api('state')));

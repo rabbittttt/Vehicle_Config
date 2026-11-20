@@ -4,7 +4,6 @@ All input scripts, catalog data, and rules history belong to TemporaryDirectory.
 This check must never discover or update the workspace's real shared_config.py.
 """
 import ast
-import json
 import sys
 import tempfile
 import threading
@@ -16,7 +15,7 @@ from playwright.sync_api import expect, sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from catalog import Store
+from catalog import Store, empty
 from server import make_server
 from shared_rules import RuleStore
 
@@ -84,36 +83,147 @@ def ready(page):
     expect(page.locator('body')).to_have_attribute('aria-busy', 'false')
 
 
+def switch_view(page, tab, view):
+    page.locator(f'[data-tab="{tab}"]').click()
+    page.locator(f'[data-view="{view}"]').click()
+    ready(page)
+    expect(page.locator(f'[data-tab="{tab}"]')).to_have_attribute('aria-current', 'page')
+    expect(page.locator(f'[data-view="{view}"]')).to_have_attribute('aria-pressed', 'true')
+
+
+def add_vehicle(page):
+    page.locator('.panel-head [data-action="add:models"]').click()
+    values = {'brand': '验收品牌', 'series': '未保存车型甲', 'generation': '一代',
+              'year': '2026', 'energy': '纯电'}
+    for field, value in values.items():
+        page.locator(f'#dialog [name="{field}"]').fill(value)
+    page.locator('#confirm').click()
+    ready(page)
+
+
 def main():
-    with tempfile.TemporaryDirectory() as tmp, isolated_server(tmp) as (url,store,rules,source), sync_playwright() as pw:
-        browser=pw.chromium.launch(channel='msedge',headless=True)
-        page=browser.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
-        page.goto(url+'rules.html');ready(page)
-        page.get_by_role('button',name='代际显示名称',exact=True).click()
-        page.get_by_role('button',name='编辑',exact=True).click()
+    with tempfile.TemporaryDirectory() as tmp, isolated_server(tmp) as (url, store, rules, source), sync_playwright() as pw:
+        catalog = empty()
+        catalog['models'].append(dict(id='model-b', brand='验收品牌', series='已保存车型乙',
+                                      generation='一代', subgeneration='', year='2027',
+                                      energy='纯电', tier='', status='在售'))
+        store.save(catalog, 0, '浏览器验收')
+        browser = pw.chromium.launch(channel='msedge', headless=True)
+        page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        content = page.locator('#content')
+        header = page.locator('header')
+
+        page.goto(url + 'rules.html')
+        expect(page).to_have_url(url)
+        ready(page)
+        expect(page.locator('h1')).to_have_text('车型配置')
+        primary_nav = header.locator('nav [data-tab]')
+        expect(primary_nav).to_have_text(['车型档案', '版本与选配', '名称映射', '汇总规则', '变更记录'])
+        expect(header.get_by_role('link', name='订单配置规则')).to_have_count(0)
+        for selector in ['#model', '#year', '#status-filter', '#search', '#clear-filters']:
+            expect(header.locator(selector)).to_be_visible()
+
+        add_vehicle(page)
+        expect(content).to_contain_text('未保存车型甲')
+        header.locator('#year').select_option('2027')
+        expect(content).not_to_contain_text('未保存车型甲')
+        expect(content).to_contain_text('已保存车型乙')
+        header.locator('#clear-filters').click()
+        header.locator('#model').select_option('model-b')
+        expect(content).not_to_contain_text('未保存车型甲')
+        header.locator('#clear-filters').click()
+        header.locator('#status-filter').select_option('在售')
+        expect(content).not_to_contain_text('未保存车型甲')
+        header.locator('#clear-filters').click()
+        header.locator('#search').fill('未保存车型甲')
+        expect(content).not_to_contain_text('已保存车型乙')
+
+        switch_view(page, 'aliases', 'gen_names')
+        expect(page).to_have_url(url)
+        expect(page.locator('h1')).to_have_text('车型配置')
+        expect(primary_nav).to_have_text(['车型档案', '版本与选配', '名称映射', '汇总规则', '变更记录'])
+        for selector in ['#model', '#year', '#status-filter']:
+            expect(header.locator(selector)).to_be_hidden()
+        header.locator('#search').fill('不存在的旧名')
+        expect(content).not_to_contain_text('车型甲旧名')
+        header.locator('#search').fill('车型甲旧名')
+        expect(content).to_contain_text('车型甲旧名')
+        content.get_by_role('button', name='编辑', exact=True).click()
         page.locator('[name=target]').fill('车型甲标准名')
-        page.locator('#confirm').click();ready(page)
-        page.locator('#save').click();ready(page)
-        assert assignments(source)['GEN_DISPLAY_NAME_MAP']['车型甲旧名']=='车型甲 2026款'
-        page.get_by_role('button',name='电池包规则',exact=True).click()
-        page.get_by_role('button',name='下移',exact=True).first.click()
-        page.get_by_role('button',name='选配金',exact=True).click()
-        page.get_by_role('button',name='编辑',exact=True).click();page.locator('[name=price]').fill('4500');page.locator('#confirm').click();ready(page)
-        page.locator('#publish').click();expect(page.locator('.script-diff')).to_contain_text('4500');ready(page)
-        page.locator('#confirm').click();ready(page)
-        values=assignments(source)
-        assert values['GEN_DISPLAY_NAME_MAP']['车型甲旧名']=='车型甲标准名'
-        assert values['BATTERY_RULES'][0][3]=='60度'
-        assert values['OPTION_CONFIG']['车型甲 2026款']['舒适/功能选配'][0][1]==4500
-        assert values['VERSION_NAME_MAP']=={'标准旧名':'标准版'}
-        source.write_text(source.read_text(encoding='utf-8')+'\n# external\n',encoding='utf-8')
-        page.get_by_role('button',name='编辑',exact=True).click();page.locator('[name=price]').fill('5000');page.locator('#confirm').click();ready(page)
-        page.locator('#publish').click();ready(page);expect(page.locator('#body')).to_contain_text('源文件已被其他程序修改');expect(page.locator('#confirm')).to_be_hidden()
-        assert not errors,errors
-        page.locator('#cancel').click();page.set_viewport_size({'width':390,'height':844})
-        Path('artifacts').mkdir(exist_ok=True);page.screenshot(path='artifacts/rules-mobile.png',full_page=True)
+        page.locator('#confirm').click()
+        ready(page)
+        page.locator('#undo').click()
+        expect(content.get_by_text('车型甲 2026款', exact=True)).to_be_visible()
+        page.locator('#redo').click()
+        expect(content.get_by_text('车型甲标准名', exact=True)).to_be_visible()
+
+        # Each draft remains in its editor, and the shared save button writes only the active draft.
+        page.locator('[data-tab="models"]').click()
+        expect(header.locator('#search')).to_have_value('未保存车型甲')
+        expect(content).to_contain_text('未保存车型甲')
+        expect(page.locator('#save')).to_be_enabled()
+        switch_view(page, 'aliases', 'gen_names')
+        expect(content).to_contain_text('车型甲标准名')
+        page.locator('#save').click()
+        ready(page)
+        assert store.get()['draft']['data']['models'] == catalog['models']
+        assert assignments(source)['GEN_DISPLAY_NAME_MAP']['车型甲旧名'] == '车型甲 2026款'
+        page.locator('[data-tab="models"]').click()
+        page.locator('#save').click()
+        ready(page)
+        assert len(store.get()['draft']['data']['models']) == 2
+
+        switch_view(page, 'aliases', 'option_names')
+        header.locator('#search').fill('')
+        expect(content).to_contain_text('旧选配名称')
+        switch_view(page, 'groups', 'merge_groups')
+        expect(content).to_contain_text('车型甲&乙 2026款')
+        switch_view(page, 'matrix', 'battery_rules')
+        content.get_by_role('button', name='下移', exact=True).first.click()
+        switch_view(page, 'matrix', 'option_prices')
+        content.get_by_role('button', name='编辑', exact=True).click()
+        page.locator('[name=price]').fill('4500')
+        page.locator('#confirm').click()
+        ready(page)
+        expect(page.locator('#publish')).to_have_text('发布并更新脚本')
+        page.locator('#publish').click()
+        expect(page.locator('.script-diff')).to_contain_text('4500')
+        ready(page)
+        page.locator('#confirm').click()
+        ready(page)
+        values = assignments(source)
+        assert values['GEN_DISPLAY_NAME_MAP']['车型甲旧名'] == '车型甲标准名'
+        assert values['BATTERY_RULES'][0][3] == '60度'
+        assert values['OPTION_CONFIG']['车型甲 2026款']['舒适/功能选配'][0][1] == 4500
+        assert values['VERSION_NAME_MAP'] == {'标准旧名': '标准版'}
+
+        switch_view(page, 'history', 'rule_history')
+        expect(content.get_by_role('button', name='差异与恢复').first).to_be_visible()
+        switch_view(page, 'matrix', 'option_prices')
+        source.write_text(source.read_text(encoding='utf-8') + '\n# external\n', encoding='utf-8')
+        content.get_by_role('button', name='编辑', exact=True).click()
+        page.locator('[name=price]').fill('5000')
+        page.locator('#confirm').click()
+        ready(page)
+        page.locator('#publish').click()
+        ready(page)
+        expect(page.locator('#dialog-body')).to_contain_text('源文件已被其他程序修改')
+        expect(page.locator('#confirm')).to_be_hidden()
+        assert assignments(source) == values
+        page.locator('#cancel').click()
+
+        page.set_viewport_size({'width': 390, 'height': 844})
+        expect(header.locator('#search')).to_be_visible()
+        expect(page.locator('[data-view="option_prices"]')).to_be_in_viewport(ratio=0.9)
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'mobile overflow'
+        out = ROOT / 'artifacts'
+        out.mkdir(exist_ok=True)
+        page.screenshot(path=str(out / 'rules-mobile.png'), full_page=True)
+        assert not errors, errors
         browser.close()
-    print('Rules browser checks passed')
+    print('Rules browser checks passed: shared navigation, header filters, isolated drafts, publishing, history, and external change conflicts.')
 
 
 if __name__ == '__main__':
