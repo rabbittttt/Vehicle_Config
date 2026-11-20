@@ -118,12 +118,23 @@ def main():
         page.goto(url + 'rules.html')
         expect(page).to_have_url(url)
         ready(page)
-        expect(page.locator('h1')).to_have_text('车型配置')
+        heading = header.locator('.heading')
+        title = heading.get_by_role('heading', level=1)
+        expect(title).to_have_text('车型配置')
         primary_nav = header.locator('nav [data-tab]')
         expect(primary_nav).to_have_text(['车型档案', '版本与选配', '名称映射', '汇总规则', '变更记录'])
         expect(header.get_by_role('link', name='订单配置规则')).to_have_count(0)
-        for selector in ['#model', '#year', '#status-filter', '#search', '#clear-filters']:
-            expect(header.locator(selector)).to_be_visible()
+        title_box = title.bounding_box()
+        title_mid_y = title_box['y'] + title_box['height'] / 2
+        nav_top = header.locator('nav').bounding_box()['y']
+        for selector in ['#model', '#year', '#status-filter', '#search']:
+            control = heading.locator(selector)
+            expect(control).to_be_visible()
+            box = control.bounding_box()
+            assert box['x'] >= title_box['x'] + title_box['width'] - 1, selector
+            assert box['y'] <= title_mid_y <= box['y'] + box['height'], selector
+            assert box['y'] + box['height'] <= nav_top + 1, selector
+        expect(header.locator('#clear-filters')).to_be_visible()
 
         add_vehicle(page)
         expect(content).to_contain_text('未保存车型甲')
