@@ -20,14 +20,11 @@ nav a{display:inline-flex;align-items:center;text-decoration:none}pre{white-spac
 
 /* Workbench typography */
 :root {
-  --type-title: 24px;
+  --type-title: 19px;
   --type-section: 16px;
   --type-body: 14px;
   --type-table: 13px;
   --type-note: 12px;
-}
-@media (max-width: 640px) {
-  :root { --type-title: 20px; }
 }
 h1,
 .product-title { font-size: var(--type-title); }
