@@ -85,6 +85,14 @@ class ExcelTests(unittest.TestCase):
         found=next(x for x in result['issues'] if '冲突' in x['message'])
         self.assertEqual((found['file'],found['sheet'],found['row'],found['field']),('二.xlsx','车型档案',2,'品牌'))
 
+    def test_global_validation_uses_table_and_full_id(self):
+        models=workbook({'models':[['id','brand'],['m1','更新']]})
+        phases=workbook({'phases':[['id','name','model_id','presale_date','sale_date'],
+                                  ['m10','首发','m1','2026-02-20','2026-01-01']]})
+        result=preview_import(fixture(),[file(models,'车型.xlsx'),file(phases,'阶段.xlsx')])
+        issue=next(i for i in result['issues'] if '日期顺序' in i['message'])
+        self.assertEqual((issue['file'],issue['sheet'],issue['row']),('阶段.xlsx','phases',2))
+
     def test_ambiguous_name_and_cross_model_matrix_fail(self):
         data=fixture();other=copy.deepcopy(data['models'][0]);other.update(id='m2',year='2027');data['models'].append(other)
         raw=workbook({'版本':[['车型','名称'],['车型','新版本']]})

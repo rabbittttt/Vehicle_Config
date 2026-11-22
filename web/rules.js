@@ -104,16 +104,6 @@ const orderRules = (() => {
     return warning ? `<div class="rule-source-status error" role="status">${esc(warning)}</div>` : '';
   }
 
-  function renderHistory(query) {
-    const rows = state.history.filter(record => [record.id, record.kind, record.actor, record.time].join(' ').toLocaleLowerCase().includes(query));
-    const range = paginator(rows.length);
-    $('#count').textContent = `${rows.length} 条记录`;
-    $('#content').innerHTML = sourceAlert() + (rows.length ? `<div class="scroll"><table><thead><tr><th>记录</th><th>操作</th><th>操作人</th><th>时间</th><th></th></tr></thead><tbody>${rows.slice(...range).map(record => `
-      <tr><td>#${esc(record.id)}</td><td>${esc(record.kind)}</td><td>${esc(record.actor)}</td><td>${esc(new Date(record.time).toLocaleString())}</td>
-      <td>${ruleButton('history', '差异与恢复', {id: record.id, inline: true})}</td></tr>
-    `).join('')}</tbody></table></div>` : '<div class="empty"><strong>暂无变更记录</strong></div>');
-  }
-
   function renderView(table, query) {
     $('#count').textContent = '';
     $('#actions').innerHTML = '';
@@ -125,7 +115,7 @@ const orderRules = (() => {
 
     const search = query.toLocaleLowerCase();
     if (table === 'rule_history') {
-      renderHistory(search);
+      renderHistory(search, sourceAlert());
       return;
     }
 
@@ -229,10 +219,12 @@ const orderRules = (() => {
   function syncFromScript() {
     return run(async () => {
       const current = await api('rules/state');
-      modal('从脚本重新载入', `<div>${esc(current.source.path)}</div><p>替换规则草稿和当前脚本基线</p>`, async () => {
-        accept(await api('rules/reload', {revision: state.draft.revision, source_hash: current.source.hash}));
+      const pending = current.sync.pending_token;
+      const warning = pending ? '<p>上次发布中断。确认后，该次修改将存入脚本变更记录，当前草稿将替换为脚本内容。</p>' : '<p>替换规则草稿和当前脚本基线</p>';
+      modal('从脚本重新载入', `<div>${esc(current.source.path)}</div>${warning}`, async () => {
+        accept(await api('rules/reload', {revision: state.draft.revision, source_hash: current.source.hash, pending_token: pending}));
         notice('已从脚本重新载入');
-      }, '重新载入');
+      }, pending ? '保留中断记录并载入' : '重新载入');
     });
   }
 

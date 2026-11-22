@@ -13,7 +13,7 @@ from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
 
-from catalog import TABLES, STATES, empty, validate, diff
+from catalog import TABLES, STATES, empty, validation_issues, diff
 
 SHEETS = {'models':'车型档案', 'phases':'发布阶段', 'versions':'版本', 'options':'配置项目',
           'matrix':'配置适用关系', 'aliases':'名称映射', 'groups':'汇总规则'}
@@ -312,8 +312,8 @@ def preview_import(base, files):
             sources[(table,ident)]=record;touched.add((table,ident))
     if sum(len(row.get('members','').split(',')) for row in result['groups'])>2000:
         raise ValueError('汇总规则成员关系超过 2000 条，请缩小导入范围')
-    for message in validate(result):
-        source=next((record for (_,ident),record in sources.items() if ident in message),{'file':'当前草稿','sheet':'','row':0})
+    for table,ident,message in validation_issues(result):
+        source=sources.get((table,ident),{'file':'当前草稿','sheet':'','row':0})
         issues.append(issue(source,'',message))
     changes=diff(base,result)
     old={table:{r['id']:r for r in rows} for table,rows in base.items()}

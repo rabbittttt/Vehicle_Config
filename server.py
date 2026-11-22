@@ -1,7 +1,7 @@
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import argparse, getpass, json, os, secrets, sys, zipfile
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from excel_io import excel, read_excel, preview_import
 from catalog import Store, validate, diff, Conflict
 from shared_rules import RuleStore, validate as validate_rules
@@ -41,6 +41,11 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 self.actor()
                 if path=='/api/state':return self.send(200,{**store.get(),'csrf':token,'readonly':readonly})
                 if path=='/api/rules/state':return self.send(200,rules.get())
+                if path in ('/api/history','/api/rules/history'):
+                    params=parse_qs(urlsplit(self.path).query)
+                    page=int(params.get('page',['1'])[0])
+                    owner=rules if path=='/api/rules/history' else store
+                    return self.send(200,owner.history_page(page,params.get('q',[''])[0]))
                 if path.startswith('/api/rules/history/'):return self.send(200,rules.history(int(path.rsplit('/',1)[1])))
                 if path=='/api/rules/template':return self.send(200,rules_excel(rules.get()['draft']['data'],template=True),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 if path.startswith('/api/history/'):return self.send(200,store.history(int(path.rsplit('/',1)[1])))
@@ -85,7 +90,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     if action=='save':return self.send(200,rules.save(body['data'],body['revision'],actor))
                     if action=='preview':return self.send(200,rules.preview(body['data'],body['revision']))
                     if action=='publish':return self.send(200,rules.publish(body['data'],body['revision'],body['source_hash'],actor))
-                    if action=='reload':return self.send(200,rules.reload(body['revision'],body['source_hash'],actor))
+                    if action=='reload':return self.send(200,rules.reload(body['revision'],body['source_hash'],actor,body.get('pending_token')))
                     if action=='import':
                         state=rules.get()['draft']
                         if body.get('revision')!=state['revision']:raise Conflict('规则草稿已被其他人修改，请重新载入后导入')
@@ -119,7 +124,11 @@ def main():
     data_root=(ROOT / os.environ['PLANHUB_DATA_ROOT']).resolve() if os.environ.get('PLANHUB_DATA_ROOT') else ROOT.parent/'工作台数据'
     directory=a.data_dir or str(data_root/'database'/'vehicle-config')
     legacy=(workspace/'共享数据'/'车型配置') if workspace else None
-    if not a.data_dir and not Path(directory).exists() and legacy and (legacy/'catalog.sqlite3').exists():p.error('旧车型配置数据库尚未迁移，不会创建空库。')
+    if legacy and Path(directory).resolve()==(data_root/'database'/'vehicle-config').resolve():
+        for db_file in ('catalog.sqlite3','rules/rules.sqlite3'):
+            target=Path(directory)/db_file
+            if (legacy/db_file).is_file() and (not target.is_file() or target.stat().st_size==0):
+                p.error(f'旧车型配置数据库 {db_file} 尚未迁移，请停服迁移后启动。')
     secret=os.environ.get('VEHICLE_CONFIG_PROXY_SECRET')
     if a.require_proxy_identity and not secret:p.error('缺少 VEHICLE_CONFIG_PROXY_SECRET')
     # Lifetime OS lock prevents two versions writing the same persistent catalog.

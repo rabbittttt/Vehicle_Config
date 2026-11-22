@@ -22,7 +22,15 @@ with tempfile.TemporaryDirectory() as tmp:
         state=json.load(urllib.request.urlopen(base+'/api/state'))
         req=urllib.request.Request(base+'/api/publish',data=json.dumps({'revision':state['draft']['revision'],'data':fixture()}).encode(),headers={'X-CSRF-Token':state['csrf']})
         assert json.load(urllib.request.urlopen(req))['published']['revision']==1
-        other=subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5);assert other.returncode!=0,'second writer accepted'
+        # Use a separate listening port so a bind failure cannot pass the storage-lock check.
+        second_cmd=cmd.copy()
+        second_cmd[second_cmd.index('--port')+1]='0'
+        other=subprocess.Popen(second_cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        try:
+            _,error=other.communicate(timeout=60)
+            assert other.returncode and b'msvcrt.locking' in error, error
+        finally:
+            if other.poll() is None:stop(other)
     finally:stop(proc)
     proc=start()
     try:assert json.load(urllib.request.urlopen(base+'/api/state'))['published']['data']==fixture()

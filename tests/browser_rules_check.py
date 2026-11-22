@@ -108,6 +108,11 @@ def main():
                                       generation='一代', subgeneration='', year='2027',
                                       energy='纯电', tier='', status='在售'))
         store.save(catalog, 0, '浏览器验收')
+        initial_rules=rules.get()['draft']['data']
+        with rules.db:
+            rules._event('草稿','早期操作人',initial_rules,[])
+            for _ in range(40):
+                rules._event('草稿','后续操作人',initial_rules,[])
         browser = pw.chromium.launch(channel='msedge', headless=True)
         page = browser.new_page(viewport={'width': 1440, 'height': 1000})
         errors = []
@@ -212,6 +217,14 @@ def main():
 
         switch_view(page, 'history', 'rule_history')
         expect(content.get_by_role('button', name='差异与恢复').first).to_be_visible()
+        page.get_by_role('button',name='下一页').click()
+        expect(content).to_contain_text('早期操作人')
+        header.locator('#search').fill('早期操作人')
+        expect(page.locator('#count')).to_have_text('1 条记录')
+        content.get_by_role('button',name='差异与恢复').click()
+        expect(page.locator('#dialog')).to_be_visible()
+        page.locator('#cancel').click()
+        header.locator('#search').fill('')
         switch_view(page, 'matrix', 'option_prices')
         source.write_text(source.read_text(encoding='utf-8') + '\n# external\n', encoding='utf-8')
         content.get_by_role('button', name='编辑', exact=True).click()

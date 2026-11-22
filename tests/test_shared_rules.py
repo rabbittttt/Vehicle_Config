@@ -37,6 +37,43 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(render_source(parse_source(SOURCE),parse_source(SOURCE)['data']),SOURCE)
         for raw in [b'MERGE_GROUPS = dict()',b'MERGE_GROUPS = {"A": [], "A": []}',b'MERGE_GROUPS={}\nMERGE_GROUPS={}']:
             with self.assertRaises(ValueError):parse_source(raw)
+    def test_publication_preserves_unrepresented_options(self):
+        options=(b'OPTION_CONFIG = {  # keep formatting\n'
+                 b'    "empty": {}, "A": {"empty": [], "color": [("red", 1, False, {"versions": [], "seat": ""})]}\n}\n')
+        self.path.write_bytes(options)
+        state=self.store.reload(0,self.store.get()['source']['hash'],'tester')
+        data=copy.deepcopy(state['draft']['data'])
+        data['gen_names'].append(dict(id='new',source='A',target='AA'))
+        preview=self.store.preview(data,1)
+        self.assertFalse(preview['errors'])
+        self.assertNotIn('-OPTION_CONFIG',preview['script_diff'])
+        state=self.store.publish(data,1,preview['source_hash'],'tester')
+        self.assertTrue(self.path.read_bytes().startswith(options))
+        data['option_prices'][0].update(name='blue',price=2)
+        self.store.publish(data,state['draft']['revision'],state['source']['hash'],'tester')
+        value=parse_source(self.path.read_bytes())['values']['OPTION_CONFIG']
+        self.assertEqual(value,{'empty':{},'A':{'empty':[],'color':[('blue',2,False,{'versions':[],'seat':''})]}})
+
+    def test_recovery_reload_requires_confirmation_and_keeps_intended_data(self):
+        intended=self.changed()
+        def external_edit(raw,expected):
+            self.path.write_bytes(SOURCE+b'# edited elsewhere\r\n')
+            raise OSError('interrupted')
+        with patch.object(self.store,'_atomic_source',side_effect=external_edit), self.assertRaises(OSError):
+            self.store.publish(intended,0,self.store.get()['source']['hash'],'author')
+        before=self.store.get()
+        self.assertEqual(before['sync']['status'],'recovery_required')
+        for token in [None,'outdated']:
+            with self.assertRaises(Conflict):
+                self.store.reload(0,before['source']['hash'],'reviewer',token)
+        self.assertEqual(before,self.store.get())
+        result=self.store.reload(0,before['source']['hash'],'reviewer',before['sync']['pending_token'])
+        self.assertEqual(result['sync']['status'],'synced')
+        event=next(row for row in result['history'] if row['kind']=='中断的发布')
+        self.assertEqual(event['actor'],'author')
+        self.assertEqual(self.store.history(event['id'])['data'],intended)
+        self.assertEqual(self.path.read_bytes(),SOURCE+b'# edited elsewhere\r\n')
+
     def test_order_encoding_and_reload(self):
         raw='# coding: gbk\r\nGEN_DISPLAY_NAME_MAP={"旧":"新"}\r\n'.encode('gbk')
         parsed=parse_source(raw);data=parsed['data'];data['gen_names'][0]['target']='标准'

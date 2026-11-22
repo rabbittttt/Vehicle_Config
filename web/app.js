@@ -24,7 +24,7 @@ function newId() {
 }
 const states = ['未配置','标配','选配','不可选'];
 const categories = ['动力','电池包','外观','内饰','轮毂','其他'];
-let data, revision, csrf, published, history=[], savedJSON='', tab='models', view='models';
+let data, revision, csrf, published, savedJSON='', tab='models', view='models';
 let model='', year='', query='', statusFilter='', categoryFilter='', stateFilter='', page=1;
 let ruleQuery='';
 let dirty=false, busy=false, readonly=false, selected=new Set(), undoStack=[], redoStack=[], confirmAction=null;
@@ -70,7 +70,7 @@ function mutate(fn) {
   dirty=after!==savedJSON;render();
 }
 function accept(s) {
-  data=s.draft.data; revision=s.draft.revision;published=s.published;history=s.history;
+  data=s.draft.data; revision=s.draft.revision;published=s.published;
   savedJSON=JSON.stringify(data);dirty=false;undoStack=[];redoStack=[];selected.clear();
   if(s.csrf)csrf=s.csrf;if('readonly' in s)readonly=s.readonly;
   const publishedBadge=$('#published');
@@ -234,11 +234,29 @@ function batchStatus() {
   const rows=scopedRows(view).filter(r=>selected.has(r.id)),status=$('#batch-status').value;
   modal('批量修改状态',`<div class="selection-summary">${rows.length} 条记录 → ${esc(status)}</div><ul class="record-list">${rows.map(r=>`<li>${esc(r.name||modelName(r))}</li>`).join('')}</ul>`,()=>{mutate(()=>rows.forEach(r=>r.status=status));selected.clear();render();notice(`已修改 ${rows.length} 条记录，尚未保存`);},'应用状态');
 }
-function renderHistory() {
+let historyRequest=0;
+async function renderHistory(search=query, warning='') {
+  const request=++historyRequest, requestedView=view;
+  const rules=requestedView==='rule_history';
+  const path=rules?'rules/history':'history';
   $('#bulkbar').hidden=true;
-  const records=history.filter(r=>!query||[r.id,r.kind,r.actor,r.time].join(' ').toLowerCase().includes(query.toLowerCase())),range=paginator(records.length);
-  $('#count').textContent=`${records.length} 条记录`;
-  $('#content').innerHTML=records.length?`<div class="scroll"><table><thead><tr><th>记录</th><th>操作</th><th>操作人</th><th>时间</th><th></th></tr></thead><tbody>${records.slice(...range).map(h=>`<tr><td>#${h.id}</td><td>${esc(h.kind)}</td><td>${esc(h.actor)}</td><td>${esc(new Date(h.time).toLocaleString())}</td><td><button class="link" data-history="${h.id}">差异与恢复</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty"><strong>暂无变更记录</strong></div>';
+  $('#count').textContent='';
+  $('#pagination').replaceChildren();
+  $('#content').textContent='正在读取变更记录…';
+  try {
+    const result=await api(path+'?'+new URLSearchParams({page,q:search}));
+    if(request!==historyRequest || view!==requestedView)return;
+    page=result.page;
+    paginator(result.total);
+    $('#count').textContent=`${result.total} 条记录`;
+    const rows=result.history.map(record=>{
+      const action=rules?`data-rule-action="history" data-rule-id="${record.id}"`:`data-history="${record.id}"`;
+      return `<tr><td>#${record.id}</td><td>${esc(record.kind)}</td><td>${esc(record.actor)}</td><td>${esc(new Date(record.time).toLocaleString())}</td><td><button class="link" ${action}>差异与恢复</button></td></tr>`;
+    });
+    $('#content').innerHTML=warning+(rows.length?`<div class="scroll"><table><thead><tr><th>记录</th><th>操作</th><th>操作人</th><th>时间</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`:'<div class="empty"><strong>暂无变更记录</strong></div>');
+  } catch(error) {
+    if(request===historyRequest && view===requestedView)$('#content').textContent=error.message;
+  }
 }
 function modal(title,html,action,label='确定') {
   $('#dialog-body').onchange=null;$('#dialog-title').textContent=title;$('#dialog-body').innerHTML=html;$('#dialog-error').textContent='';confirmAction=action;

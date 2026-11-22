@@ -16,7 +16,7 @@ import tokenize
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from catalog import Conflict
+from catalog import Conflict, read_history_page, recent_history
 
 TABLES = {
     'gen_names':['id','source','target'],
@@ -144,14 +144,36 @@ def decode_constant(table,value):
     return result
 
 
-def encode_constant(table,rows):
+def option_key(generation,category,name,restrictions):
+    return (generation,category,name,tuple(restrictions.get('versions',[])),
+            tuple(restrictions.get('match_versions',[])),restrictions.get('seat',''))
+
+
+def encode_constant(table,rows,original=None,published_rows=()):
     if table in ['gen_names','option_names']:return {r['source']:r['target'] for r in rows}
     if table=='merge_groups':return {r['name']:r['members'] for r in rows}
     if table=='battery_rules':return [(r['generation'],r['version'],r['sku'],r['capacity']) for r in rows]
-    result={}
+    original=original or {}
+    result={gen:{category:[] for category in categories} for gen,categories in original.items()}
+    original_limits={}
+    for gen,categories in original.items():
+        for category,items in categories.items():
+            for name,price,default,limits in items:
+                original_limits[option_key(gen,category,name,limits)]=limits
+    # Stored row IDs survive edits, even when an option or a generation is renamed.
+    baseline={r['id']:option_key(r['generation'],r['category'],r['name'],r) for r in published_rows}
     for row in rows:
-        restrictions={key:row[key] for key in ['versions','match_versions','seat'] if row[key]}
+        key=option_key(row['generation'],row['category'],row['name'],row)
+        previous=original_limits.get(baseline.get(row['id'],key),{})
+        restrictions={k:row[k] for k in ('versions','match_versions','seat')
+                      if row[k] or (k in previous and previous[k]==row[k])}
         result.setdefault(row['generation'],{}).setdefault(row['category'],[]).append((row['name'],row['price'],row['default'],restrictions))
+    for gen,categories in original.items():
+        for category,items in categories.items():
+            if items and not result[gen][category]:
+                del result[gen][category]
+        if categories and not result[gen]:
+            del result[gen]
     return result
 
 
@@ -189,14 +211,17 @@ def parse_source(raw):
     return {'raw':raw,'text':text,'encoding':encoding,'newline':'\r\n' if '\r\n' in text else '\n','nodes':nodes,'values':values,'data':data,'hash':digest(raw)}
 
 
-def render_source(parsed,data):
+def render_source(parsed,data,published=None):
     errors=validate(data)
     if errors:raise ValueError('\n'.join(errors))
     text=parsed['text'];lines=text.splitlines(keepends=True)
     def offset(line,column):return sum(len(value) for value in lines[:line-1])+len(lines[line-1].encode('utf-8')[:column].decode('utf-8'))
     edits=[];append=[]
+    changed_tables={change['table'] for change in diff_rules(published,data)} if published is not None else None
     for table,name in CONSTANTS.items():
-        value=encode_constant(table,data[table])
+        if changed_tables is not None and table not in changed_tables:continue
+        value=encode_constant(table,data[table],parsed['values'].get(name),
+                              (published or parsed['data'])[table])
         if name in parsed['values'] and value==parsed['values'][name]:continue
         if name not in parsed['values'] and not data[table]:continue
         literal=pprint.pformat(value,width=100,sort_dicts=False).replace('\n',parsed['newline'])
@@ -217,6 +242,7 @@ class RuleStore:
         self.root=Path(root)/'rules';self.root.mkdir(parents=True,exist_ok=True)
         self.source_path=Path(source_path).resolve() if source_path else None
         self.lock=threading.RLock();self.recovery_error=''
+        self._parsed_source=None
         self.db=sqlite3.connect(self.root/'rules.sqlite3',check_same_thread=False,timeout=15)
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.executescript('CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY,revision INTEGER NOT NULL,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT); CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,kind TEXT,actor TEXT,time TEXT,data TEXT,changes TEXT); CREATE TABLE IF NOT EXISTS journal(id INTEGER PRIMARY KEY,payload TEXT NOT NULL);')
@@ -236,7 +262,10 @@ class RuleStore:
         if self.source_path is None:info['error']='未配置 shared_config.py 路径';return info
         try:
             raw=self.source_path.read_bytes();info['hash']=digest(raw)
-            parsed=parse_source(raw);info.update(available=True,present=list(parsed['nodes']),missing=[n for n in CONSTANTS.values() if n not in parsed['nodes']],parsed=parsed)
+            if self._parsed_source is None or self._parsed_source['hash']!=info['hash']:
+                self._parsed_source=parse_source(raw)
+            parsed=self._parsed_source
+            info.update(available=True,present=list(parsed['nodes']),missing=[n for n in CONSTANTS.values() if n not in parsed['nodes']],parsed=parsed)
         except (OSError,ValueError,SyntaxError,UnicodeError,RecursionError) as exc:info['error']=str(exc)
         return info
     def _pending(self):
@@ -263,9 +292,13 @@ class RuleStore:
         with self.lock:
             source=self._source();source.pop('parsed',None);source['external_modified']=bool(source['hash']!=self._meta('source_hash'))
             draft=self._state(1);published=self._state(2)
-            status='recovery_required' if self._pending() else 'unavailable' if not source['available'] else 'external_modified' if source['external_modified'] else 'draft' if draft['data']!=published['data'] else 'synced'
-            return {'draft':draft,'published':published,'history':[dict(zip(['id','kind','actor','time'],row)) for row in self.db.execute('SELECT id,kind,actor,time FROM events ORDER BY id DESC')],
-                    'source':source,'sync':{'status':status,'error':self.recovery_error,'backup_directory':str(self.root/'backups')}}
+            pending=self._pending()
+            status='recovery_required' if pending else 'unavailable' if not source['available'] else 'external_modified' if source['external_modified'] else 'draft' if draft['data']!=published['data'] else 'synced'
+            return {'draft':draft,'published':published,'history':recent_history(self.db),
+                    'source':source,'sync':{'status':status,'error':self.recovery_error,'backup_directory':str(self.root/'backups'),
+                                            'pending_token':digest(dump(pending).encode()) if pending else None}}
+    def history_page(self,page=1,query=''):
+        with self.lock:return read_history_page(self.db,page,query)
     def _revision(self,revision):
         if revision!=self._state(1)['revision']:raise Conflict('规则草稿已被其他人修改，请重新载入')
     def _validate(self,data):
@@ -291,7 +324,7 @@ class RuleStore:
             script_diff=''
             if not errors:
                 try:
-                    raw=render_source(source['parsed'],data)
+                    raw=render_source(source['parsed'],data,self._state(2)['data'])
                     script_diff=''.join(difflib.unified_diff(source['parsed']['text'].splitlines(True),raw.decode(source['parsed']['encoding']).splitlines(True),fromfile='shared_config.py（当前）',tofile='shared_config.py（发布后）'))
                 except (ValueError,SyntaxError) as exc:errors.append(str(exc))
             return {'errors':errors,'changes':diff_rules(self._state(2)['data'],data) if not validate(data) else [],'script_diff':script_diff,'source_hash':source['hash']}
@@ -310,7 +343,8 @@ class RuleStore:
             self._ready();self._validate(data);source=self._source()
             if not source['available']:raise ValueError(source['error'])
             if source['hash']!=source_hash or source_hash!=self._meta('source_hash'):raise Conflict('源文件已变化，请重新预览或重新载入')
-            raw=render_source(source['parsed'],data);changes=diff_rules(self._state(2)['data'],data)
+            published=self._state(2)['data']
+            raw=render_source(source['parsed'],data,published);changes=diff_rules(published,data)
             if not changes:raise ValueError('没有需要发布的规则变更')
             backup_dir=self.root/'backups';backup_dir.mkdir(exist_ok=True)
             backup=backup_dir/(datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')+'-'+uuid.uuid4().hex+'.py')
@@ -326,7 +360,7 @@ class RuleStore:
                 self._recover()
                 if self._pending() or self._meta('source_hash')!=transaction['new_hash']:raise
             return self.get()
-    def reload(self,revision,source_hash,actor):
+    def reload(self,revision,source_hash,actor,pending_token=None):
         with self.lock:
             source=self._source()
             if not source['available']:raise ValueError(source['error'])
@@ -334,6 +368,14 @@ class RuleStore:
             data=source['parsed']['data']
             with self.db:
                 self.db.execute('BEGIN IMMEDIATE');self._revision(revision)
+                pending=self._pending()
+                if pending_token!=(digest(dump(pending).encode()) if pending else None):
+                    raise Conflict('未完成的发布记录已变化，请重新检查并确认载入')
+                if pending:
+                    event=self.db.execute('INSERT INTO events(kind,actor,time,data,changes) VALUES(?,?,?,?,?)',
+                                    ('中断的发布',pending['actor'],pending['time'],dump(pending['data']),dump(pending['changes'])))
+                    self.db.execute('CREATE TABLE IF NOT EXISTS recovered_journals(event_id INTEGER PRIMARY KEY,payload TEXT NOT NULL)')
+                    self.db.execute('INSERT INTO recovered_journals SELECT ?,payload FROM journal WHERE id=1',(event.lastrowid,))
                 changes=diff_rules(self._state(1)['data'],data)
                 self.db.execute('UPDATE state SET revision=revision+1,data=?',(dump(data),))
                 self._set_meta('source_hash',source_hash);self._event('重新载入',actor,data,changes)

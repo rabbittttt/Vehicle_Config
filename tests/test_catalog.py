@@ -1,5 +1,7 @@
 import copy, json, tempfile, unittest, threading, urllib.request, urllib.error
 from pathlib import Path
+from unittest.mock import patch
+import server
 from catalog import Store, empty, validate, merge, Conflict
 from server import make_server, excel, read_excel
 
@@ -18,6 +20,42 @@ class CatalogTests(unittest.TestCase):
     def test_no_delete(self):
         self.store.save(fixture(),0,'user')
         with self.assertRaises(ValueError):self.store.save(empty(),1,'user')
+    def test_default_directory_checks_each_legacy_database_before_startup(self):
+        project=Path(self.tmp.name)/'Project'
+        legacy=project/'共享数据'/'车型配置'
+        root=project/'workbench'
+        target=root/'database'/'vehicle-config'
+        target.mkdir(parents=True)
+        for relative in ('catalog.sqlite3','rules/rules.sqlite3'):
+            with self.subTest(relative=relative):
+                old=legacy/relative
+                old.parent.mkdir(parents=True,exist_ok=True)
+                old.write_bytes(b'legacy')
+                with patch.object(server,'ROOT',project/'app'), patch.dict('os.environ',PLANHUB_DATA_ROOT=str(root)), patch('sys.argv',['server']), patch.object(server,'Store',side_effect=AssertionError('created a database')):
+                    with self.assertRaises(SystemExit) as error:server.main()
+                self.assertEqual(error.exception.code,2)
+                self.assertFalse((target/'service.lock').exists())
+                self.assertEqual(old.read_bytes(),b'legacy')
+                old.unlink()
+
+    def test_history_pagination_and_projection_repair(self):
+        draft=fixture()
+        with self.store.db:
+            self.store.db.executemany('INSERT INTO events(kind,actor,time,data,changes) VALUES(?,?,?,?,?)',
+                                      [('草稿','actor-'+str(i),'',json.dumps(draft),'[]') for i in range(45)])
+        self.store.project()
+        self.assertEqual(len(self.store.get()['history']),40)
+        self.assertEqual([r['id'] for r in self.store.history_page(2)['history']],[5,4,3,2,1])
+        self.assertEqual(self.store.history_page(1,'actor-0')['history'][0]['id'],1)
+        missing=Path(self.tmp.name)/'history'/'1.json'
+        missing.unlink()
+        self.store.db.close()
+        self.store=Store(self.tmp.name)
+        self.assertEqual(json.loads(missing.read_text('utf8'))['data'],draft)
+        self.store.save(draft,0,'tester',True)
+        with self.assertRaisesRegex(ValueError,'没有需要发布'):self.store.save(draft,1,'tester',True)
+        self.assertEqual(self.store.history_page()['total'],46)
+
     def test_matrix_and_names(self):
         d=fixture();d['matrix']=[dict(id='x',version_id='v1',option_id='o1',state='未知')];self.assertTrue(validate(d,True));d['matrix'][0]['state']='未配置';self.assertEqual(validate(d,True),[])
         d['aliases']=[dict(id='a',source='订单',name='别名',target_type='models',target_id='missing')];self.assertTrue(validate(d,True))

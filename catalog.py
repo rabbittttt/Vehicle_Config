@@ -17,67 +17,94 @@ def empty(): return {key: [] for key in TABLES}
 def now(): return datetime.now(timezone.utc).isoformat()
 class Conflict(Exception): pass
 
+HISTORY_PAGE_SIZE = 40
+EVENT_FIELDS = ('id','kind','actor','time')
+
+def recent_history(db):
+    rows=db.execute('SELECT id,kind,actor,time FROM events ORDER BY id DESC LIMIT ?', (HISTORY_PAGE_SIZE,))
+    return [dict(zip(EVENT_FIELDS,row)) for row in rows]
+
+def read_history_page(db, page=1, query=''):
+    if page < 1:
+        raise ValueError('历史页码必须为正整数')
+    where = ''
+    args = ()
+    if query:
+        db.create_function('casefold',1,str.casefold,deterministic=True)
+        where = " WHERE instr(casefold(id || ' ' || kind || ' ' || actor || ' ' || time), ?) > 0"
+        args = (query.casefold(),)
+    total = db.execute('SELECT COUNT(*) FROM events' + where, args).fetchone()[0]
+    page = min(page, max(1, (total + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE))
+    rows = db.execute('SELECT id,kind,actor,time FROM events' + where + ' ORDER BY id DESC LIMIT ? OFFSET ?',
+                      (*args, HISTORY_PAGE_SIZE, (page - 1) * HISTORY_PAGE_SIZE))
+    return {'history':[dict(zip(EVENT_FIELDS,row)) for row in rows], 'total':total, 'page':page}
+
 def validate(data, publish=False):
+    return [message for _,_,message in validation_issues(data,publish)]
+
+def validation_issues(data,publish=False):
     errors=[]
-    if not isinstance(data,dict) or set(data)!=set(TABLES): return ['配置表结构不完整']
+    def add(table,row,message):
+        errors.append((table,row.get('id'),message))
+    if not isinstance(data,dict) or set(data)!=set(TABLES): return [(None,None,'配置表结构不完整')]
     ids={}
     for table,fields in TABLES.items():
         rows=data[table]
-        if not isinstance(rows,list): return [table+' 必须为列表']
+        if not isinstance(rows,list): return [(table,None,table+' 必须为列表')]
         ids[table]=set()
         for row in rows:
-            if not isinstance(row,dict) or set(row)-set(fields): return [table+' 存在未知字段']
-            if any(not isinstance(v,str) or len(v)>4000 for v in row.values()): return [table+' 字段必须为文本且不超过 4000 字符']
-            if not row.get('id') or row['id'] in ids[table]: errors.append(table+' 编号缺失或重复')
+            if not isinstance(row,dict) or set(row)-set(fields): return [(table,None,table+' 存在未知字段')]
+            if any(not isinstance(v,str) or len(v)>4000 for v in row.values()): return [(table,None,table+' 字段必须为文本且不超过 4000 字符')]
+            if not row.get('id') or row['id'] in ids[table]: add(table,row,table+' 编号缺失或重复')
             ids[table].add(row.get('id'))
     if errors:return errors
-    def ref(row,field,table):
-        if row.get(field) not in ids[table]: errors.append(row['id']+'：'+field+' 关联不存在')
+    def ref(table,row,field,target):
+        if row.get(field) not in ids[target]: add(table,row,row['id']+'：'+field+' 关联不存在')
     for table in ['phases','versions','options']:
-        for row in data[table]: ref(row,'model_id','models')
+        for row in data[table]: ref(table,row,'model_id','models')
     names=set()
     for table in ['models','versions','options','phases','groups']:
         for row in data[table]:
             required={'models':['brand','series','generation','year','energy','status'],'groups':['name','scope','members']}.get(table,['name'])
             if publish:
                 for field in required:
-                    if not row.get(field,'').strip():errors.append(row['id']+'：缺少 '+field)
-            if table in ['models','versions','options'] and row.get('status') not in ['在售','规划','停用']: errors.append(row['id']+'：状态无效')
+                    if not row.get(field,'').strip():add(table,row,row['id']+'：缺少 '+field)
+            if table in ['models','versions','options'] and row.get('status') not in ['在售','规划','停用']: add(table,row,row['id']+'：状态无效')
             key=(table,row.get('model_id',''),row.get('category',''),row.get('name','')) if table!='models' else (table,*(row.get(f,'') for f in ['brand','series','generation','subgeneration','year']))
-            if key in names:errors.append(row['id']+'：名称重复')
+            if key in names:add(table,row,row['id']+'：名称重复')
             names.add(key)
     versions={r['id']:r for r in data['versions']}; options={r['id']:r for r in data['options']}
     pairs=set()
     for row in data['matrix']:
-        ref(row,'version_id','versions');ref(row,'option_id','options')
+        ref('matrix',row,'version_id','versions');ref('matrix',row,'option_id','options')
         pair=(row.get('version_id'),row.get('option_id'))
-        if pair in pairs: errors.append('配置适用关系重复')
+        if pair in pairs: add('matrix',row,'配置适用关系重复')
         pairs.add(pair)
-        if row.get('state') not in STATES:errors.append('配置状态无效')
-        if pair[0] in versions and pair[1] in options and versions[pair[0]]['model_id']!=options[pair[1]]['model_id']:errors.append('配置不可跨车型关联')
+        if row.get('state') not in STATES:add('matrix',row,'配置状态无效')
+        if pair[0] in versions and pair[1] in options and versions[pair[0]]['model_id']!=options[pair[1]]['model_id']:add('matrix',row,'配置不可跨车型关联')
     aliases=set()
     for row in data['aliases']:
         key=(row.get('source','').strip().casefold(),row.get('name','').strip().casefold())
-        if key in aliases:errors.append('名称映射冲突：'+row.get('name',''))
+        if key in aliases:add('aliases',row,'名称映射冲突：'+row.get('name',''))
         aliases.add(key)
-        if publish and (not key[0] or not key[1]):errors.append('名称映射缺少来源或名称')
+        if publish and (not key[0] or not key[1]):add('aliases',row,'名称映射缺少来源或名称')
         kind=row.get('target_type')
-        if kind not in ['models','versions','options'] or row.get('target_id') not in ids.get(kind,set()):errors.append('名称映射未匹配：'+row.get('name',''))
+        if kind not in ['models','versions','options'] or row.get('target_id') not in ids.get(kind,set()):add('aliases',row,'名称映射未匹配：'+row.get('name',''))
     for table in ['phases','groups']:
         for row in data[table]:
             for field in [f for f in TABLES[table] if f.endswith('_date')]:
                 if row.get(field):
                     try:datetime.strptime(row[field],'%Y-%m-%d')
-                    except ValueError:errors.append(row['id']+'：日期格式应为 YYYY-MM-DD')
+                    except ValueError:add(table,row,row['id']+'：日期格式应为 YYYY-MM-DD')
             a,b=('start_date','end_date') if table=='groups' else ('presale_date','sale_date')
-            if row.get(a) and row.get(b) and row[a]>row[b]:errors.append(row['id']+'：日期顺序错误')
+            if row.get(a) and row.get(b) and row[a]>row[b]:add(table,row,row['id']+'：日期顺序错误')
     membership=[]
     for row in data['groups']:
         for member in row.get('members','').split(','):
             member=member.strip()
-            if member not in ids['models']:errors.append(row['id']+'：汇总成员必须是车型编号（不允许嵌套或循环）')
+            if member not in ids['models']:add('groups',row,row['id']+'：汇总成员必须是车型编号（不允许嵌套或循环）')
             for old,m in membership:
-                if m==member and old.get('scope')==row.get('scope') and max(old.get('start_date') or '0000',row.get('start_date') or '0000')<=min(old.get('end_date') or '9999',row.get('end_date') or '9999'):errors.append(member+'：生效范围内重复归属')
+                if m==member and old.get('scope')==row.get('scope') and max(old.get('start_date') or '0000',row.get('start_date') or '0000')<=min(old.get('end_date') or '9999',row.get('end_date') or '9999'):add('groups',row,member+'：生效范围内重复归属')
             membership.append((row,member))
     return errors
 
@@ -101,11 +128,14 @@ class Store:
         self.db.executescript('CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY, revision INTEGER, data TEXT); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, kind TEXT, actor TEXT, time TEXT, data TEXT, changes TEXT);')
         with self.db:
             for ident in [1,2]:self.db.execute('INSERT OR IGNORE INTO state VALUES (?,?,?)',(ident,0,json.dumps(empty())))
+        self.last_projected = 0
         self.project()
     def state(self,ident):
         row=self.db.execute('SELECT revision,data FROM state WHERE id=?',(ident,)).fetchone();return {'revision':row[0],'data':json.loads(row[1])}
     def get(self):
-        with self.lock:return {'draft':self.state(1),'published':self.state(2),'history':[dict(zip(['id','kind','actor','time'],r)) for r in self.db.execute('SELECT id,kind,actor,time FROM events ORDER BY id DESC')], 'consumers':'尚未接入'}
+        with self.lock:return {'draft':self.state(1),'published':self.state(2),'history':recent_history(self.db), 'consumers':'尚未接入'}
+    def history_page(self,page=1,query=''):
+        with self.lock:return read_history_page(self.db,page,query)
     def history(self,ident):
         with self.lock:
             row=self.db.execute('SELECT data,changes FROM events WHERE id=?',(ident,)).fetchone()
@@ -116,9 +146,12 @@ class Store:
     def project(self):
         self.atomic(self.root/'current.json',self.state(2))
         self.atomic(self.root/'drafts'/'current.json',self.state(1))
-        for row in self.db.execute('SELECT id,kind,actor,time,data,changes FROM events'):
-            path=self.root/'history'/f'{row[0]}.json'
-            if not path.exists():self.atomic(path,dict(zip(['id','kind','actor','time','data','changes'],[ *row[:4],json.loads(row[4]),json.loads(row[5]) ])))
+        for (event_id,) in self.db.execute('SELECT id FROM events WHERE id>? ORDER BY id',(self.last_projected,)):
+            path=self.root/'history'/f'{event_id}.json'
+            if not path.exists():
+                row=self.db.execute('SELECT id,kind,actor,time FROM events WHERE id=?',(event_id,)).fetchone()
+                self.atomic(path,{**dict(zip(EVENT_FIELDS,row)),**self.history(event_id)})
+            self.last_projected=event_id
     def save(self,data,revision,actor,publish=False):
         with self.lock:
             draft=self.state(1);published=self.state(2)
@@ -129,6 +162,7 @@ class Store:
                 if {r['id'] for r in draft['data'][table]}-{r['id'] for r in data[table]}:errors.append(table+' 不允许删除记录，请停用或修改关系')
             if errors:raise ValueError('\n'.join(errors))
             changes=diff(published['data'] if publish else draft['data'],data)
+            if publish and not changes:raise ValueError('没有需要发布的车型配置变更')
             with self.db:
                 self.db.execute('UPDATE state SET revision=revision+1,data=? WHERE id=1',(json.dumps(data,ensure_ascii=False),))
                 if publish:self.db.execute('UPDATE state SET revision=revision+1,data=? WHERE id=2',(json.dumps(data,ensure_ascii=False),))
