@@ -85,7 +85,7 @@ def excel(data, template=False):
         for field, choices in {'status':['规划','在售','停用'],'state':STATES,'category':['动力','电池包','外观','内饰','轮毂','其他'],'target_type':[SHEETS[k] for k in ['models','versions','options']]}.items():
             if field in fields:
                 dv=DataValidation(type='list',formula1='"'+','.join(choices)+'"',allow_blank=True)
-                dv.errorTitle='值不在候选项中';dv.error='请选择列表中的值';dv.showErrorMessage=True;dv.errorStyle='stop'
+                dv.errorTitle='值不在候选项中';dv.error='请选择列表中的值';dv.showErrorMessage=field!='category';dv.errorStyle='stop'
                 ws.add_data_validation(dv); col=get_column_letter(fields.index(field)+1);dv.add(f'{col}2:{col}{MAX_ROWS+1}')
         for field, kind in REFS.items():
             if field in fields and data[kind]:

@@ -3,7 +3,7 @@ import argparse, getpass, json, os, secrets, sys, zipfile
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from excel_io import excel, read_excel, preview_import
-from catalog import Store, validate, diff, Conflict
+from catalog import Store, Conflict
 from shared_rules import RuleStore, validate as validate_rules
 from rules_excel import rules_excel, preview_rules_import
 ROOT=Path(__file__).resolve().parent
@@ -102,7 +102,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     if body.get('revision')!=state['revision']:raise Conflict('草稿已被其他人修改，请重新载入后导入')
                     return self.send(200,{**preview_import(state['data'],body.get('files')),'revision':state['revision']})
                 if path=='/api/export':return self.send(200,excel(body['data']),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-                if path=='/api/preview':return self.send(200,{'errors':validate(body['data'],True),'changes':diff(store.get()['published']['data'],body['data'])})
+                if path=='/api/preview':return self.send(200,store.preview(body['data'],body.get('revision')))
                 if path in ['/api/save','/api/publish']:return self.send(200,store.save(body['data'],body['revision'],actor,path.endswith('publish')))
                 self.send(404,{'error':'未找到'})
             except Conflict as e:self.send(409,{'error':str(e)})

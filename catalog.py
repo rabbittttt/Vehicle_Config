@@ -81,7 +81,7 @@ def validation_issues(data,publish=False):
         if pair in pairs: add('matrix',row,'配置适用关系重复')
         pairs.add(pair)
         if row.get('state') not in STATES:add('matrix',row,'配置状态无效')
-        if pair[0] in versions and pair[1] in options and versions[pair[0]]['model_id']!=options[pair[1]]['model_id']:add('matrix',row,'配置不可跨车型关联')
+        if pair[0] in versions and pair[1] in options and versions[pair[0]].get('model_id')!=options[pair[1]].get('model_id'):add('matrix',row,'配置不可跨车型关联')
     aliases=set()
     for row in data['aliases']:
         key=(row.get('source','').strip().casefold(),row.get('name','').strip().casefold())
@@ -152,14 +152,25 @@ class Store:
                 row=self.db.execute('SELECT id,kind,actor,time FROM events WHERE id=?',(event_id,)).fetchone()
                 self.atomic(path,{**dict(zip(EVENT_FIELDS,row)),**self.history(event_id)})
             self.last_projected=event_id
+    def change_errors(self,data,draft,publish):
+        errors=validate(data,publish)
+        if errors:return errors
+        for table in TABLES:
+            old_ids={r['id'] for r in draft['data'][table]}
+            if old_ids-{r['id'] for r in data[table]}:
+                errors.append(table+' 不允许删除记录，请停用或修改关系')
+        return errors
+    def preview(self,data,revision=None):
+        with self.lock:
+            draft=self.state(1)
+            if revision is not None and revision!=draft['revision']:raise Conflict('草稿已被其他人修改，请重新载入')
+            errors=self.change_errors(data,draft,True)
+            return {'errors':errors,'changes':[] if errors else diff(self.state(2)['data'],data)}
     def save(self,data,revision,actor,publish=False):
         with self.lock:
             draft=self.state(1);published=self.state(2)
             if revision!=draft['revision']:raise Conflict('草稿已被其他人修改，请导出当前编辑后重新载入')
-            errors=validate(data,publish)
-            # IDs survive edits. Missing rows must never silently delete historical objects.
-            for table in TABLES:
-                if {r['id'] for r in draft['data'][table]}-{r['id'] for r in data[table]}:errors.append(table+' 不允许删除记录，请停用或修改关系')
+            errors=self.change_errors(data,draft,publish)
             if errors:raise ValueError('\n'.join(errors))
             changes=diff(published['data'] if publish else draft['data'],data)
             if publish and not changes:raise ValueError('没有需要发布的车型配置变更')

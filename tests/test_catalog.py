@@ -20,6 +20,18 @@ class CatalogTests(unittest.TestCase):
     def test_no_delete(self):
         self.store.save(fixture(),0,'user')
         with self.assertRaises(ValueError):self.store.save(empty(),1,'user')
+    def test_publish_preview_matches_commit_checks(self):
+        data=fixture()
+        self.store.save(data,0,'tester')
+        with self.assertRaises(Conflict):self.store.preview(data,0)
+        self.assertTrue(self.store.preview(data,1)['changes'])
+        for invalid in [empty(),{},dict(data,models=[{'series':'missing id'}])]:
+            preview=self.store.preview(invalid,1)
+            self.assertTrue(preview['errors'])
+            self.assertFalse(preview['changes'])
+            with self.assertRaises(ValueError) as exc:self.store.save(invalid,1,'tester',True)
+            self.assertEqual(str(exc.exception),'\n'.join(preview['errors']))
+        self.assertEqual(self.store.get()['published']['revision'],0)
     def test_default_directory_checks_each_legacy_database_before_startup(self):
         project=Path(self.tmp.name)/'Project'
         legacy=project/'共享数据'/'车型配置'

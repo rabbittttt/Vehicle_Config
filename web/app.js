@@ -23,7 +23,9 @@ function newId() {
   const hex=[...bytes].map(b=>b.toString(16).padStart(2,'0')).join('');return [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join('-');
 }
 const states = ['未配置','标配','选配','不可选'];
-const categories = ['动力','电池包','外观','内饰','轮毂','其他'];
+function optionCategories() {
+  return [...new Set(['动力','电池包','外观','内饰','轮毂','其他', ...data.options.map(row=>row.category).filter(Boolean)])];
+}
 let data, revision, csrf, published, savedJSON='', tab='models', view='models';
 let model='', year='', query='', statusFilter='', categoryFilter='', stateFilter='', page=1;
 let ruleQuery='';
@@ -102,7 +104,9 @@ function filters() {
   $('#status-filter-label').hidden=!['models','versions','options','matrix'].includes(view);
   $('#category-filter-label').hidden = $('#state-filter-label').hidden = view !== 'matrix';
   if (view === 'matrix') {
-    $('#category-filter').innerHTML = option('', '全部类别', categoryFilter) + categories.map(c => option(c,c,categoryFilter)).join('');
+    const available=optionCategories();
+    if(!available.includes(categoryFilter))categoryFilter='';
+    $('#category-filter').innerHTML = option('', '全部类别', categoryFilter) + available.map(c => option(c,c,categoryFilter)).join('');
     $('#state-filter').innerHTML = option('', '全部状态', stateFilter) + states.map(s => option(s,s,stateFilter)).join('');
   }
   $('#search').placeholder = rules ? '搜索当前规则或记录' : view === 'history' ? '记录、操作人或时间' : view === 'matrix' ? '配置项目、类别或编号' : '名称、品牌或编号';
@@ -182,7 +186,7 @@ function renderTable() {
   if(!extra){$('#bulkbar').innerHTML='';$('#bulkbar').hidden=true;}else{$('#bulkbar').hidden=false;selectionToolbar(records,extra);$('#apply-status').disabled=readonly||!selected.size;$('#apply-status').onclick=batchStatus;}
   const columns=view==='models'?['brand','series','generation','subgeneration','year','energy','status']:fields[view];
   const selectable=!!extra;
-  $('#content').innerHTML=records.length?`<div class="scroll"><table><thead><tr>${selectable?'<th class="check-cell"></th>':''}${columns.map(f=>`<th>${labels[f]}</th>`).join('')}<th class="operation">操作</th></tr></thead><tbody>${records.slice(...range).map(r=>`<tr class="${selected.has(r.id)?'selected':''}">${selectable?`<td class="check-cell">${checkbox(r.id,'选择 '+(r.name||modelName(r)))}</td>`:''}${columns.map(f=>`<td>${tableValue(r,f)}</td>`).join('')}<td class="operation"><button class="link" data-edit="${view}:${esc(r.id)}" ${readonly?'disabled':''}>编辑</button>${view==='models'?`<button class="link" data-copy="${esc(r.id)}" ${readonly?'disabled':''}>复制年款</button>`:''}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty"><strong>${data[view].length?'没有符合筛选的记录':'暂无'+names[view]}</strong>${data[view].length?'<button data-clear>清空筛选</button>':actionButton('add:'+view,'新增'+names[view])}</div>`;
+  $('#content').innerHTML=records.length?`<div class="scroll"><table><thead><tr>${selectable?'<th class="check-cell"></th>':''}${columns.map(f=>`<th>${labels[f]}</th>`).join('')}<th class="operation">操作</th></tr></thead><tbody>${records.slice(...range).map(r=>`<tr class="${selected.has(r.id)?'selected':''}">${selectable?`<td class="check-cell">${checkbox(r.id,'选择 '+(r.name||modelName(r)))}</td>`:''}${columns.map(f=>`<td>${tableValue(r,f)}</td>`).join('')}<td class="operation"><button class="link" data-edit="${esc(r.id)}" ${readonly?'disabled':''}>编辑</button>${view==='models'?`<button class="link" data-copy="${esc(r.id)}" ${readonly?'disabled':''}>复制年款</button>`:''}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty"><strong>${data[view].length?'没有符合筛选的记录':'暂无'+names[view]}</strong>${data[view].length?'<button data-clear>清空筛选</button>':actionButton('add:'+view,'新增'+names[view])}</div>`;
 }
 function tableValue(r,f) {
   if(f==='status')return `<span class="pill ${r[f]==='停用'?'retired':''}">${esc(r[f])}</span>`;
@@ -275,7 +279,7 @@ function edit(table,id,copy=false) {
     else if(f==='model_id')control=formSelect(f,data.models.map(r=>[r.id,modelName(r)]),record[f],true);
     else if(f==='target_type')control=formSelect(f,['models','versions','options'].map(x=>[x,names[x]]),record[f],true);
     else if(f==='target_id')control=formSelect(f,(data[record.target_type]||[]).map(r=>[r.id,referenceName(record.target_type,r.id)]),record[f],true);
-    else if(f==='category')control=formSelect(f,categories.map(x=>[x,x]),record[f],true);
+    else if(f==='category')control=formSelect(f,optionCategories().map(x=>[x,x]),record[f],true);
     else control=`<input name="${f}" value="${esc(record[f]||'')}" type="${f.endsWith('_date')?'date':'text'}" ${mandatory.has(f)?'required':''} maxlength="4000">`;
     return `<label ${f==='members'?'class="wide"':''}>${labels[f]}${mandatory.has(f)?'<span class="required" aria-hidden="true">*</span>':''}${control}</label>`;
   }).join('')}<div class="wide muted">编号：${esc(record.id)}</div></form>`,values=>{
@@ -285,7 +289,25 @@ function edit(table,id,copy=false) {
     const rows=data[table].filter(r=>r.id!==clean.id);
     if(rows.some(r=>table==='models'?['brand','series','generation','subgeneration','year'].every(f=>(r[f]||'')===(clean[f]||'')):table==='aliases'?r.source===clean.source&&r.name===clean.name:table==='groups'?r.name===clean.name:r.name===clean.name&&r.model_id===clean.model_id&&(table!=='options'||r.category===clean.category)))throw Error('同一范围内名称已存在');
     mutate(()=>{
-      if(copy){data.models.push(clean);const mapping={};for(const t of ['versions','options','phases'])for(const r of data[t].filter(x=>x.model_id===source.id)){const next={...r,id:newId(),model_id:clean.id};mapping[r.id]=next.id;if(t==='phases'){next.presale_date='';next.sale_date='';}data[t].push(next);}for(const r of data.matrix.filter(x=>mapping[x.version_id]&&mapping[x.option_id]))data.matrix.push({...r,id:newId(),version_id:mapping[r.version_id],option_id:mapping[r.option_id]});model=clean.id;year='';}
+      if(copy){
+        data.models.push(clean);
+        const versions=new Map(), options=new Map();
+        for(const [table,ids] of [['versions',versions],['options',options]]){
+          for(const row of data[table].filter(r=>r.model_id===source.id)){
+            const id=newId();
+            ids.set(row.id,id);
+            data[table].push({...row,id,model_id:clean.id});
+          }
+        }
+        for(const phase of data.phases.filter(r=>r.model_id===source.id)){
+          data.phases.push({...phase,id:newId(),model_id:clean.id,presale_date:'',sale_date:''});
+        }
+        for(const row of data.matrix.filter(r=>versions.has(r.version_id)&&options.has(r.option_id))){
+          data.matrix.push({...row,id:newId(),version_id:versions.get(row.version_id),option_id:options.get(row.option_id)});
+        }
+        model=clean.id;
+        year='';
+      }
       else if(source)Object.assign(source,clean);else data[table].push(clean);
     });
   });
@@ -293,7 +315,7 @@ function edit(table,id,copy=false) {
   if(table==='aliases')$('[name="target_type"]').onchange=e=>{$('[name="target_id"]').innerHTML=option('','请选择','')+(data[e.target.value]||[]).map(r=>option(r.id,referenceName(e.target.value,r.id),'')).join('');};
 }
 function batchAdd(table) {
-  modal('批量新增'+names[table],`<form id="batch-form" class="form"><label>车型${formSelect('model_id',data.models.map(r=>[r.id,modelName(r)]),model||scopedRows('models',false)[0]?.id,true)}</label>${table==='options'?`<label>类别${formSelect('category',categories.map(c=>[c,c]),'外观',true)}</label>`:''}<label class="wide">名称（每行一项）<textarea name="names" rows="9" required maxlength="20000"></textarea></label></form>`,values=>{
+  modal('批量新增'+names[table],`<form id="batch-form" class="form"><label>车型${formSelect('model_id',data.models.map(r=>[r.id,modelName(r)]),model||scopedRows('models',false)[0]?.id,true)}</label>${table==='options'?`<label>类别${formSelect('category',optionCategories().map(c=>[c,c]),'外观',true)}</label>`:''}<label class="wide">名称（每行一项）<textarea name="names" rows="9" required maxlength="20000"></textarea></label></form>`,values=>{
     const modelId=values.get('model_id'),category=values.get('category');
     const list=String(values.get('names')).split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
     if(!list.length||list.length>200)throw Error('每次可新增 1–200 项');
@@ -311,7 +333,7 @@ function differences(changes) {
 }
 async function saveDraft() {const snapshot=structuredClone(data);accept(await api('save',{data:snapshot,revision}));notice('草稿已保存');}
 async function previewPublish() {
-  const snapshot=structuredClone(data),baseRevision=revision,result=await api('preview',{data:snapshot});
+  const snapshot=structuredClone(data),baseRevision=revision,result=await api('preview',{data:snapshot,revision:baseRevision});
   modal('发布配置',`<p class="error">${esc(result.errors.join('\n'))}</p>${differences(result.changes)}`,result.errors.length||!result.changes.length?null:async()=>{accept(await api('publish',{data:snapshot,revision:baseRevision}));notice('配置已发布');},'确认发布');
 }
 async function download(path,body,filename) {
@@ -351,7 +373,7 @@ document.addEventListener('click',e=>{
   if(b.dataset.view)return switchView(tab,b.dataset.view);
   if(b.dataset.ruleAction && isRuleView())return orderRules.handleClick(b,view);
   if(b.dataset.action&&!readonly){const [action,t]=b.dataset.action.split(':');if(action==='add')edit(t);else if(action==='batch-add')batchAdd(t);}
-  if(b.dataset.edit&&!readonly){const [t,id]=b.dataset.edit.split(':');edit(t,id);}
+  if(b.dataset.edit&&!readonly)edit(view,b.dataset.edit);
   if(b.dataset.copy&&!readonly)edit('models',b.dataset.copy,true);
   if(b.dataset.page){page=Number(b.dataset.page);render();}
   if(b.hasAttribute('data-clear'))clearFilters();
