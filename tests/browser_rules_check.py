@@ -239,12 +239,27 @@ def main():
         page.locator('#cancel').click()
 
         page.set_viewport_size({'width': 390, 'height': 844})
+        mobile_tab = header.get_by_role('combobox', name='配置管理模块')
+        expect(mobile_tab).to_have_value('matrix')
+        expect(header.locator('#search')).to_be_hidden()
+        header.get_by_role('button', name='筛选', exact=True).click()
         expect(header.locator('#search')).to_be_visible()
         expect(page.locator('[data-view="option_prices"]')).to_be_in_viewport(ratio=0.9)
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'mobile overflow'
         out = ROOT / 'artifacts'
         out.mkdir(exist_ok=True)
         page.screenshot(path=str(out / 'rules-mobile.png'), full_page=True)
+        mobile_tab.select_option('models')
+        header.locator('#clear-filters').click()
+        expect(header.locator('#year')).to_be_in_viewport(ratio=1)
+        header.locator('#year').select_option('2027')
+        expect(content).to_contain_text('已保存车型乙')
+        header.get_by_role('button', name='筛选', exact=True).click()
+        expect(header.locator('#year')).to_be_hidden()
+        mobile_tab.select_option('aliases')
+        expect(page.locator('#title')).to_have_text('业务名称映射')
+        page.set_viewport_size({'width': 1440, 'height': 1000})
+        expect(header.locator('[data-tab="aliases"]')).to_have_attribute('aria-current', 'page')
         assert not errors, errors
         browser.close()
     print('Rules browser checks passed: shared navigation, header filters, isolated drafts, publishing, history, and external change conflicts.')

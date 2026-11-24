@@ -134,6 +134,18 @@ function revealActiveTab(row) {
   else if (item.right > bounds.right) row.scrollLeft += item.right - bounds.right;
 }
 const nav = $('header nav');
+const mobileTab = $('#mobile-tab');
+for (const button of nav.querySelectorAll('[data-tab]')) {
+  mobileTab.add(new Option(button.textContent.trim(), button.dataset.tab));
+}
+mobileTab.onchange = () => {
+  if (busy || !data) mobileTab.value = tab;
+  else switchView(mobileTab.value);
+};
+const filterToggle = $('.mobile-filter-toggle');
+filterToggle.onclick = () => {
+  filterToggle.setAttribute('aria-expanded', String(filterToggle.getAttribute('aria-expanded') !== 'true'));
+};
 const viewTabs = $('#view-tabs');
 const tabSizes = new ResizeObserver(entries => entries.forEach(entry => revealActiveTab(entry.target)));
 tabSizes.observe(nav);
@@ -142,6 +154,7 @@ function render() {
   if(!data)return;filters();
   if (nav.dataset.active !== tab) {
     nav.querySelectorAll('[data-tab]').forEach(b=>{b.classList.toggle('active',b.dataset.tab===tab);b.setAttribute('aria-current',b.dataset.tab===tab?'page':'false');});
+    mobileTab.value = tab;
     nav.dataset.active = tab;
     viewTabs.innerHTML = sections[tab].map(t => `<button data-view="${t}">${viewLabels[t]}</button>`).join('');
     revealActiveTab(nav);

@@ -155,12 +155,45 @@ main { padding-top: var(--dashboard-gap); }
 #model { width: clamp(110px, 10vw, 180px); }
 #search { width: clamp(132px, 13vw, 210px); }
 #clear-filters { flex:none; min-height:34px; }
+#mobile-tab, .mobile-filter-toggle { display: none; }
+
 @media (max-width: 700px) {
-  header { column-gap: 6px; }
-  header .heading { grid-column: 1 / -1; gap: 8px; }
-  .heading-identity { flex-direction:column; align-items:flex-start; gap:2px; }
-  header nav { grid-column: 1; }
-  header .top-actions { grid-area:2 / 2; width:auto; }
-  .top-actions :is(button,a) { width:44px; min-height:44px; }
-  .filters :is(input, select), #clear-filters { min-height:44px; }
+  header { column-gap: 8px; }
+  header .heading { display: contents; }
+  .heading-identity {
+    grid-area: 1 / 1;
+    min-height: var(--toolbar-height);
+    flex-direction: column;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  .top-actions :is(button,a) { width: 44px; min-height: 44px; }
+  header nav { grid-area: 2 / 1; overflow: visible; }
+  header nav [data-tab] { display: none; }
+  #mobile-tab, .mobile-filter-toggle {
+    display: block;
+    min-height: 44px;
+    border-radius: 10px;
+  }
+  #mobile-tab {
+    width: 100%;
+    background-color: var(--selected);
+    color: #2049d4;
+    font-weight: 600;
+  }
+  .mobile-filter-toggle { grid-area: 2 / 2; justify-self: end; }
+  .mobile-filter-toggle[aria-expanded="true"] { background: var(--selected); color: #2049d4; }
+  .filters { display: none; }
+  .mobile-filter-toggle[aria-expanded="true"] + .filters {
+    grid-area: 3 / 1 / auto / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: end;
+    gap: 8px;
+    padding: 4px 0 12px;
+    overflow: visible;
+  }
+  .filters > label { display: grid; gap: 3px; }
+  .filters :is(input, select), #model, #search, #clear-filters { width: 100%; min-height: 44px; }
 }
