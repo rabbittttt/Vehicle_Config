@@ -11,8 +11,22 @@
 ```powershell
 ./start.ps1 --port 8790 --public-prefix /vehicle-config/
 ../.venv/Scripts/python.exe -B -m unittest discover -s tests -v
-../.venv/Scripts/python.exe -B scripts/build_release.py --version 0.2.0 --destination artifacts/releases/vehicle-config-0.2.0
+./start.ps1 --show-paths
+$releaseVersion = Read-Host '输入新发布版本'
+../.venv/Scripts/python.exe -B scripts/build_release.py --version $releaseVersion --destination "artifacts/releases/vehicle-config-$releaseVersion"
 ```
+
+## 运行诊断与验收
+
+打开「变更记录 → 配置变更记录 → 运行路径」可查当前服务使用的目录、脚本和来源。离线运行 `./start.ps1 --show-paths` 可查看按本次启动参数计算的路径，无须启动服务。使用发布包运行时，页面还会展示包版本和构建时的 Git 提交（旧包可能缺失）。
+
+| 资产 | 开发默认位置 | 工作台部署默认位置 |
+| --- | --- | --- |
+| 车型库、规则库与备份 | `Project/工作台数据/database/vehicle-config/` | 运行目录下的 `database/vehicle-config/` |
+| 订单规则脚本 | `Project/订单分析/scripts/config/shared_config.py` | `sopSharedConfig` 配置的相对路径，模板值为 `config/shared_config.py` |
+| 网页导入、导出 Excel | 从浏览器选取文件，导出到浏览器下载目录 | 同开发版 |
+
+快速验收使用共享 Python 运行 `-B scripts/verify.py`，覆盖单测和旧编号年款复制。每次 push 和 PR 也在 Windows CI 上运行快速验收。完整本地验收加 `--full`，需要 Edge、Playwright、Node 和同级计划工作台。首次先核对本机界面并运行 `-B tests/browser_header_check.py --approve` 建立两种宽度的标题栏截图基线；截图放在忽略的 artifacts 目录，后续运行只比较。更新系统字体或 Edge 后应人工复核差异。验收发布包加 `--release <发布目录>`，测试使用临时数据库。发布清单中 sourceRevision 是载荷指纹，从 Git 工作区构建时 gitCommit 和 sourceDirty 标记提交及源码是否含本地修改。
 
 ## 前台维护
 
@@ -24,7 +38,7 @@
 
 开发环境默认目标为 `Project/订单分析/scripts/config/shared_config.py`。可通过服务参数 `--shared-config` 或环境变量 `VEHICLE_CONFIG_SHARED_CONFIG` 指定；正式部署须配置目标脚本的实际路径，并授予服务账号该文件与父目录的写入权限。浏览器不能自选服务器路径。规则入口沿用工作台代理、身份、来源、CSRF 和只读限制。
 
-保存草稿只写共享数据目录中的 `rules/rules.sqlite3`。点击「发布并更新脚本」会显示目标文件、规则差异和 Python 差异，确认后备份至 `rules/backups/`，再原子替换目标文件。脚本之外的源码不修改；不执行或导入源脚本。重复定义、非字面量配置、未知选配限制会阻止写回。编辑修订号和源文件 SHA-256 均参与冲突校验，外部修改后须显式「从脚本重新载入」。发布日志支持意外中断后的恢复；有未决冲突时拒绝继续发布。备份、数据库和真实规则不进入 Git。
+规则草稿保存在当前数据目录下的 `rules/rules.sqlite3`。点击「发布并更新脚本」会显示目标文件、规则差异和 Python 差异，确认后备份至 `rules/backups/`，再原子替换目标文件。脚本之外的源码不修改；不执行或导入源脚本。重复定义、非字面量配置、未知选配限制会阻止写回。编辑修订号和源文件 SHA-256 均参与冲突校验，外部修改后须显式「从脚本重新载入」。发布日志支持意外中断后的恢复；有未决冲突时拒绝继续发布。备份、数据库和真实规则不进入 Git。
 
 五类规则各有 Excel 工作表；支持模板下载、多文件预览、批量粘贴名称映射、复制、删除确认及撤销。列表条件使用单元格内换行；`[]` 可显式清空列表，空白单元格和缺行保留原值。导入电池优先级时须为受影响的规则填写不同序号。导入预览不保存原文件，应用到编辑区后仍需保存或发布。规则历史可恢复到编辑区，再确认发布。
 
@@ -48,7 +62,7 @@ Excel 模板和导出使用中文工作表与表头：车型档案、发布阶�
 
 编号优先匹配；无编号时按唯一业务键匹配，重复导入同一份表不会再新增对象。车型按品牌、车系、代际、二级代际、年款匹配；版本按车型与名称，配置按车型、类别与名称匹配。改名应保留编号。关联列接受编号、导出的“编号 ｜ 显示名称”，或唯一明确的车型/版本/配置名称；重名、未匹配和跨车型关系必须修正。新车型、版本、配置默认“规划”，新适用关系默认“未配置”。空白单元格及缺行不删除或清空已有字段。公式拒绝导入，Excel 日期可直接识别。
 
-Excel 下载到浏览器的下载目录，服务器不归档原 Excel。导出可选择页面当前编辑内容或已发布版本，维护只读模式仍允许模板和导出。共享目录内持续维护的是数据库与 JSON 快照。
+Excel 下载到浏览器的下载目录，服务器不归档原 Excel。导出可选择页面当前编辑内容或已发布版本，维护只读模式仍允许模板和导出。当前数据目录内持久保存数据库与 JSON 快照。
 
 ## 工作台接入与部署
 

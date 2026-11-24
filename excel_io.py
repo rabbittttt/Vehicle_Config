@@ -1,5 +1,4 @@
 """Human-readable XLSX interchange; imports are previews and never write storage."""
-import base64
 import copy
 import io
 import uuid
@@ -7,13 +6,14 @@ import zipfile
 from datetime import date, datetime
 from xml.etree.ElementTree import ParseError
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
+from xlsx_input import WorkbookBatch, MAX_ROWS, header_values
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
 
-from catalog import TABLES, STATES, empty, validation_issues, diff
+from catalog import TABLES, STATES, empty, validation_issues, diff, natural_key
 
 SHEETS = {'models':'车型档案', 'phases':'发布阶段', 'versions':'版本', 'options':'配置项目',
           'matrix':'配置适用关系', 'aliases':'名称映射', 'groups':'汇总规则'}
@@ -25,11 +25,6 @@ LABELS = {'id':'编号','brand':'品牌','series':'车系','generation':'代际'
           'version_id':'版本','option_id':'配置项目','state':'适用状态'}
 REFS = {'model_id':'models','version_id':'versions','option_id':'options'}
 REFERENCE_SHEETS = {'models':'引用_车型','versions':'引用_版本','options':'引用_配置'}
-MAX_FILES = 10
-MAX_ROWS = 10000
-MAX_TOTAL_ROWS = 20000
-MAX_EXPANDED = 40_000_000
-MAX_BYTES = 8_000_000
 SEP = ' ｜ '
 
 
@@ -121,14 +116,12 @@ def field_key(table, header):
     return localized.get(header)
 
 
-def parse_workbook(raw, filename):
+def parse_workbook(raw, filename, batch=None):
     records=[]; issues=[];source={'file':filename,'sheet':'','row':0}
+    batch=batch or WorkbookBatch([raw])
+    before=batch.expanded
     try:
-        if not isinstance(raw,bytes) or not raw or len(raw)>MAX_BYTES: raise ValueError('文件大小须在 1–8MB 内')
-        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-            expanded=sum(f.file_size for f in archive.infolist())
-            if expanded>MAX_EXPANDED:raise ValueError('Excel 解压后超过 40MB')
-        wb=load_workbook(io.BytesIO(raw),read_only=True,data_only=False)
+        wb=batch.open(raw)
     except (ValueError,OSError,zipfile.BadZipFile,KeyError,ParseError) as exc:
         return [],[issue(source,'',str(exc))],0
     try:
@@ -139,16 +132,14 @@ def parse_workbook(raw, filename):
             if not table:issues.append(issue(source,'','未知工作表'));continue
             if ws.max_column and ws.max_column>len(TABLES[table])+8:
                 issues.append(issue(source,'','工作表列数超出模板范围'));continue
-            cells=ws.iter_rows();headers=next(cells,())
-            titles=[cell_text(c.value) for c in headers]
-            while titles and not titles[-1]:titles.pop()
+            cells=ws.iter_rows()
+            titles=header_values(cells)
             fields=[field_key(table,title) for title in titles]
             if not fields or None in fields or len(set(fields))!=len(fields):
                 issues.append(issue(source,'','表头缺失、重复或包含未知列：'+', '.join(t for t,f in zip(titles,fields) if f is None)));continue
             for number,row in enumerate(cells,2):
                 source={'file':filename,'sheet':ws.title,'row':number}
-                if number>MAX_ROWS+1:
-                    issues.append(issue(source,'','单表超过 10000 行'));break
+                batch.count_row(number)
                 values={}
                 if any(cell.value is not None and cell_text(cell.value) for cell in row[len(fields):]):
                     issues.append(issue(source,'','存在无表头的数据列'));continue
@@ -164,7 +155,7 @@ def parse_workbook(raw, filename):
     except (ValueError,OSError,ParseError) as exc:
         issues.append(issue(source,'',str(exc)))
     finally:wb.close()
-    return records,issues,expanded
+    return records,issues,batch.expanded-before
 
 
 def _encoded_id(value):
@@ -192,14 +183,6 @@ def format_issue(item):
     return location+'：'+item['message']
 
 
-def natural_key(table,row):
-    fields={'models':['brand','series','generation','subgeneration','year'], 'versions':['model_id','name'],
-            'options':['model_id','category','name'],'phases':['model_id','name'],
-            'matrix':['version_id','option_id'],'aliases':['source','name'],'groups':['name']}[table]
-    if any(not row.get(f) for f in fields if f!='subgeneration'):return None
-    return tuple(row.get(f,'').strip().casefold() if table=='aliases' else row.get(f,'') for f in fields)
-
-
 def resolve_reference(value,table,data,model_id=None):
     if not value:raise ValueError('关联不能为空')
     identifier=_encoded_id(value)
@@ -218,23 +201,12 @@ def resolve_reference(value,table,data,model_id=None):
 
 
 def preview_import(base, files):
-    if not isinstance(files,list) or not 1<=len(files)<=MAX_FILES:raise ValueError('一次请选择 1–10 个 Excel 文件')
-    records=[];issues=[];total_bytes=0;total_expanded=0
+    batch=WorkbookBatch(files)
+    records=[];issues=[]
     for item in files:
-        if not isinstance(item,dict):raise ValueError('文件信息无效')
-        filename=item.get('name','导入文件.xlsx')
-        if not isinstance(filename,str) or not filename.lower().endswith('.xlsx'):raise ValueError('仅支持 .xlsx 文件')
-        raw=item.get('raw')
-        if raw is None:
-            try:raw=base64.b64decode(item.get('content',''),validate=True)
-            except (ValueError,TypeError):raise ValueError('文件编码无效：'+filename) from None
-        if not isinstance(raw,bytes):raise ValueError('文件内容无效')
-        total_bytes+=len(raw)
-        if total_bytes>MAX_BYTES:raise ValueError('文件总大小超过 8MB')
-        parsed,errors,expanded=parse_workbook(raw,filename)
-        records.extend(parsed);issues.extend(errors);total_expanded+=expanded
-        if total_expanded>MAX_EXPANDED:raise ValueError('文件解压后总大小超过 40MB')
-        if len(records)>MAX_TOTAL_ROWS:raise ValueError('导入总行数超过 20000')
+        filename,raw=batch.decode(item)
+        parsed,errors,_=parse_workbook(raw,filename,batch)
+        records.extend(parsed);issues.extend(errors)
     result=copy.deepcopy(base);seen={};sources={};touched=set()
     # Processing by object type allows files to be selected in any order.
     for table in ['models','versions','options','phases','matrix','aliases','groups']:

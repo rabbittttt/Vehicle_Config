@@ -11,6 +11,7 @@ def main():
     data = fixture()
     data['versions'][0]['id'] = data['options'][0]['id'] = '01'
     data['options'][0]['category'] = '舒适/功能'
+    data['aliases']=[dict(id='alias1',source='ORDER',name='Straße',target_type='models',target_id='m1')]
     data['phases'] = [dict(id='01', model_id='m1', name='首销', sale_date='2026-03-01')]
     data['matrix'] = [dict(id='01', version_id='01', option_id='01', state='标配')]
     data['models'].append(dict(data['models'][0], id='m1:旧', year='2025'))
@@ -57,6 +58,19 @@ def main():
         assert phase['sale_date'] == phase['presale_date'] == ''
         assert len(result['matrix']) == 2
         assert any((r['version_id'],r['option_id'],r['state'])==(version['id'],option['id'],'标配') for r in result['matrix'])
+        page.locator('[data-tab=aliases]').click()
+        page.locator('.panel-head [data-action="add:aliases"]').click()
+        page.locator('[name=source]').fill('order')
+        page.locator('[name=name]').fill('STRASSE')
+        page.locator('[name=target_id]').select_option('m1')
+        page.locator('#confirm').click()
+        expect(page.locator('#dialog-error')).to_contain_text('名称已存在')
+        page.locator('#cancel').click()
+        page.locator('[data-tab=history]').click()
+        page.get_by_role('button',name='运行路径').click()
+        expect(page.locator('#dialog-body')).to_contain_text(str(store.root.resolve()))
+        expect(page.locator('#dialog-body')).to_contain_text('shared_config.py')
+        page.locator('#cancel').click()
         browser.close()
     print('Imported IDs, category edits, copy, save, refresh and publication passed.')
 

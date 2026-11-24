@@ -11,7 +11,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
-from catalog import Store, empty
+from catalog import Store, empty, validate
 from excel_io import excel, read_excel, preview_import, SHEETS
 from server import make_server
 from test_catalog import fixture
@@ -135,12 +135,28 @@ class ExcelTests(unittest.TestCase):
         result=preview_import(fixture(),[file(raw)])
         self.assertTrue(any('编号不存在' in x['message'] for x in result['issues']))
 
+    def test_missing_option_category_only_allowed_in_draft(self):
+        raw=workbook({'options':[['id','model_id','name'],['extra','m1','新增配置']]})
+        preview=preview_import(fixture(),[file(raw)])
+        self.assertFalse(preview['errors'])
+        self.assertFalse(validate(preview['data']))
+        self.assertTrue(any('category' in error for error in validate(preview['data'],True)))
+
+    def test_batches_count_blank_rows_in_both_editors(self):
+        from shared_rules import empty_rules
+        from rules_excel import preview_rules_import
+        for preview,base,sheet in [(preview_import,empty(),'models'),(preview_rules_import,empty_rules(),'gen_names')]:
+            raw=workbook({sheet:[['id'],[None],['example']]})
+            with patch('xlsx_input.MAX_TOTAL_ROWS',3):
+                result=preview(base,[file(raw),file(raw)])
+            self.assertTrue(any('20000' in msg for msg in result['errors']),result['errors'])
+
     def test_limits_and_malformed_files(self):
         with self.assertRaises(ValueError):preview_import(empty(),[])
         with self.assertRaises(ValueError):preview_import(empty(),[{'name':'x.xlsx','content':'!bad!'}])
         malformed=preview_import(empty(),[file(b'not a zip')]);self.assertTrue(malformed['errors'])
         raw=workbook({'车型档案':[['品牌','车系','代际','年款'],['测试','车型','一代',2026]]})
-        with patch('excel_io.MAX_EXPANDED',100):self.assertTrue(preview_import(empty(),[file(raw)])['errors'])
+        with patch('xlsx_input.MAX_EXPANDED',100):self.assertTrue(preview_import(empty(),[file(raw)])['errors'])
 
 
 class ImportHttpTests(unittest.TestCase):

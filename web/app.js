@@ -16,7 +16,7 @@ const viewLabels = {
 const isRuleView = () => Object.hasOwn(orderRules.titles, view);
 const labels = {id:'编号',brand:'品牌',series:'车系',generation:'代际',subgeneration:'二级代际',year:'年款',energy:'能源类型',tier:'产品档位',status:'状态',model_id:'车型',name:'名称',presale_date:'小订日期',sale_date:'首销日期',power:'动力',battery:'电池包',category:'类别',source:'来源',target_type:'对象类型',target_id:'标准对象',scope:'生效范围',start_date:'生效日期',end_date:'截止日期',members:'成员',version_id:'版本',option_id:'配置项目',state:'适用状态'};
 const fields = {models:['brand','series','generation','subgeneration','year','energy','tier','status'], phases:['model_id','name','presale_date','sale_date'], versions:['model_id','name','power','battery','status'], options:['model_id','category','name','status'], aliases:['source','name','target_type','target_id'], groups:['name','scope','start_date','end_date','members']};
-const required = {models:['brand','series','generation','year','energy','status'], phases:['model_id','name'], versions:['model_id','name','status'], options:['model_id','category','name','status'], aliases:['source','name','target_type','target_id'], groups:['name','scope','members']};
+let required, identityFields;
 function newId() {
   if(crypto.randomUUID)return crypto.randomUUID();
   const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;
@@ -45,16 +45,16 @@ async function api(path,body) {
 function flags() {
   document.querySelectorAll('[data-request-disabled]').forEach(e=>{e.disabled=e.dataset.requestDisabled==='true';delete e.dataset.requestDisabled;});
   const rules = isRuleView();
-  const ready = rules ? orderRules.ready() : Boolean(data);
-  const changed = rules ? orderRules.isDirty() : dirty;
-  $('#save').disabled = readonly || !ready || !changed;
-  $('#publish').disabled = readonly || !ready || (rules && !orderRules.canPublish());
+  const editor=activeEditor();
+  const ready=editor.ready();
+  $('#save').disabled = readonly || !ready || !editor.isDirty();
+  $('#publish').disabled = readonly || !ready || !editor.canPublish();
   $('#publish').textContent = rules ? '发布并更新脚本' : '发布配置';
   $('#import').disabled = readonly || !ready;
   $('#export').disabled = $('#template').disabled = !ready;
-  $('#undo').disabled = readonly || !(rules ? orderRules.canUndo() : undoStack.length);
-  $('#redo').disabled = readonly || !(rules ? orderRules.canRedo() : redoStack.length);
-  const status = rules ? orderRules.status() : dirty ? '有未保存的修改' : `草稿 r${revision} · 已保存`;
+  $('#undo').disabled = readonly || !editor.canUndo();
+  $('#redo').disabled = readonly || !editor.canRedo();
+  const status=editor.status();
   const otherDraft = rules ? dirty && '车型配置有未保存修改' : orderRules.isDirty() && '脚本规则有未保存修改';
   $('#status').textContent = busy ? '正在处理…' : readonly ? '维护中 · 只读' : [status, otherDraft].filter(Boolean).join(' · ');
   document.body.setAttribute('aria-busy',String(busy));
@@ -72,6 +72,7 @@ function mutate(fn) {
   dirty=after!==savedJSON;render();
 }
 function accept(s) {
+  if(s.required){required=s.required;identityFields=s.identity_fields;}
   data=s.draft.data; revision=s.draft.revision;published=s.published;
   savedJSON=JSON.stringify(data);dirty=false;undoStack=[];redoStack=[];selected.clear();
   if(s.csrf)csrf=s.csrf;if('readonly' in s)readonly=s.readonly;
@@ -175,7 +176,7 @@ function render() {
     flags();
     return;
   }
-  $('#actions').innerHTML=view==='matrix'?actionButton('add:versions','新增版本')+actionButton('add:options','新增配置'):view==='history'?'':(['versions','options'].includes(view)?actionButton('batch-add:'+view,'批量新增'):'')+actionButton('add:'+view,'新增'+names[view]);
+  $('#actions').innerHTML=view==='matrix'?actionButton('add:versions','新增版本')+actionButton('add:options','新增配置'):view==='history'?'<button data-runtime>运行路径</button>':(['versions','options'].includes(view)?actionButton('batch-add:'+view,'批量新增'):'')+actionButton('add:'+view,'新增'+names[view]);
   if(view==='matrix')renderMatrix();else if(view==='history')renderHistory();else renderTable();
   flags();
 }
@@ -295,12 +296,16 @@ function edit(table,id,copy=false) {
     else if(f==='category')control=formSelect(f,optionCategories().map(x=>[x,x]),record[f],true);
     else control=`<input name="${f}" value="${esc(record[f]||'')}" type="${f.endsWith('_date')?'date':'text'}" ${mandatory.has(f)?'required':''} maxlength="4000">`;
     return `<label ${f==='members'?'class="wide"':''}>${labels[f]}${mandatory.has(f)?'<span class="required" aria-hidden="true">*</span>':''}${control}</label>`;
-  }).join('')}<div class="wide muted">编号：${esc(record.id)}</div></form>`,values=>{
+  }).join('')}<div class="wide muted">编号：${esc(record.id)}</div></form>`,async values=>{
     const clean={id:record.id};for(const f of fields[table])clean[f]=f==='members'?values.getAll('member').join(','):String(values.get(f)||'').trim();
     if(table==='groups'&&!clean.members)throw Error('请选择汇总成员');
     for(const f of mandatory)if(!clean[f])throw Error('请填写'+labels[f]);
     const rows=data[table].filter(r=>r.id!==clean.id);
-    if(rows.some(r=>table==='models'?['brand','series','generation','subgeneration','year'].every(f=>(r[f]||'')===(clean[f]||'')):table==='aliases'?r.source===clean.source&&r.name===clean.name:table==='groups'?r.name===clean.name:r.name===clean.name&&r.model_id===clean.model_id&&(table!=='options'||r.category===clean.category)))throw Error('同一范围内名称已存在');
+    const keyFields=identityFields[table];
+    const duplicate=table==='aliases'
+      ? (await api('check-name',{row:clean,others:rows.map(r=>({source:r.source||'',name:r.name||''}))})).duplicate
+      : rows.some(r=>keyFields.every(f=>(r[f]||'')===(clean[f]||'')));
+    if(duplicate)throw Error('同一范围内名称已存在');
     mutate(()=>{
       if(copy){
         data.models.push(clean);
@@ -382,6 +387,14 @@ $('#close').onclick=$('#cancel').onclick=()=>{if(!busy)$('#dialog').close();};
 $('#dialog').addEventListener('cancel',e=>{if(busy)e.preventDefault();});
 document.addEventListener('click',e=>{
   if(busy)return;const b=e.target.closest('button');if(!b)return;
+  if(b.hasAttribute('data-runtime'))return run(async()=>{
+    const info=await api('runtime');
+    const rows=[['数据目录',info.data_dir,info.sources.data_dir],['车型数据库',info.catalog],
+      ['规则数据库',info.rules_db],['规则脚本',info.shared_config||'未配置',info.sources.shared_config],
+      ['脚本状态',info.script_exists?'文件存在':'文件未找到'],['Excel 导出',info.excel]];
+    if(info.release.version)rows.push(['运行包版本',info.release.version],['构建提交',info.release.gitCommit||'旧包未记录',info.release.sourceDirty?'含未提交修改':'']);
+    modal('运行路径','<dl>'+rows.map(([label,value,source])=>`<dt>${esc(label)}</dt><dd>${esc(value)} ${source?'（'+esc(source)+'）':''}</dd>`).join('')+'</dl>');
+  });
   if(b.dataset.tab)return switchView(b.dataset.tab);
   if(b.dataset.view)return switchView(tab,b.dataset.view);
   if(b.dataset.ruleAction && isRuleView())return orderRules.handleClick(b,view);
@@ -424,32 +437,39 @@ $('#search').oninput=e=>{
   if(isRuleView())ruleQuery=e.target.value.trim();else query=e.target.value.trim();
   selected.clear();page=1;render();
 };
-$('#save').onclick=()=>run(isRuleView()?orderRules.save:saveDraft);
-$('#publish').onclick=()=>run(isRuleView()?orderRules.previewPublish:previewPublish);
-$('#reload').onclick=()=>{
-  if(isRuleView())return orderRules.reload();
-  const load=async()=>{accept(await api('state'));notice();};
-  if(dirty)modal('放弃未保存修改？','<div class="selection-summary">重新载入服务器草稿</div>',load,'重新载入');else run(load);
+const catalogEditor={
+  ready:()=>Boolean(data), isDirty:()=>dirty, canPublish:()=>true,
+  canUndo:()=>undoStack.length>0, canRedo:()=>redoStack.length>0,
+  status:()=>dirty?'有未保存的修改':`草稿 r${revision} · 已保存`,
+  save:saveDraft, previewPublish,
+  reload(){
+    const load=async()=>{accept(await api('state'));notice();};
+    if(dirty)modal('放弃未保存修改？','<div class="selection-summary">重新载入服务器草稿</div>',load,'重新载入');else run(load);
+  },
+  undo(){
+    if(busy||readonly||!undoStack.length)return;
+    redoStack.push(JSON.stringify(data));data=JSON.parse(undoStack.pop());dirty=JSON.stringify(data)!==savedJSON;selected.clear();render();notice('已撤销');
+  },
+  redo(){
+    if(busy||readonly||!redoStack.length)return;
+    undoStack.push(JSON.stringify(data));data=JSON.parse(redoStack.pop());dirty=JSON.stringify(data)!==savedJSON;selected.clear();render();notice('已重做');
+  },
 };
-$('#undo').onclick=()=>{
-  if(isRuleView())return orderRules.undo();
-  if(busy||readonly||!undoStack.length)return;
-  redoStack.push(JSON.stringify(data));data=JSON.parse(undoStack.pop());dirty=JSON.stringify(data)!==savedJSON;selected.clear();render();notice('已撤销');
-};
-$('#redo').onclick=()=>{
-  if(isRuleView())return orderRules.redo();
-  if(busy||readonly||!redoStack.length)return;
-  undoStack.push(JSON.stringify(data));data=JSON.parse(redoStack.pop());dirty=JSON.stringify(data)!==savedJSON;selected.clear();render();notice('已重做');
-};
+function activeEditor(){return isRuleView()?orderRules:catalogEditor;}
+$('#save').onclick=()=>run(activeEditor().save);
+$('#publish').onclick=()=>run(activeEditor().previewPublish);
+$('#reload').onclick=()=>activeEditor().reload();
+$('#undo').onclick=()=>activeEditor().undo();
+$('#redo').onclick=()=>activeEditor().redo();
 $('#export').onclick=()=>isRuleView()?run(orderRules.openExport):openExport();
 $('#template').onclick=()=>run(isRuleView()?orderRules.template:()=>download('template',undefined,'车型配置-导入模板.xlsx'));
 $('#import').onclick=requestImport;
 $('#file').onchange=e=>{
   const files=[...e.target.files];e.target.value='';if(!files.length)return;
   const rules=isRuleView(), importer=rules?orderRules.importFiles:importFiles;
-  if(rules?orderRules.isDirty():dirty) {
+  if(activeEditor().isDirty()) {
     modal('保存草稿后导入','<div class="selection-summary">当前编辑有未保存的修改</div>',async()=>{
-      if(rules)await orderRules.save();else await saveDraft();
+      await activeEditor().save();
       await importer(files);return false;
     },'保存并预览导入');
   } else run(()=>importer(files));

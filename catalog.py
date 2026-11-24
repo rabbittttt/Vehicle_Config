@@ -12,6 +12,30 @@ TABLES = {
  'aliases': ['id','source','name','target_type','target_id'],
  'groups': ['id','name','scope','start_date','end_date','members'],
 }
+PUBLISH_REQUIRED = {
+    'models':['brand','series','generation','year','energy','status'],
+    'phases':['model_id','name'], 'versions':['model_id','name','status'],
+    'options':['model_id','category','name','status'],
+    'aliases':['source','name','target_type','target_id'],
+    'groups':['name','scope','members'],
+}
+IDENTITY_FIELDS = {
+    'models':['brand','series','generation','subgeneration','year'],
+    'versions':['model_id','name'], 'options':['model_id','category','name'],
+    'phases':['model_id','name'], 'matrix':['version_id','option_id'],
+    'aliases':['source','name'], 'groups':['name'],
+}
+
+def identity(table,row):
+    values=tuple(row.get(f,'') for f in IDENTITY_FIELDS[table])
+    if table=='aliases':return tuple(value.strip().casefold() for value in values)
+    return values
+
+def natural_key(table,row):
+    if all(row.get(f) for f in IDENTITY_FIELDS[table] if f!='subgeneration'):
+        return identity(table,row)
+    return None
+
 STATES = ['未配置','标配','选配','不可选']
 def empty(): return {key: [] for key in TABLES}
 def now(): return datetime.now(timezone.utc).isoformat()
@@ -65,12 +89,12 @@ def validation_issues(data,publish=False):
     names=set()
     for table in ['models','versions','options','phases','groups']:
         for row in data[table]:
-            required={'models':['brand','series','generation','year','energy','status'],'groups':['name','scope','members']}.get(table,['name'])
+            required=PUBLISH_REQUIRED[table]
             if publish:
                 for field in required:
                     if not row.get(field,'').strip():add(table,row,row['id']+'：缺少 '+field)
             if table in ['models','versions','options'] and row.get('status') not in ['在售','规划','停用']: add(table,row,row['id']+'：状态无效')
-            key=(table,row.get('model_id',''),row.get('category',''),row.get('name','')) if table!='models' else (table,*(row.get(f,'') for f in ['brand','series','generation','subgeneration','year']))
+            key=(table,identity(table,row))
             if key in names:add(table,row,row['id']+'：名称重复')
             names.add(key)
     versions={r['id']:r for r in data['versions']}; options={r['id']:r for r in data['options']}
@@ -84,7 +108,7 @@ def validation_issues(data,publish=False):
         if pair[0] in versions and pair[1] in options and versions[pair[0]].get('model_id')!=options[pair[1]].get('model_id'):add('matrix',row,'配置不可跨车型关联')
     aliases=set()
     for row in data['aliases']:
-        key=(row.get('source','').strip().casefold(),row.get('name','').strip().casefold())
+        key=identity('aliases',row)
         if key in aliases:add('aliases',row,'名称映射冲突：'+row.get('name',''))
         aliases.add(key)
         if publish and (not key[0] or not key[1]):add('aliases',row,'名称映射缺少来源或名称')

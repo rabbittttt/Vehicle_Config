@@ -28,7 +28,6 @@ TABLES = {
 FIELDS = TABLES
 CONSTANTS = {'gen_names':'GEN_DISPLAY_NAME_MAP','option_names':'MERGE_OPTIONS','merge_groups':'MERGE_GROUPS',
              'battery_rules':'BATTERY_RULES','option_prices':'OPTION_CONFIG'}
-LIST_FIELDS = {'members','generation','version','sku','versions','match_versions'}
 ARRAY_FIELDS = {'merge_groups':{'members'},'battery_rules':{'generation','version','sku'},'option_prices':{'versions','match_versions'}}
 
 

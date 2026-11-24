@@ -3,12 +3,12 @@ import argparse, getpass, json, os, secrets, sys, zipfile
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from excel_io import excel, read_excel, preview_import
-from catalog import Store, Conflict
+from catalog import Store, Conflict, PUBLISH_REQUIRED, IDENTITY_FIELDS, identity
 from shared_rules import RuleStore, validate as validate_rules
 from rules_excel import rules_excel, preview_rules_import
 ROOT=Path(__file__).resolve().parent
 
-def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origins=(),readonly=False,proxy_secret=None,rules=None):
+def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origins=(),readonly=False,proxy_secret=None,rules=None,path_sources=None):
     token=secrets.token_urlsafe(32)
     rules=rules or RuleStore(store.root,None)
     class Handler(BaseHTTPRequestHandler):
@@ -39,7 +39,9 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 self.check_host()
                 if path=='/healthz':return self.send(200,{'ok':True,'app':'vehicle-config','public_prefix':prefix})
                 self.actor()
-                if path=='/api/state':return self.send(200,{**store.get(),'csrf':token,'readonly':readonly})
+                if path=='/api/state':return self.send(200,{**store.get(),'csrf':token,'readonly':readonly,'required':PUBLISH_REQUIRED,'identity_fields':IDENTITY_FIELDS})
+                if path=='/api/runtime':
+                    return self.send(200,runtime_info(store.root,rules.source_path,path_sources or {}))
                 if path=='/api/rules/state':return self.send(200,rules.get())
                 if path in ('/api/history','/api/rules/history'):
                     params=parse_qs(urlsplit(self.path).query)
@@ -96,6 +98,16 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                         if body.get('revision')!=state['revision']:raise Conflict('规则草稿已被其他人修改，请重新载入后导入')
                         return self.send(200,{**preview_rules_import(state['data'],body.get('files')),'revision':state['revision']})
                     return self.send(404,{'error':'未找到'})
+                if path=='/api/check-name':
+                    rows=body['others']
+                    if not isinstance(rows,list):raise ValueError('别名列表格式无效')
+                    def alias_key(row):
+                        if not isinstance(row,dict) or any(not isinstance(row.get(f),str) for f in IDENTITY_FIELDS['aliases']):
+                            raise ValueError('来源与别名须为文本')
+                        return identity('aliases',row)
+                    candidate=alias_key(body['row'])
+                    duplicate=any(alias_key(r)==candidate for r in rows)
+                    return self.send(200,{'duplicate':duplicate})
                 if path=='/api/import-batch':
                     if not isinstance(body,dict):raise ValueError('导入请求格式无效')
                     state=store.get()['draft']
@@ -116,13 +128,34 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
             rules.db.close()
     return Server((host,port),Handler)
 
+def runtime_info(directory,source,sources):
+    root=Path(directory).resolve()
+    script=Path(source).resolve() if source else None
+    manifest=ROOT.parent/'app-release.json'
+    release={}
+    if ROOT.name=='payload' and manifest.is_file():
+        try:
+            candidate=json.loads(manifest.read_text('utf-8-sig'))
+            if isinstance(candidate,dict) and candidate.get('appId')=='vehicle-config':
+                release={k:candidate.get(k) for k in ('version','gitCommit','sourceDirty','sourceRevision')}
+        except (ValueError,OSError):pass
+    return {'release':release,'data_dir':str(root),'catalog':str(root/'catalog.sqlite3'),
+            'rules_db':str(root/'rules'/'rules.sqlite3'),'shared_config':str(script) if script else '',
+            'script_exists':bool(script and script.is_file()),'sources':sources,'excel':'浏览器下载目录'}
+
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--host',default='127.0.0.1');p.add_argument('--port',type=int,default=8790);p.add_argument('--public-prefix',default='/vehicle-config/');p.add_argument('--data-dir');p.add_argument('--shared-config');p.add_argument('--public-origin',action='append',default=[]);p.add_argument('--read-only',action='store_true');p.add_argument('--require-proxy-identity',action='store_true');a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--host',default='127.0.0.1');p.add_argument('--port',type=int,default=8790);p.add_argument('--public-prefix',default='/vehicle-config/');p.add_argument('--data-dir');p.add_argument('--shared-config');p.add_argument('--public-origin',action='append',default=[]);p.add_argument('--read-only',action='store_true');p.add_argument('--require-proxy-identity',action='store_true');p.add_argument('--show-paths',action='store_true');a=p.parse_args()
     if a.host not in ['127.0.0.1','::1']:p.error('仅允许回环监听，通过部门门户代理访问')
     if not a.public_prefix.startswith('/') or not a.public_prefix.endswith('/') or '..' in a.public_prefix:p.error('公共前缀格式无效')
     workspace=next((x for x in ROOT.parents if x.name=='Project'),None)
     data_root=(ROOT / os.environ['PLANHUB_DATA_ROOT']).resolve() if os.environ.get('PLANHUB_DATA_ROOT') else ROOT.parent/'工作台数据'
     directory=a.data_dir or str(data_root/'database'/'vehicle-config')
+    source=a.shared_config or os.environ.get('VEHICLE_CONFIG_SHARED_CONFIG') or (workspace/'订单分析'/'scripts'/'config'/'shared_config.py' if workspace else None)
+    sources={'data_dir':'--data-dir' if a.data_dir else 'PLANHUB_DATA_ROOT' if os.environ.get('PLANHUB_DATA_ROOT') else '工作区默认',
+             'shared_config':'--shared-config' if a.shared_config else 'VEHICLE_CONFIG_SHARED_CONFIG' if os.environ.get('VEHICLE_CONFIG_SHARED_CONFIG') else '工作区默认' if workspace else '未配置'}
+    if a.show_paths:
+        print(json.dumps(runtime_info(directory,source,sources),ensure_ascii=False,indent=2))
+        return
     legacy=(workspace/'共享数据'/'车型配置') if workspace else None
     if legacy and Path(directory).resolve()==(data_root/'database'/'vehicle-config').resolve():
         for db_file in ('catalog.sqlite3','rules/rules.sqlite3'):
@@ -139,8 +172,7 @@ def main():
     else:
         import fcntl
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    source=a.shared_config or os.environ.get('VEHICLE_CONFIG_SHARED_CONFIG') or (workspace/'订单分析'/'scripts'/'config'/'shared_config.py' if workspace else None)
-    store=Store(root);rules=RuleStore(root,source);server=make_server(store,a.host,a.port,a.public_prefix,a.public_origin,a.read_only,secret,rules)
+    store=Store(root);rules=RuleStore(root,source);server=make_server(store,a.host,a.port,a.public_prefix,a.public_origin,a.read_only,secret,rules,sources)
     print(f'车型配置管理 http://{a.host}:{a.port}{a.public_prefix} | {root}',flush=True)
     try:server.serve_forever()
     except KeyboardInterrupt:pass

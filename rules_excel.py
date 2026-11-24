@@ -1,5 +1,4 @@
 """Structured XLSX interchange for the five shared_config rule constants."""
-import base64
 import copy
 import io
 import json
@@ -8,7 +7,8 @@ import uuid
 import zipfile
 from xml.etree.ElementTree import ParseError
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
+from xlsx_input import WorkbookBatch, header_values
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
@@ -104,36 +104,28 @@ def _key(table, row):
 
 
 def preview_rules_import(base, files):
-    result = copy.deepcopy(base); issues = []; records = []; total_bytes = expanded = total_rows = 0
+    result = copy.deepcopy(base); issues = []; records = []; batch = WorkbookBatch(files)
     def issue(source, field, message):
         issues.append({**source, 'field':field, 'message':message})
-    if not isinstance(files, list) or not 1 <= len(files) <= 10: raise ValueError('每批须有 1–10 个 Excel 文件')
     for index, file in enumerate(files, 1):
         source = {'file':str(file.get('name', f'文件{index}.xlsx'))[:200], 'sheet':'', 'row':0} if isinstance(file, dict) else {'file':f'文件{index}', 'sheet':'', 'row':0}
         wb = None
         try:
-            if not isinstance(file, dict): raise ValueError('文件格式无效')
-            raw = file.get('raw') if 'raw' in file else base64.b64decode(file.get('content',''), validate=True)
-            if not isinstance(raw, bytes) or not raw: raise ValueError('文件内容为空或无效')
-            total_bytes += len(raw)
-            if total_bytes > 8_000_000: raise ValueError('文件总大小超过 8MB')
-            with zipfile.ZipFile(io.BytesIO(raw)) as archive: expanded += sum(f.file_size for f in archive.infolist())
-            if expanded > 40_000_000: raise ValueError('Excel 解压后合计超过 40MB')
-            wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=False)
+            source['file'],raw=batch.decode(file)
+            wb=batch.open(raw)
             for ws in wb:
                 source = {**source, 'sheet':ws.title, 'row':1}
                 table = next((t for t, title in SHEETS.items() if ws.title in [t, title]), None)
                 if not table: issue(source, '', '未知规则工作表'); continue
                 if ws.max_column and ws.max_column > len(FIELDS[table])+8: issue(source, '', '列数超出模板范围'); continue
-                rows = ws.iter_rows(); headers = list(next(rows, ()))
-                while headers and headers[-1].value is None: headers.pop()
+                rows = ws.iter_rows(); headers = header_values(rows)
                 aliases = {label(table,f):f for f in FIELDS[table]} | {f:f for f in FIELDS[table]}
-                fields = [aliases.get(str(cell.value).strip()) for cell in headers]
+                fields = [aliases.get(title) for title in headers]
                 if not fields or None in fields or len(fields) != len(set(fields)):
                     issue(source, '', '表头缺失、重复或包含未知列'); continue
                 for number, cells in enumerate(rows, 2):
-                    source = {**source, 'row':number}; total_rows += 1
-                    if number > 10001 or total_rows > 20000: raise ValueError('单表最多 10000 行，每批最多 20000 行')
+                    source = {**source, 'row':number}
+                    batch.count_row(number)
                     if any(c.value is not None for c in cells[len(fields):]): issue(source, '', '存在无表头的数据列'); continue
                     values = {}; invalid = False
                     for field, cell in zip(fields, cells):
