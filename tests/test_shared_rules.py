@@ -1,4 +1,5 @@
 import copy
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +8,19 @@ from shared_rules import RuleStore, parse_source, render_source, Conflict
 from rules_excel import rules_excel, preview_rules_import
 
 SOURCE = b'# keep\r\nMERGE_GROUPS = {"A&B": ["A", "B"]}\r\nOTHER = 3\r\ndef keep():\r\n    return OTHER\r\n'
+
+SOP_PROJECT = Path(__file__).resolve().parents[2] / 'SOP维护'
+REJECTED_GROUPS = [
+    {'外层': ['内层'], '内层': ['车型']},
+    {'Ｓ９': ['车型甲'], 'S9': ['车型乙']},
+    {'组一': ['品牌 车型 2026款'], '组二': ['品牌 车型 2026款BETA']},
+    {'组一': ['车型', '车型（ＢＥＴＡ）']},
+    {'组一': ['车型 2025款', '车型＿BETA＿2025款']},
+    {'组一': ['BETA']},
+    {'BETA': ['车型']},
+]
+VALID_MEMBERS = ['品牌 车型 BETA 2025款', '品牌 车型 2026款', '品牌 BETAMAX 2026款']
+
 
 class RuleTests(unittest.TestCase):
     def setUp(self):
@@ -80,6 +94,54 @@ class RuleTests(unittest.TestCase):
         rewritten=render_source(parsed,data);self.assertIn('标准',rewritten.decode('gbk'));self.assertIn(b'\r\n',rewritten)
         self.path.write_bytes(raw);state=self.store.get();self.store.reload(0,state['source']['hash'],'tester')
         self.assertEqual(self.store.get()['draft']['data']['gen_names'][0]['target'],'新')
+    def test_publication_checks_sop_generation_identity(self):
+        before = self.store.get()
+        for groups in REJECTED_GROUPS:
+            with self.subTest(groups=groups):
+                data = copy.deepcopy(before['draft']['data'])
+                data['merge_groups'] = [
+                    {'id': str(i), 'name': name, 'members': members}
+                    for i, (name, members) in enumerate(groups.items())
+                ]
+                preview = self.store.preview(data, 0)
+                self.assertTrue(preview['errors'])
+                with self.assertRaises(ValueError):
+                    self.store.publish(data, 0, preview['source_hash'], 'tester')
+                self.assertEqual(self.path.read_bytes(), SOURCE)
+                self.assertEqual(self.store.get()['published'], before['published'])
+
+    @unittest.skipUnless((SOP_PROJECT / 'sop' / 'source_rules.py').is_file(), '需要同一工作区的 SOP 项目')
+    def test_group_publication_matches_installed_sop_reader(self):
+        with patch.object(sys, 'path', [str(SOP_PROJECT), *sys.path]):
+            from sop.source_rules import MergeRuleError, load_merge_rules
+        valid = {'Outer': VALID_MEMBERS, 'Inner': ['Car']}
+        for groups in [*REJECTED_GROUPS, valid]:
+            with self.subTest(groups=groups):
+                raw = ('MERGE_GROUPS = ' + repr(groups)).encode()
+                parsed = parse_source(raw)
+                if groups == valid:
+                    self.path.write_bytes(render_source(parsed, parsed['data']))
+                    self.assertEqual(load_merge_rules(self.path)['groups'], valid)
+                else:
+                    self.path.write_bytes(raw)
+                    with self.assertRaises(MergeRuleError):
+                        load_merge_rules(self.path)
+                    with self.assertRaises(ValueError):
+                        render_source(parsed, parsed['data'])
+
+    def test_repair_legacy_nested_groups_without_rewriting_members(self):
+        self.path.write_bytes(b'MERGE_GROUPS = {"Outer": ["Inner"], "Inner": ["Car"]}\n')
+        state = self.store.reload(0, self.store.get()['source']['hash'], 'tester')
+        data = state['draft']['data']
+        self.assertEqual(data['merge_groups'][0]['members'], ['Inner'])
+        members = VALID_MEMBERS
+        data['merge_groups'][0]['members'] = members
+        saved = self.store.save(data, state['draft']['revision'], 'tester')
+        preview = self.store.preview(data, saved['draft']['revision'])
+        self.assertFalse(preview['errors'])
+        self.store.publish(data, saved['draft']['revision'], preview['source_hash'], 'tester')
+        self.assertEqual(parse_source(self.path.read_bytes())['values']['MERGE_GROUPS']['Outer'], members)
+
     def test_failure_and_recovery(self):
         data=self.changed();p=self.store.preview(data,0)
         with patch.object(self.store,'_atomic_source',side_effect=OSError('blocked')):

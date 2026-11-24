@@ -9,10 +9,12 @@ import json
 import math
 import os
 import pprint
+import re
 import sqlite3
 import tempfile
 import threading
 import tokenize
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -210,9 +212,42 @@ def parse_source(raw):
     return {'raw':raw,'text':text,'encoding':encoding,'newline':'\r\n' if '\r\n' in text else '\n','nodes':nodes,'values':values,'data':data,'hash':digest(raw)}
 
 
+def generation_key(name):
+    """Match the SOP reader's generation identity; keep the published spelling."""
+    value = unicodedata.normalize("NFKC", name.strip())
+    value = re.sub(r"(20\d{2}款)\s*BETA(?=$|[\s_\-–—]|汇总$)", r"\1", value, flags=re.I)
+    value = re.sub(r"[\s_\-–—]*[\(\[\{]\s*BETA\s*[\)\]\}][\s_\-–—]*", " ", value, flags=re.I)
+    value = re.sub(r"(^|[\s_\-–—])BETA(?=$|[\s_\-–—])[\s_\-–—]*", " ", value, flags=re.I)
+    return " ".join(value.split())
+
+
+def validate_published_groups(rows):
+    """Publication must be readable by SOP, even when repairing an older draft."""
+    summaries, owners = {}, {}
+    for row in rows:
+        name = row['name']
+        key = generation_key(name)
+        if not key:
+            raise ValueError(f'汇总组名称归一后为空：{name}')
+        if key in summaries:
+            raise ValueError(f'汇总组名称归一后重复：{summaries[key]}、{name}')
+        summaries[key] = name
+        for member in row['members']:
+            key = generation_key(member)
+            if not key:
+                raise ValueError(f'汇总组 {name} 的成员名称归一后为空：{member}')
+            if key in owners:
+                raise ValueError(f'汇总组成员归一后重复：{member}（{owners[key]}、{name}）')
+            owners[key] = name
+    for key, name in summaries.items():
+        if key in owners:
+            raise ValueError(f'汇总组不能作为成员：{name} 属于 {owners[key]}')
+
+
 def render_source(parsed,data,published=None):
     errors=validate(data)
     if errors:raise ValueError('\n'.join(errors))
+    validate_published_groups(data['merge_groups'])
     text=parsed['text'];lines=text.splitlines(keepends=True)
     def offset(line,column):return sum(len(value) for value in lines[:line-1])+len(lines[line-1].encode('utf-8')[:column].decode('utf-8'))
     edits=[];append=[]
