@@ -92,7 +92,7 @@ def switch_view(page, tab, view):
 
 
 def add_vehicle(page):
-    page.locator('.panel-head [data-action="add:models"]').click()
+    page.locator('#actions [data-action="add:models"]').click()
     values = {'brand': '验收品牌', 'series': '未保存车型甲', 'generation': '一代',
               'year': '2026', 'energy': '纯电'}
     for field, value in values.items():
@@ -257,7 +257,7 @@ def main():
         header.get_by_role('button', name='筛选 · 1', exact=True).click()
         expect(header.locator('#year')).to_be_hidden()
         mobile_tab.select_option('aliases')
-        expect(page.locator('#title')).to_have_text('业务名称映射')
+        expect(page.locator('#view-tabs [aria-pressed="true"]')).to_have_text('业务名称映射')
         page.set_viewport_size({'width': 1440, 'height': 1000})
         expect(header.locator('[data-tab="aliases"]')).to_have_attribute('aria-current', 'page')
         assert not errors, errors

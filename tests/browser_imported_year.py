@@ -59,7 +59,7 @@ def main():
         assert len(result['matrix']) == 2
         assert any((r['version_id'],r['option_id'],r['state'])==(version['id'],option['id'],'标配') for r in result['matrix'])
         page.locator('[data-tab=aliases]').click()
-        page.locator('.panel-head [data-action="add:aliases"]').click()
+        page.locator('#actions [data-action="add:aliases"]').click()
         page.locator('[name=source]').fill('order')
         page.locator('[name=name]').fill('STRASSE')
         page.locator('[name=target_id]').select_option('m1')

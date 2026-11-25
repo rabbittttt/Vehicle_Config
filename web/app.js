@@ -246,7 +246,7 @@ function render() {
     nav.querySelectorAll('[data-tab]').forEach(b=>{b.classList.toggle('active',b.dataset.tab===tab);b.setAttribute('aria-current',b.dataset.tab===tab?'page':'false');});
     mobileTab.value = tab;
     nav.dataset.active = tab;
-    viewTabs.innerHTML = sections[tab].map(t => `<button data-view="${t}">${viewLabels[t]}</button>`).join('');
+    viewTabs.innerHTML = sections[tab].map(t => `<button id="view-${t}" data-view="${t}">${viewLabels[t]}</button>`).join('');
     revealActiveTab(nav);
   }
   if (viewTabs.dataset.active !== view) {
@@ -256,9 +256,9 @@ function render() {
       button.setAttribute('aria-pressed', String(active));
     }
     viewTabs.dataset.active = view;
+    viewTabs.closest('section').setAttribute('aria-labelledby','view-'+view);
     revealActiveTab(viewTabs);
   }
-  $('#title').textContent=viewLabels[view];
   if (isRuleView()) {
     $('#bulkbar').hidden = true;
     orderRules.render(view, ruleQuery);
@@ -272,7 +272,7 @@ function render() {
 }
 function paginator(total, rowsPerPage=pageSize) {
   const pages=Math.max(1,Math.ceil(total/rowsPerPage));page=Math.min(page,pages);
-  $('#pagination').innerHTML=total>pageSize?`<span>共 ${total} 条 · 第 ${page} / ${pages} 页</span><button data-page="${page-1}" ${page===1?'disabled':''}>上一页</button><button data-page="${page+1}" ${page===pages?'disabled':''}>下一页</button>`:'';
+  $('#pagination').innerHTML=pages>1?`<span>第 ${page} / ${pages} 页</span><button data-page="${page-1}" ${page===1?'disabled':''}>上一页</button><button data-page="${page+1}" ${page===pages?'disabled':''}>下一页</button>`:'';
   return [(page-1)*rowsPerPage,page*rowsPerPage];
 }
 function checkbox(id,label) {return `<label class="row-hit"><input type="checkbox" class="row-check" data-select="${esc(id)}" aria-label="${esc(label)}" ${selected.has(id)?'checked':''}></label>`;}
@@ -312,7 +312,7 @@ function selectionToolbar(records, matrix=false) {
 }
 function renderTable() {
   const records=scopedRows(view);const range=paginator(records.length);
-  $('#count').textContent=`${records.length} 条记录`;
+  $('#count').textContent=records.length ? `${records.length} 条记录` : '';
   const selectable=!readonly&&['models','versions','options'].includes(view);
   selectionToolbar(selectable?records:[]);
   const columns=view==='models'?['brand','series','generation','subgeneration','year','energy','status']:fields[view];
@@ -346,8 +346,8 @@ function renderMatrix() {
   const {versions,options,index}=matrixRows();
   // Native modal focus changes touch every select on the page. Bound the number of live cells.
   const rowsPerPage=Math.max(1,Math.min(pageSize,Math.floor(96 / Math.max(1,versions.length))));
-  const range=paginator(options.length,rowsPerPage);
-  $('#count').textContent=`${options.length} 项配置 · ${versions.length} 个版本`;
+  const range=paginator(versions.length ? options.length : 0,rowsPerPage);
+  $('#count').textContent=options.length || versions.length ? `${options.length} 项配置 · ${versions.length} 个版本` : '';
   selectionToolbar(versions.length?options:[],true);
   $('#content').innerHTML=versions.length&&options.length?`<div class="scroll matrix-scroll"><table class="matrix-table"><thead><tr>${readonly?'':'<th class="check-cell"></th>'}<th class="sticky-col">配置项目</th>${versions.map(v=>`<th>${esc(v.name)}<small>${esc(display('models',v.model_id))}</small></th>`).join('')}</tr></thead><tbody>${options.slice(...range).map(o=>`<tr class="${selected.has(o.id)?'selected':''}">${readonly?'':`<td class="check-cell">${checkbox(o.id,'选择 '+o.name)}</td>`}<td class="sticky-col"><small>${esc(o.category)}</small>${esc(o.name)}</td>${versions.map(v=>{
     if(v.model_id!==o.model_id)return '<td class="inapplicable">—</td>';
@@ -412,7 +412,7 @@ async function renderHistory(search=query, warning='') {
     if(request!==historyRequest || view!==requestedView)return;
     page=result.page;
     paginator(result.total);
-    $('#count').textContent=`${result.total} 条记录`;
+    $('#count').textContent=result.total ? `${result.total} 条记录` : '';
     const rows=result.history.map(record=>{
       const action=rules?`data-rule-action="history" data-rule-id="${record.id}"`:`data-history="${record.id}"`;
       return `<tr><td>#${record.id}</td><td>${esc(record.kind)}</td><td>${esc(record.actor)}</td><td>${esc(new Date(record.time).toLocaleString())}</td><td><button class="link" ${action}>差异与恢复</button></td></tr>`;

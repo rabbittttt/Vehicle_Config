@@ -14,7 +14,7 @@ with sync_playwright() as p:
     browser=p.chromium.launch(channel='msedge');page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
     page.goto(base+'/vehicle-config/');page.wait_for_function("() => document.querySelector('#status').textContent.includes('已保存')")
     assert page.locator('#published').is_hidden()
-    page.locator('.panel-head [data-action="add:models"]').click()
+    page.locator('#actions [data-action="add:models"]').click()
     for field,value in {'brand':'验收品牌','series':'验收车型','generation':'第一代','year':'2026','energy':'纯电','tier':'中大型'}.items():page.locator(f'[name="{field}"]').fill(value)
     page.locator('#confirm').click();page.locator('[data-tab="matrix"]').click()
     for name in ['标准版','长续航版','旗舰版']:

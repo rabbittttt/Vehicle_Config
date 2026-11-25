@@ -88,8 +88,6 @@ label{display:grid;gap:6px;color:var(--muted);font-size:12px}
 input,select{border:1px solid var(--field-border);border-radius:8px;min-height:42px;padding:9px 12px;color:var(--text);background:var(--surface);max-width:100%;min-width:0}
 .muted{color:var(--muted);font-size:12px}
 .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--panel-radius);overflow:hidden}
-.panel-head{padding:18px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:16px}
-.panel-head div{display:flex;gap:8px;flex-wrap:wrap}
 .scroll{overflow:auto}
 table{border-collapse:collapse;width:100%;white-space:nowrap;text-align:left}
 th{background:var(--table-head);color:var(--muted);font-weight:500;font-size:12px;padding:14px 22px}
@@ -126,7 +124,6 @@ h1{font-size:23px}
 .top-actions{margin-left:0}
 nav{gap:4px;margin-top:14px}
 main{padding:18px 12px 142px}
-.panel-head{align-items:start;padding:16px;flex-direction:column}
 td,th{padding:12px 16px}
 footer{padding:12px;flex-wrap:wrap}
 footer>div{width:100%;justify-content:end}
@@ -140,9 +137,11 @@ h3{font-size:14px;margin:0 0 12px}
 textarea{font:inherit;background:var(--surface);resize:vertical;border:1px solid var(--field-border);border-radius:8px;padding:12px;min-height:120px;width:100%;color:var(--text)}
 .heading{gap:12px}
 .save-actions button{border-radius:var(--control-radius)}
-.panel-head{padding:18px 22px}
-.panel-head>div:first-child{display:flex;align-items:center;gap:12px}
-.view-tabs{padding:10px 22px;display:flex;gap:4px;overflow:auto;border-bottom:1px solid var(--border)}
+.view-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:6px 18px;border-bottom:1px solid var(--border)}
+.view-tabs{display:flex;gap:4px;max-width:100%;min-width:0;overflow-x:auto;padding:4px;scrollbar-width:thin}
+.view-tabs button{flex:none}
+#actions{display:flex;flex-wrap:wrap;gap:6px;margin-inline-start:auto;max-width:100%}
+#actions:empty{display:none}
 .view-tabs button{border:0;border-radius:10px;background:transparent;color:var(--muted);padding:10px 14px}
 .view-tabs .active{background:var(--selected);color:var(--blue);font-weight:650}
 .bulkbar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px 22px;background:var(--surface);border-bottom:1px solid var(--border);font-size:13px}
@@ -173,7 +172,9 @@ th small,td small{font-size:12px}
 th.sticky-col{background:var(--table-head)}
 .matrix-table select{border:1px solid transparent;padding:10px 12px;min-height:42px;min-width:155px}
 .inapplicable{text-align:center;color:var(--muted)}
-.pagination{display:flex;justify-content:flex-end;align-items:center;gap:12px;padding:12px 22px;color:var(--muted);font-size:12px}
+.results-summary{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;padding:8px 22px;border-top:1px solid var(--border)}
+.results-summary:has(#count:empty):has(#consumer[hidden]):has(#pagination:empty),#count:empty{display:none}
+.pagination{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-inline-start:auto;color:var(--muted);font-size:12px}
 .pagination:empty{display:none}
 .pagination button{min-height:36px}
 footer{background:var(--surface);padding:12px 28px}
@@ -205,9 +206,8 @@ footer>div{align-items:center;display:flex;gap:20px}
 .export-options{display:grid;gap:12px}
 .export-options label{display:flex;gap:12px;align-items:center;border:1px solid var(--border);padding:16px;border-radius:8px;font-size:14px;cursor:pointer}
 @media(max-width:700px){header{padding-top:16px}
-.panel-head{padding:16px}
-.panel-head>div:first-child{flex-wrap:wrap}
-.view-tabs{padding:10px 16px;gap:4px}
+.view-toolbar{padding:4px 8px;gap:4px 6px}
+.view-tabs button,#actions button{padding:6px 10px}
 .bulkbar{padding:12px;gap:10px}
 .bulkbar .inline-label{flex:1}
 .bulkbar .inline-label select{max-width:100%;width:100%}
@@ -223,11 +223,10 @@ main{padding-bottom:156px}
 .import-summary{grid-template-columns:repeat(2,1fr)}
 #dialog-body{padding:16px;max-height:57vh}
 .dialog-head,.dialog-actions{padding:12px 16px}
-.pagination{padding:12px;gap:8px}
+.results-summary{padding:8px 12px}
+.pagination{gap:8px}
 .sticky-col{max-width:160px!important;min-width:140px!important}
-nav{scrollbar-width:thin}
-.panel-head #actions{width:100%;flex-wrap:wrap}
-.panel-head #actions button{flex:1}}
+nav{scrollbar-width:thin}}
 @media(max-width:700px){.bulkbar{display:grid;grid-template-columns:1fr 1fr;align-items:center}
 .bulkbar .inline-label{display:grid;gap:4px;min-width:0}
 .bulkbar .inline-label select{min-width:0}

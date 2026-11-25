@@ -133,7 +133,7 @@ const orderRules = (() => {
       .map((row, index) => ({row, index}))
       .filter(({row}) => Object.values(row).map(text).join(' ').toLocaleLowerCase().includes(search));
     const range = paginator(rows.length);
-    $('#count').textContent = `${rows.length} 条记录`;
+    $('#count').textContent = rows.length ? `${rows.length} 条记录` : '';
     if (!rows.length) {
       $('#content').innerHTML = sourceAlert() + `<div class="empty"><strong>${search ? '没有匹配的规则' : '暂无'+titles[table]}</strong>${search ? '<button data-clear>清空筛选</button>' : ''}</div>`;
       return;
