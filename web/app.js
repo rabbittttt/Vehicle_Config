@@ -1,4 +1,8 @@
 'use strict';
+if (window.frameElement?.matches('#frame-container > iframe[data-app="vehicle-config"]')) {
+  document.documentElement.classList.add('planhub-embedded');
+}
+
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const names = {models:'车型档案', phases:'发布阶段', versions:'版本', options:'配置项目', matrix:'配置适用关系', aliases:'名称映射', groups:'汇总规则', history:'变更记录'};
