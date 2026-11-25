@@ -66,6 +66,7 @@ def main():
         page.locator('#confirm').click()
         expect(page.locator('#dialog-error')).to_contain_text('名称已存在')
         page.locator('#cancel').click()
+        page.get_by_role('button',name='放弃输入').click()
         page.locator('[data-tab=history]').click()
         page.get_by_role('button',name='运行路径').click()
         expect(page.locator('#dialog-body')).to_contain_text(str(store.root.resolve()))

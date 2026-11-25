@@ -140,19 +140,25 @@ def main():
                 page.locator('#save').click(); ready()
                 assert len(store.get()['draft']['data']['models']) == 3
 
-                # Dirty import first saves the editor, then keeps the new preview dialog open.
+                # Preview merges into the editor. Cancel and undo must preserve pre-existing edits.
                 page.locator('[data-tab="matrix"]').click()
                 page.locator('[data-v="v1"][data-o="o1"]').select_option('不可选')
-                dirty_update = workbook('车型档案', [['编号', '产品档位'], ['m1', '批量档位']], '待保存后导入.xlsx')
+                dirty_update = workbook('车型档案', [['编号', '产品档位'], ['m1', '批量档位']], '批量档位.xlsx')
+                saved_before = store.get()
+                edited_before = current()
                 page.locator('#file').set_input_files(dirty_update)
-                expect(page.locator('#dialog-title')).to_have_text('保存草稿后导入')
-                confirm()
                 expect(page.locator('#dialog-title')).to_have_text('导入预览'); ready()
-                saved = store.get()['draft']['data']
-                assert next(row for row in saved['matrix'] if row['id'] == 'mx1')['state'] == '不可选'
-                assert saved['models'][0]['tier'] != '批量档位'
+                page.locator('#cancel').click()
+                assert current() == edited_before and store.get() == saved_before
+                page.locator('#file').set_input_files(dirty_update)
+                expect(page.locator('#dialog-title')).to_have_text('导入预览')
                 confirm(); ready()
                 assert current()['models'][0]['tier'] == '批量档位'
+                assert next(row for row in current()['matrix'] if row['id'] == 'mx1')['state'] == '不可选'
+                assert store.get() == saved_before
+                page.locator('#undo').click()
+                assert current() == edited_before
+                page.locator('#redo').click()
                 page.locator('#save').click(); ready()
 
                 # Invalid rows expose precise locations and never offer an apply action.
@@ -180,10 +186,9 @@ def main():
                 assert store.get()['draft']['data']['models'][0]['tier'] == '另一用户档位'
                 page.locator('#close').click(); page.locator('#reload').click(); ready()
 
-                # Export exposes its source choice, then downloads the current editor data.
-                page.locator('#export').click()
+                # With one available source, export starts immediately.
                 with page.expect_download() as event:
-                    confirm()
+                    page.locator('#export').click()
                 assert '当前编辑' in event.value.suggested_filename
                 ready()
                 page.locator('[data-tab="matrix"]').click()

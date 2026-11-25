@@ -2,8 +2,10 @@ import copy
 import sys
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
+from openpyxl import Workbook
 from shared_rules import RuleStore, parse_source, render_source, Conflict
 from rules_excel import rules_excel, preview_rules_import
 
@@ -20,6 +22,15 @@ REJECTED_GROUPS = [
     {'BETA': ['车型']},
 ]
 VALID_MEMBERS = ['品牌 车型 BETA 2025款', '品牌 车型 2026款', '品牌 BETAMAX 2026款']
+
+def workbook_file(name, sheet, rows):
+    book = Workbook()
+    book.active.title = sheet
+    for row in rows:
+        book.active.append(row)
+    out = BytesIO()
+    book.save(out)
+    return {'name': name, 'raw': out.getvalue()}
 
 
 class RuleTests(unittest.TestCase):
@@ -51,6 +62,60 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(render_source(parse_source(SOURCE),parse_source(SOURCE)['data']),SOURCE)
         for raw in [b'MERGE_GROUPS = dict()',b'MERGE_GROUPS = {"A": [], "A": []}',b'MERGE_GROUPS={}\nMERGE_GROUPS={}']:
             with self.assertRaises(ValueError):parse_source(raw)
+    def test_renamed_option_matches_new_key_and_releases_old_key(self):
+        data = self.changed()
+        rename = workbook_file('改名.xlsx', '选配金', [
+            ['编号', '名称', '默认选配'], ['p1', '雾蓝', None],
+        ])
+        prices = workbook_file('价格.xlsx', '选配金', [
+            ['代际', '选配分类', '名称', '版本包含（每行一项）', '座位类型', '金额'],
+            ['A', '外观', '雾蓝', 'Max', '六座', 42],
+            ['A', '外观', '白色', 'Max', '六座', 18],
+            ['A', '外观', '白色', 'Max', '六座', None],
+        ])
+        result = preview_rules_import(data, [rename, prices])
+        self.assertEqual(result['issues'], [])
+        blue, white = result['data']['option_prices']
+        self.assertEqual(blue, data['option_prices'][0] | {'name':'雾蓝', 'price':42})
+        self.assertNotEqual(white['id'], 'p1')
+        self.assertEqual((white['name'], white['price']), ('白色', 18))
+        self.assertEqual(result['summary'], {'added':1, 'updated':1, 'unchanged':0})
+        self.assertEqual(data['option_prices'][0]['name'], '白色')
+
+    def test_transient_ambiguous_key_and_cross_file_conflict(self):
+        data = self.changed()
+        data['gen_names'] = [
+            dict(id='a', source='原甲', target='标准甲'),
+            dict(id='b', source='原乙', target='标准乙'),
+        ]
+        rename = workbook_file('改名.xlsx', '代际显示名称', [
+            ['编号', '原名称', '标准名称'],
+            ['b', '原甲', ''], [None, '原甲', '无法判定'],
+            ['a', '原丙', ''], [None, '原甲', '更新后'],
+        ])
+        conflict = workbook_file('合并.xlsx', '代际显示名称', [
+            ['原名称', '标准名称'], ['原甲', '其他值'],
+        ])
+        result = preview_rules_import(data, [rename, conflict])
+        self.assertEqual([(i['file'],i['row'],i['field'],i['message']) for i in result['issues']], [
+            ('改名.xlsx', 3, '编号', '无法唯一匹配，请填写编号'),
+            ('合并.xlsx', 2, '标准名称', '同一规则在本批文件中的值冲突'),
+        ])
+        self.assertEqual(result['data']['gen_names'], [
+            dict(id='a', source='原丙', target='标准甲'),
+            dict(id='b', source='原甲', target='更新后'),
+        ])
+
+    def test_rank_only_updates_are_counted(self):
+        data = self.changed()
+        data['battery_rules'].append(dict(data['battery_rules'][0], id='b2', generation=['B']))
+        priorities = workbook_file('顺序.xlsx', '电池包规则', [
+            ['编号', '优先级'], ['b2', 1], ['b1', 2],
+        ])
+        result = preview_rules_import(data, [priorities])
+        self.assertEqual(result['issues'], [])
+        self.assertEqual(result['summary'], {'added':0, 'updated':2, 'unchanged':0})
+        self.assertEqual([r['id'] for r in result['data']['battery_rules']], ['b2', 'b1'])
     def test_publication_preserves_unrepresented_options(self):
         options=(b'OPTION_CONFIG = {  # keep formatting\n'
                  b'    "empty": {}, "A": {"empty": [], "color": [("red", 1, False, {"versions": [], "seat": ""})]}\n}\n')

@@ -7,6 +7,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+import zipfile
 from datetime import datetime
 from unittest.mock import patch
 
@@ -179,6 +180,20 @@ class ImportHttpTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code,409);ctx.exception.close()
         bad=file(workbook({'版本':[['车型','名称'],['不存在','新版本']]}))
         before=self.store.get();result=self.request('/api/import-batch',{'files':[bad],'revision':1});self.assertTrue(result['issues']);self.assertEqual(self.store.get(),before)
+    def test_editor_and_workbook_fit_separate_preview_budgets(self):
+        data = fixture()
+        data['models'].extend(dict(data['models'][0], id=f'm{x}', series=f'车型{x}', tier='A'*3900)
+                              for x in range(2,252))
+        buffer = io.BytesIO(excel(fixture()))
+        with zipfile.ZipFile(buffer,'a',compression=zipfile.ZIP_STORED) as book:
+            book.writestr('customXml/synthetic-padding.txt', b'x' * 5_400_000)
+        payload = {'files':[file(buffer.getvalue())], 'editor':data, 'revision':0}
+        self.assertGreater(len(json.dumps(payload)), 8_000_000)
+        result = self.request('/api/import-batch',payload)
+        self.assertFalse(result['errors'])
+        self.assertEqual(result['data']['models'],data['models'])
+        self.assertEqual(self.store.get()['draft']['revision'],0)
+
     def test_readonly_allows_templates_and_export_but_blocks_import(self):
         self.server.shutdown();self.server.server_close();self.thread.join()
         self.server=make_server(self.store,port=0,readonly=True);self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start();self.base='http://127.0.0.1:'+str(self.server.server_port);self.state=self.request('/api/state')

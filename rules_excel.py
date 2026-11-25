@@ -141,18 +141,33 @@ def preview_rules_import(base, files):
             issue(source, '', str(exc))
         finally:
             if wb is not None: wb.close()
-    seen = {}; touched = set(); ranks = {r['id']:i for i,r in enumerate(base['battery_rules'],1)}
+    seen = {}; touched = set()
+    original = {table: {r['id']: r for r in rows} for table, rows in base.items()}
+    by_id = {table: {r['id']: r for r in rows} for table, rows in result.items()}
+    by_key = {table: {} for table in result}
+    for table, rows in result.items():
+        for row in rows:
+            by_key[table].setdefault(_key(table, row), set()).add(row['id'])
+    original_ranks = {r['id']: i for i, r in enumerate(base['battery_rules'], 1)}
+    ranks = original_ranks.copy()
     for table, values, source in records:
-        defaults = {f:[] if is_list(table,f) else False if f=='default' else 0 if f=='price' else '' for f in FIELDS[table] if f!='priority'}
-        by_id = {r['id']:r for r in result[table]}
-        item = by_id.get(values.get('id'))
-        if not item and not values.get('id'):
-            candidates = [r for r in result[table] if _key(table,r) == _key(table, defaults|values)]
-            if len(candidates)>1: issue(source, '编号', '无法唯一匹配，请填写编号'); continue
-            item = candidates[0] if candidates else None
+        keys = by_key[table]
+        ident = values.get('id')
+        if not ident:
+            candidates = keys.get(_key(table, values), ())
+            if len(candidates) > 1:
+                issue(source, '编号', '无法唯一匹配，请填写编号')
+                continue
+            ident = next(iter(candidates), None)
+        item = by_id[table].get(ident)
+        old_key = _key(table, item) if item is not None else None
         if item is None:
-            item = defaults | {'id':values.get('id') or str(uuid.uuid4())}; result[table].append(item)
-            if table=='battery_rules': ranks[item['id']] = len(ranks)+1
+            defaults = {f:[] if is_list(table,f) else False if f=='default' else 0 if f=='price' else '' for f in FIELDS[table] if f!='priority'}
+            ident = ident or str(uuid.uuid4())
+            item = defaults | {'id': ident}
+            result[table].append(item)
+            by_id[table][ident] = item
+            if table=='battery_rules': ranks[ident] = len(ranks)+1
         identity = (table,item['id']); touched.add(identity)
         for field, value in values.items():
             if field=='id': continue
@@ -162,18 +177,29 @@ def preview_rules_import(base, files):
             seen[signature] = value
             if field=='priority': ranks[item['id']] = value
             else: item[field] = value
+        new_key = _key(table, item)
+        if new_key != old_key:
+            if old_key is not None:
+                keys[old_key].remove(ident)
+                if not keys[old_key]:
+                    del keys[old_key]
+            keys.setdefault(new_key, set()).add(ident)
         row_errors = validate({t:[item] if t==table else [] for t in FIELDS})
         for error in row_errors: issue(source,'',error)
     if any(field=='priority' for _,_,field in seen):
         if len(set(ranks.values())) != len(ranks): issue({'file':'','sheet':SHEETS['battery_rules'],'row':0},'优先级','优先级重复，请为受影响规则设置不同序号')
         result['battery_rules'].sort(key=lambda r:ranks[r['id']])
+    reported = {i['message'] for i in issues}
     for error in validate(result):
-        if not any(i['message']==error for i in issues): issue({'file':'','sheet':'','row':0},'',error)
+        if error not in reported:
+            issue({'file':'','sheet':'','row':0},'',error)
+            reported.add(error)
     changes = diff_rules(base,result)
     counts = {'added':0, 'updated':0, 'unchanged':0}
+    final_ranks = {r['id']: i for i, r in enumerate(result['battery_rules'], 1)}
     for table, ident in touched:
-        before = next((r for r in base[table] if r['id']==ident),None)
-        after = next(r for r in result[table] if r['id']==ident)
-        changed = before != after or (table=='battery_rules' and before is not None and [r['id'] for r in base[table]].index(ident) != [r['id'] for r in result[table]].index(ident))
+        before = original[table].get(ident)
+        after = by_id[table][ident]
+        changed = before != after or (table=='battery_rules' and original_ranks.get(ident) != final_ranks[ident])
         counts['added' if before is None else 'updated' if changed else 'unchanged'] += 1
     return {'data':result,'changes':changes,'errors':[i['message'] for i in issues],'issues':issues,'summary':counts}

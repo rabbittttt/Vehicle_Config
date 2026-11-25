@@ -3,10 +3,21 @@ import argparse, getpass, json, os, secrets, sys, zipfile
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from excel_io import excel, read_excel, preview_import
-from catalog import Store, Conflict, PUBLISH_REQUIRED, IDENTITY_FIELDS, identity
+from catalog import Store, Conflict, PUBLISH_REQUIRED, IDENTITY_FIELDS, identity, validate as validate_catalog
 from shared_rules import RuleStore, validate as validate_rules
 from rules_excel import rules_excel, preview_rules_import
 ROOT=Path(__file__).resolve().parent
+
+def import_preview(body, draft, preview, validate, conflict_message):
+    if body.get('revision') != draft['revision']:
+        raise Conflict(conflict_message)
+    base = draft['data']
+    if 'editor' in body:
+        base = body['editor']
+        errors = validate(base)
+        if errors:
+            raise ValueError(errors[0])
+    return {**preview(base, body.get('files')), 'revision': draft['revision']}
 
 def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origins=(),readonly=False,proxy_secret=None,rules=None,path_sources=None):
     token=secrets.token_urlsafe(32)
@@ -78,7 +89,10 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 path=self.route()
                 if readonly and path not in ['/api/export','/api/rules/export']:raise PermissionError('服务维护中，暂不可写入')
                 size=int(self.headers.get('Content-Length',0))
-                if size<=0 or size>8_000_000:raise ValueError('请求大小须在 1–8MB 内')
+                # A preview can include both a full editor snapshot and encoded workbooks.
+                limit_mb = 16 if path in ('/api/import-batch', '/api/rules/import') else 8
+                if size <= 0 or size > limit_mb * 1_000_000:
+                    raise ValueError(f'请求正文不能为空或超过 {limit_mb} MB')
                 raw=self.rfile.read(size);path=self.route()
                 if path=='/api/import':
                     state=store.get()['draft']
@@ -95,8 +109,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     if action=='reload':return self.send(200,rules.reload(body['revision'],body['source_hash'],actor,body.get('pending_token')))
                     if action=='import':
                         state=rules.get()['draft']
-                        if body.get('revision')!=state['revision']:raise Conflict('规则草稿已被其他人修改，请重新载入后导入')
-                        return self.send(200,{**preview_rules_import(state['data'],body.get('files')),'revision':state['revision']})
+                        return self.send(200,import_preview(body,state,preview_rules_import,validate_rules,'规则草稿已被其他人修改，请重新载入后导入'))
                     return self.send(404,{'error':'未找到'})
                 if path=='/api/check-name':
                     rows=body['others']
@@ -111,8 +124,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 if path=='/api/import-batch':
                     if not isinstance(body,dict):raise ValueError('导入请求格式无效')
                     state=store.get()['draft']
-                    if body.get('revision')!=state['revision']:raise Conflict('草稿已被其他人修改，请重新载入后导入')
-                    return self.send(200,{**preview_import(state['data'],body.get('files')),'revision':state['revision']})
+                    return self.send(200,import_preview(body,state,preview_import,validate_catalog,'草稿已被其他人修改，请重新载入后导入'))
                 if path=='/api/export':return self.send(200,excel(body['data']),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 if path=='/api/preview':return self.send(200,store.preview(body['data'],body.get('revision')))
                 if path in ['/api/save','/api/publish']:return self.send(200,store.save(body['data'],body['revision'],actor,path.endswith('publish')))

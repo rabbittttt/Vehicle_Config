@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 root=Path(__file__).resolve().parents[1];out=root/'artifacts';out.mkdir(exist_ok=True)
 sys.path.insert(0,str(root))
 import tempfile, threading, atexit
@@ -36,6 +36,6 @@ with sync_playwright() as p:
     with page.expect_download() as event:page.get_by_role('button',name='下载 Excel',exact=True).click()
     download=event.value;download.save_as(str(out/'roundtrip.xlsx'))
     page.locator('#file').set_input_files(str(out/'roundtrip.xlsx'));page.get_by_text('没有变更',exact=True).wait_for();page.locator('#close').click()
-    page.locator('[data-tab="history"]').click();page.locator('[data-history="2"]').click();page.get_by_role('button',name='恢复到草稿').click();assert '未保存' in page.locator('#status').inner_text()
+    page.locator('[data-tab="history"]').click();page.locator('[data-history="2"]').click();page.get_by_role('button',name='恢复到草稿').click();expect(page.locator('#notice')).to_have_text('历史记录已恢复到编辑区，尚未保存');expect(page.locator('#save')).to_be_enabled()
     assert not errors,errors
     browser.close();print('Browser checks passed: matrix, publish, copy, reload, XLSX import/export, history restore, desktop/mobile. Test data only.')

@@ -23,12 +23,12 @@ def main():
     run(sys.executable,'-B','-m','unittest','discover','-s','tests','-q')
     run(sys.executable,'-B','tests/browser_imported_year.py')
     if args.full:
-        for name in ['browser_check','browser_bulk_check','browser_rules_check','browser_header_check']:
+        for name in ['browser_check','browser_bulk_check','browser_rules_check','browser_workflow_ux','browser_header_check','browser_motion_check']:
             run(sys.executable,'-B','tests/'+name+'.py')
         run('node','tests/portal_smoke.mjs')
     if args.release:
         run(sys.executable,'-B','tests/release_smoke.py',str(args.release.resolve()))
-    print('Acceptance passed at',commit,'| release:',args.release or 'not tested','| deployment: not requested')
+    print('Acceptance passed at',commit,'| release:',args.release or 'not tested')
 
 
 if __name__=='__main__':main()

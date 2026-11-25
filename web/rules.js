@@ -22,12 +22,12 @@ const orderRules = (() => {
     price: '金额', default: '默认选配', versions: '版本包含', match_versions: '版本精确', seat: '座位类型',
   };
 
-  let state, draft, saved = '', modified = false;
+  let state, draft, saved = '', published = '', modified = false, pendingPublish = false;
   let undoStack = [], redoStack = [];
 
   const ready = () => Boolean(state);
   const isDirty = () => modified;
-  const canPublish = () => Boolean(state?.source.available);
+  const canPublish = () => Boolean(pendingPublish && state?.source.available && !state.source.external_modified && !state.sync.pending_token);
   const canUndo = () => undoStack.length > 0;
   const canRedo = () => redoStack.length > 0;
   const status = () => !ready() ? '脚本规则未载入' : isDirty() ? '有未保存的规则修改' : `规则草稿 r${state.draft.revision} · 已保存`;
@@ -40,6 +40,8 @@ const orderRules = (() => {
     state = next;
     draft = structuredClone(next.draft.data);
     saved = JSON.stringify(draft);
+    published = JSON.stringify(next.published.data);
+    pendingPublish = saved !== published;
     modified = false;
     undoStack = [];
     redoStack = [];
@@ -71,7 +73,8 @@ const orderRules = (() => {
     redoStack = [];
     draft = next;
     modified = after !== saved;
-    render();
+    pendingPublish = after !== published;
+    renderKeepingScroll();
   }
 
   function undo() {
@@ -80,7 +83,8 @@ const orderRules = (() => {
     const previous = undoStack.pop();
     draft = JSON.parse(previous);
     modified = previous !== saved;
-    render();
+    pendingPublish = previous !== published;
+    renderKeepingScroll();
     notice('已撤销规则修改');
   }
 
@@ -90,7 +94,8 @@ const orderRules = (() => {
     const next = redoStack.pop();
     draft = JSON.parse(next);
     modified = next !== saved;
-    render();
+    pendingPublish = next !== published;
+    renderKeepingScroll();
     notice('已重做规则修改');
   }
 
@@ -120,9 +125,9 @@ const orderRules = (() => {
     }
 
     const mapping = ['gen_names', 'option_names'].includes(table);
-    $('#actions').innerHTML = ruleButton('sync', '从脚本重新载入', {disabled: readonly || !state.source.available}) +
-      (mapping ? ruleButton('batch', '批量粘贴', {disabled: readonly}) : '') +
-      ruleButton('add', '新增规则', {disabled: readonly});
+    $('#actions').innerHTML = readonly ? '' : ruleButton('sync', '从脚本重新载入', {disabled: !state.source.available}) +
+      (mapping ? ruleButton('batch', '批量粘贴') : '') +
+      ruleButton('add', '新增规则');
 
     const rows = draft[table]
       .map((row, index) => ({row, index}))
@@ -130,7 +135,7 @@ const orderRules = (() => {
     const range = paginator(rows.length);
     $('#count').textContent = `${rows.length} 条记录`;
     if (!rows.length) {
-      $('#content').innerHTML = sourceAlert() + '<div class="empty"><strong>没有匹配的规则</strong></div>';
+      $('#content').innerHTML = sourceAlert() + `<div class="empty"><strong>${search ? '没有匹配的规则' : '暂无'+titles[table]}</strong>${search ? '<button data-clear>清空筛选</button>' : ''}</div>`;
       return;
     }
 
@@ -139,14 +144,14 @@ const orderRules = (() => {
     const body = rows.slice(...range).map(({row, index}) => {
       const controls = ['edit', 'copy', 'delete'].map((name, i) =>
         ruleButton(name, ['编辑', '复制', '删除'][i], {id: row.id, inline: true, disabled: readonly}));
-      if (battery) {
+      if (battery && !search) {
         controls.push(ruleButton('up', '上移', {id: row.id, inline: true, disabled: readonly || index === 0}));
         controls.push(ruleButton('down', '下移', {id: row.id, inline: true, disabled: readonly || index === draft[table].length - 1}));
       }
       const cells = fields[table].map(field => `<td>${esc(text(row[field]))}</td>`).join('');
-      return `<tr>${battery ? `<td>${index + 1}</td>` : ''}${cells}<td class="operation"><div class="rule-actions">${controls.join('')}</div></td></tr>`;
+      return `<tr>${battery ? `<td>${index + 1}</td>` : ''}${cells}${readonly?'':`<td class="operation"><div class="rule-actions">${controls.join('')}</div></td>`}</tr>`;
     }).join('');
-    $('#content').innerHTML = sourceAlert() + `<div class="scroll"><table class="rule-table"><thead><tr>${battery ? '<th>顺序</th>' : ''}${headings}<th>操作</th></tr></thead><tbody>${body}</tbody></table></div>`;
+    $('#content').innerHTML = sourceAlert() + `<div class="scroll"><table class="rule-table"><thead><tr>${battery ? '<th>顺序</th>' : ''}${headings}${readonly?'':'<th>操作</th>'}</tr></thead><tbody>${body}</tbody></table></div>`;
   }
 
   function diffHTML(changes) {
@@ -180,6 +185,7 @@ const orderRules = (() => {
         else if (field === 'default') row[field] = value === 'true';
         else row[field] = String(value).trim();
       }
+      if (id && !copy && fields[table].every(field=>JSON.stringify(row[field])===JSON.stringify(current[field]))) return;
       const next = structuredClone(draft);
       const index = next[table].findIndex(item => item.id === row.id);
       if (index < 0) next[table].push(row);
@@ -219,8 +225,14 @@ const orderRules = (() => {
   function syncFromScript() {
     return run(async () => {
       const current = await api('rules/state');
+      if (!current.source.available) throw Error(current.source.error || '脚本不可用');
       const pending = current.sync.pending_token;
-      const warning = pending ? '<p>上次发布中断。确认后，该次修改将存入脚本变更记录，当前草稿将替换为脚本内容。</p>' : '<p>替换规则草稿和当前脚本基线</p>';
+      if(!pending && !isDirty() && current.sync.status==='synced'){
+        accept(current);
+        notice('规则草稿已与脚本一致');
+        return;
+      }
+      const warning = pending ? '<p>上次发布中断。确认后，该次修改将存入脚本变更记录，当前草稿将替换为脚本内容。</p>' : '<p>当前规则草稿及未保存的编辑将被脚本内容替换。</p>';
       modal('从脚本重新载入', `<div>${esc(current.source.path)}</div>${warning}`, async () => {
         accept(await api('rules/reload', {revision: state.draft.revision, source_hash: current.source.hash, pending_token: pending}));
         notice('已从脚本重新载入');
@@ -253,12 +265,23 @@ const orderRules = (() => {
       }, '删除');
     }
     if (action === 'up' || action === 'down') {
+      if (ruleQuery) return;
       const rows = [...draft[table]];
       const index = rows.findIndex(row => row.id === id);
       const target = index + (action === 'up' ? -1 : 1);
       if (index >= 0 && target >= 0 && target < rows.length) {
         [rows[index], rows[target]] = [rows[target], rows[index]];
+        page = Math.floor(target / pageSize) + 1;
         change({...draft, [table]: rows});
+        const idSelector = `[data-rule-id="${CSS.escape(id)}"]`;
+        const forward = $('#content').querySelector(idSelector + `[data-rule-action="${action}"]`);
+        const reverse = action === 'up' ? 'down' : 'up';
+        const next = forward?.disabled ? $('#content').querySelector(idSelector + `[data-rule-action="${reverse}"]`) : forward;
+        next?.focus({preventScroll: true});
+        if (next) {
+          const bounds=next.getBoundingClientRect();
+          if(bounds.top<0 || bounds.bottom>$('footer').getBoundingClientRect().top) next.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});
+        }
       }
     }
   }
@@ -285,12 +308,8 @@ const orderRules = (() => {
   const template = () => download('rules/template', undefined, '订单规则-模板.xlsx');
 
   async function importFiles(files) {
-    if (!files.length) return;
-    if (files.length > 10) throw Error('每批最多 10 个 Excel 文件');
-    if (files.some(file => !file.name.toLowerCase().endsWith('.xlsx'))) throw Error('请选择 .xlsx 文件');
-    if (files.reduce((size, file) => size + file.size, 0) > 5_500_000) throw Error('本批文件总大小不能超过 5.5 MB');
-    const payload = await Promise.all(files.map(async file => ({name: file.name, content: await fileBase64(file)})));
-    const result = await api('rules/import', {files: payload, revision: state.draft.revision});
+    const payload = await encodeWorkbooks(files);
+    const result = await api('rules/import', {files: payload, revision: state.draft.revision, ...(modified ? {editor:draft} : {})});
     const {summary, issues, changes, errors} = result;
     const problemList = issues.length ? `<div class="scroll"><table class="diff"><thead><tr><th>文件 / 工作表</th><th>位置</th><th>问题</th></tr></thead><tbody>${issues.map(issue => `
       <tr><td>${esc(issue.file)}<small>${esc(issue.sheet)}</small></td><td>${issue.row ? '第 ' + esc(issue.row) + ' 行' : ''} ${esc(issue.field)}</td><td class="error">${esc(issue.message)}</td></tr>`

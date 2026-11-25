@@ -139,7 +139,7 @@ def main():
             assert box['x'] >= title_box['x'] + title_box['width'] - 1, selector
             assert box['y'] <= title_mid_y <= box['y'] + box['height'], selector
             assert box['y'] + box['height'] <= nav_top + 1, selector
-        expect(header.locator('#clear-filters')).to_be_visible()
+        expect(header.locator('#clear-filters')).to_be_hidden()
 
         add_vehicle(page)
         expect(content).to_contain_text('未保存车型甲')
@@ -254,7 +254,7 @@ def main():
         expect(header.locator('#year')).to_be_in_viewport(ratio=1)
         header.locator('#year').select_option('2027')
         expect(content).to_contain_text('已保存车型乙')
-        header.get_by_role('button', name='筛选', exact=True).click()
+        header.get_by_role('button', name='筛选 · 1', exact=True).click()
         expect(header.locator('#year')).to_be_hidden()
         mobile_tab.select_option('aliases')
         expect(page.locator('#title')).to_have_text('业务名称映射')
