@@ -11,7 +11,7 @@ const sections = {
 };
 const viewLabels = {
   ...orderRules.titles, vehicleIdentity:'车型资料', launchSchedule:'发布日程',
-  dailyOrders:'每日小订', stageProgress:'阶段进度', businessTotals:'经营汇总', campaign_history:'日程与填报发布',
+  dailyOrders:'每日小订', stageProgress:'阶段进度', businessTotals:'结果核对', campaign_history:'日程与填报发布',
 };
 let tab='schedule', view=sections.schedule[0], csrf='', readonly=true, busy=false, confirmAction=null;
 let sessionUser = '';

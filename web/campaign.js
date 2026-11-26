@@ -5,7 +5,7 @@ const campaignEditor = (() => {
   const dailyName = '小订by天';
   let saved, current;
   let edits = [], undo = [], redo = [];
-  let progressName = '小订进度', section = 1, lastModel = '';
+  let progressName = '小订进度', lastModel = '';
 
   const ready = () => Boolean(current?.available);
   const isDirty = () => edits.length > 0;
@@ -96,10 +96,13 @@ const campaignEditor = (() => {
     ['发布信息',[4,7]], ['小订期',[5,8,9,12]], ['首销期',[6,10,11,13]],
   ];
   const totalsGroups = [
-    ['小订与转化',[15,16,17,21,22,23,24]],
-    ['大定与留存',[18,19,20,25,26]],
-    ['锁单',[27,28,29]],
+    ['小订与转化',[15,16,21]],
+    ['大定与留存',[18,19,25]],
+    ['锁单',[27]],
   ];
+  const totalColumns = [15,16,18,19,21,25,27];
+  // Zero-based summary columns: ratio, numerator, denominator.
+  const reviewRates = [[17,16,15],[20,19,18],[22,21,15],[26,25,18],[28,27,25],[29,27,18]];
   function summaryRows(query, columns) {
     const info = sheet(summaryName);
     return info.rows.map((r,i)=>({r,row:i+1})).slice(1)
@@ -111,8 +114,8 @@ const campaignEditor = (() => {
   function stageLabel(primary,secondary) {
     return secondary && !String(secondary).startsWith(primary) ? primary+' · '+secondary : secondary || primary;
   }
-  function rowAction(kind,row) {
-    return `<td class="operation">${action(kind,readonly?'查看':'编辑',`class="link" data-row="${row}"`)}</td>`;
+  function rowAction(kind,row,caption=readonly?'查看':'编辑') {
+    return `<td class="operation">${action(kind,caption,`class="link" data-row="${row}"`)}</td>`;
   }
   function renderIdentity(query) {
     $('#actions').innerHTML = readonly ? '' : action('add-stage','新增车型');
@@ -138,13 +141,70 @@ const campaignEditor = (() => {
       <td>${esc(displayValue(r[6]))}</td>${timeWindow(r,10,11)}<td>${esc(displayValue(r[13]))}</td>${rowAction('stage',row)}</tr>`).join('');
     $('#content').innerHTML = body ? table(['车型与阶段','发布类型','留资日期','小订发布时间','小订日期','小订天数','首销发布时段','首销日期','首销期天数','操作'],body) : empty(query?'没有匹配的日程':'暂无发布日程');
   }
+  function grossDifference(small,direct,gross) {
+    if (![small,direct,gross].every(value=>Number.isFinite(value) && value>=0)) return '';
+    const difference=gross-(small+direct);
+    return difference ? `差额 ${difference>0?'+':'−'}${numericText(Math.abs(difference))}` : '';
+  }
+  function grossDifferenceDetail(small,direct,gross) {
+    const difference=grossDifference(small,direct,gross);
+    return difference ? `小转大与直接大定合计 ${numericText(small+direct)}，实绩 ${numericText(gross)}，${difference}` : '';
+  }
   function renderTotals(query) {
     $('#actions').innerHTML = !readonly && !stages().length ? action('new-stage','新增发布日程') : '';
-    const cols = [15,16,18,19,25,27];
-    const body = pageRows(summaryRows(query,[0,1,...cols])).map(({r,row})=>`<tr>${identityCell(r)}
-      ${cols.map(index=>`<td>${esc(numericText(r[index]))}</td>`).join('')}${rowAction('totals',row)}</tr>`).join('');
     const labels=sheet(summaryName).rows[0];
-    $('#content').innerHTML = body ? table(['车型与阶段',...cols.map(index=>labels[index]),'操作'],body) : empty(query?'没有匹配的车型':'暂无经营汇总');
+    const body=pageRows(summaryRows(query,[0,1,...totalColumns])).map(({r,row})=>{
+      const difference=grossDifference(r[16],r[19],r[18]);
+      const cells=totalColumns.map(index=>`<td>${esc(numericText(r[index]))}${index===18 && difference ? `<small class="campaign-discrepancy">${esc(difference)}</small>` : ''}</td>`).join('');
+      return `<tr>${identityCell(r)}${cells}${rowAction('totals',row,'核对')}</tr>`;
+    }).join('');
+    const headings=['车型与阶段',...totalColumns.map(index=>labels[index]),'操作'];
+    $('#content').innerHTML=body ? `<div class="campaign-totals">${table(headings,body)}</div>` : empty(query?'没有匹配的车型':'暂无可核对的车型');
+  }
+  function reviewTotals(info,row,subject) {
+    rowForm(info,row,totalColumns,subject+' · 结果核对',totalsGroups);
+    const form=$('#dialog-body form');
+    const labels=info.rows[0], record=info.rows[row-1];
+    const historical=new Set(info.literalCells || []);
+    for(const input of form.querySelectorAll('input[type="number"]')) input.step='1';
+    const grossControl=form.elements.f18 || form.querySelector('output[aria-label="大定量"]');
+    const grossLabel=grossControl.closest('label');
+    const grossField=document.createElement('div');
+    grossLabel.before(grossField);
+    grossField.append(grossLabel);
+    grossField.insertAdjacentHTML('beforeend','<small class="campaign-discrepancy" id="review-gross-difference" aria-live="polite" hidden></small>');
+    const difference=grossField.querySelector('small');
+    grossControl.setAttribute('aria-describedby',difference.id);
+
+    form.insertAdjacentHTML('beforeend','<details class="campaign-rates wide"><summary>查看比例</summary><dl></dl></details>');
+    const details=form.querySelector('.campaign-rates');
+    function quantity(index) {
+      const input=form.elements['f'+index];
+      if(!input) return record[index];
+      return input.validity.valid && Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : null;
+    }
+    function renderRates() {
+      details.querySelector('dl').innerHTML=reviewRates.map(([rate,numerator,denominator])=>{
+        const top=quantity(numerator), bottom=quantity(denominator);
+        const computed=Number.isFinite(top) && bottom>0 ? top/bottom : null;
+        const stored=record[rate];
+        // Imported exceptions retain their reported value when the quantities change.
+        const independent=historical.has(row+':'+(rate+1)) && Number.isFinite(stored);
+        const value=independent ? stored : computed;
+        const formula=`${labels[numerator]} ${numericText(top)} ÷ ${labels[denominator]} ${numericText(bottom)}`;
+        const note=independent ? `<small>历史值${computed!==null && percentage(computed)!==percentage(stored) ? '，按数量计算 '+esc(percentage(computed)) : ''}</small>` : '';
+        return `<div><dt>${esc(labels[rate])}</dt><dd><output aria-label="${esc(labels[rate])}">${esc(percentage(value))}</output>${note}<small>${esc(formula)}</small></dd></div>`;
+      }).join('');
+    }
+    function update() {
+      const text=grossDifferenceDetail(quantity(16),quantity(19),quantity(18));
+      difference.textContent=text;
+      difference.hidden=!text;
+      if(details.open)renderRates();
+    }
+    details.ontoggle=()=>{if(details.open)renderRates();};
+    form.addEventListener('input',update);
+    update();
   }
   const dailyEntriesBySheet = new WeakMap();
   function dailyEntries() {
@@ -178,38 +238,67 @@ const campaignEditor = (() => {
     const body = pageRows(rows).map(r=>`<tr><td>${esc(r.date)}</td><td>${esc(r.model)}</td><td>${esc(numericText(r.value))}</td>${readonly?'':`<td class="operation">${action('edit-daily','编辑',`class="link" data-row="${r.row}" data-col="${r.col}"`)}</td>`}</tr>`).join('');
     $('#content').innerHTML = body ? table(['日期','车型与阶段','小订量',...(readonly?[]:['操作'])],body) : empty(query?'没有匹配的记录':'暂无每日小订');
   }
-  const progressRatios = {
-    '小订进度':'当日小订 / 首日小订','小订期退订进度':'累计退订 / 总小订',
-    '小转大进度':'累计小转大 / 总小转大','直接大定进度':'累计直接大定 / 总直接大定',
-    '大定进度':'累计大定 / 总大定','首销期退订进度':'累计退订 / 总小订',
-  };
-  const blockTitle = n => n===1?'数量':n===2?progressRatios[progressName]:'当日直接大定 / 当日大定';
-  function progressBlock() {
-    const s = sheet(progressName);
+  function progressBlock(name=progressName) {
+    const s = sheet(name);
     const starts = s.headerRows || [1];
-    if (section > starts.length) section = 1;
-    const start = starts[section-1]-1;
-    const end = starts[section] ? starts[section]-1 : s.rows.length;
+    const start = starts[0]-1;
+    const end = starts[1] ? starts[1]-1 : s.rows.length;
     const labels = s.rows[start];
     const days = labels.map((name,i)=>/^D\d+$/i.test(name)?i:-1).filter(i=>i>=0);
-    return {s,starts,start,end,labels,days};
+    return {s,start,end,labels,days};
+  }
+  function dayComparison(model,secondary) {
+    const matching=row=>row[0]===model && (row[1] || '')===secondary;
+    const stage=stages().filter(matching);
+    if(stage.length!==1)return null;
+    const starts=new Set([stage[0][10]].filter(used));
+    const observations=[];
+    for(const name of ['小转大进度','直接大定进度','大定进度']) {
+      const p=progressBlock(name);
+      const secondaryCol=p.labels.indexOf('二级代际名');
+      const rows=p.s.rows.slice(p.start+1,p.end).filter(r=>r[0]===model && (r[secondaryCol] || '')===secondary);
+      if(rows.length>1 || (!rows.length && name!=='大定进度'))return null;
+      const row=rows[0] || [];
+      const start=row[p.labels.indexOf('开始大定日期')];
+      if(used(start))starts.add(start);
+      observations.push({row,labels:p.labels});
+    }
+    if(starts.size>1)return null;
+    const [small,direct]=observations;
+    return (day,actual)=>grossDifferenceDetail(small.row[small.labels.indexOf(day)],direct.row[direct.labels.indexOf(day)],actual);
+  }
+  function dayDifferenceHint(control) {
+    const label=control.closest('label');
+    const group=document.createElement('div');
+    group.className=label.className;
+    label.replaceWith(group);
+    group.append(label);
+    const hint=document.createElement('small');
+    hint.dataset.grossDifference='';
+    hint.id='gross-difference-'+(control.name || control.getAttribute('aria-label'));
+    hint.className='campaign-discrepancy';
+    hint.setAttribute('aria-live','polite');
+    hint.hidden=true;
+    group.append(hint);
+    control.setAttribute('aria-describedby',hint.id);
+    return text=>{
+      hint.textContent=text;
+      hint.hidden=!text;
+    };
   }
   function renderProgress(query) {
     const p = progressBlock();
     const select = (id,label,entries) => `<label class="inline-label">${label}<select aria-label="${label}" id="${id}">${entries}</select></label>`;
     const options = current.sheets.slice(2).map(s=>option(s.name,s.name,progressName)).join('');
-    const blocks = p.starts.map((_,i)=>option(String(i+1),blockTitle(i+1),String(section))).join('');
-    $('#actions').innerHTML = select('campaign-progress','指标',options)+(p.starts.length>1?select('campaign-section','分组',blocks):'')+
+    $('#actions').innerHTML = select('campaign-progress','指标',options)+
       (readonly?'':stages().length ? action('batch','批量粘贴')+action('progress','填进度') : action('new-stage','新增发布日程'));
-    $('#campaign-progress').onchange = e=>{progressName=e.target.value;section=1;page=1;render();};
-    const selector = $('#campaign-section');
-    if(selector)selector.onchange = e=>{section=Number(e.target.value);page=1;render();};
+    $('#campaign-progress').onchange = e=>{progressName=e.target.value;page=1;render();};
     const secondaryCol = p.labels.indexOf('二级代际名');
     const entries = p.s.rows.map((r,i)=>({r,i})).slice(p.start+1,p.end).filter(({r})=>r[0] && matched([r[0],r[secondaryCol]],query));
     const body = pageRows(entries).map(({r,i})=>{
       const filled = p.days.filter(c=>used(r[c]));
       const last = filled.at(-1);
-      return `<tr><td>${esc(r[0])}${r[secondaryCol]?`<small>${esc(r[secondaryCol])}</small>`:''}</td><td>${last===undefined?'—':esc(p.labels[last])}</td><td>${esc(section===1?numericText(r[last]):percentage(r[last]))}</td><td>${filled.length}</td><td>${action('progress-row','明细',`class="link" data-row="${i+1}"`)}</td></tr>`;
+      return `<tr><td>${esc(r[0])}${r[secondaryCol]?`<small>${esc(r[secondaryCol])}</small>`:''}</td><td>${last===undefined?'—':esc(p.labels[last])}</td><td>${esc(numericText(r[last]))}</td><td>${filled.length}</td><td>${action('progress-row','明细',`class="link" data-row="${i+1}"`)}</td></tr>`;
     }).join('');
     $('#content').innerHTML = body ? table(['车型与阶段','最近日序','最近数值','已填天数','操作'],body) : empty(query?'没有匹配的进度':'暂无'+progressName);
   }
@@ -248,7 +337,7 @@ const campaignEditor = (() => {
       const computed = derived.has(coord) || (info.computed.includes(i+1) && !(info.literalCells||[]).includes(coord));
       const date = dateField(field);
       const number = !date && field!=='二级代际名' && ((info.name===summaryName && i>=12) || (info.name!==summaryName && i>0));
-      const percent = /率|占比/.test(field) || (section>1 && /^D\d+$/.test(field) && info.name!==summaryName);
+      const percent = /率|占比/.test(field);
       let val = r[i] ?? '';
       if (percent && typeof val === 'number') val = Number((val*100).toFixed(10));
       if (date) val = dateText(val);
@@ -333,11 +422,9 @@ const campaignEditor = (() => {
   }
   function entryForm(batch) {
     const daily = view==='dailyOrders';
-    const ratio = !daily && section>1;
-    const title = daily?'每日小订':progressName+' · '+blockTitle(section);
-    const column = ratio?'百分比（%）':'数量';
-    const inputs = batch ? `<label class="wide">${daily?'日期':'日序'}、${column}（两列，每行一条）<textarea name="rows" rows="7" placeholder="${daily?'2026-01-01':'D1'}&#9;${ratio?'12.5%':'120'}" required></textarea></label>` :
-      `<label>日序<input type="number" name="day" min="1" step="1" required></label><label>${column}<input name="amount" type="number" min="0" step="${ratio?'any':'1'}" required></label>`;
+    const title = daily?'每日小订':progressName;
+    const inputs = batch ? `<label class="wide">${daily?'日期':'日序'}、数量（两列，每行一条）<textarea name="rows" rows="7" placeholder="${daily?'2026-01-01':'D1'}&#9;120" required></textarea></label>` :
+      '<label>日序<input type="number" name="day" min="1" step="1" required></label><label>数量<input name="amount" type="number" min="0" step="1" required></label>';
     modal((batch?'批量粘贴':'填进度')+' · '+title,`<form class="form">${stageSelect()}${inputs}</form>`,async values=>{
       lastModel=values.get('stage');
       const [model,secondary]=JSON.parse(lastModel);
@@ -346,8 +433,8 @@ const campaignEditor = (() => {
       const seen=new Set();
       const mapped=rows.map(([rawKey,rawValue],index)=>{
         const key=rawKey.trim();
-        const value=numericValue(rawValue,ratio);
-        if (!ratio && !Number.isSafeInteger(value)) throw Error(`第 ${index+1} 行须填写整数数量`);
+        const value=Number(rawValue.trim());
+        if (!Number.isSafeInteger(value) || value<0) throw Error(`第 ${index+1} 行须填写非负整数数量`);
         let patch;
         if (daily) {
           if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) throw Error(`第 ${index+1} 行日期须为 YYYY-MM-DD`);
@@ -355,7 +442,7 @@ const campaignEditor = (() => {
         } else {
           const day=Number(key.replace(/^D/i,''));
           if (!Number.isInteger(day)||day<1) throw Error(`第 ${index+1} 行日序须为正整数`);
-          patch={sheet:progressName,model,secondary,section,day,value};
+          patch={sheet:progressName,model,secondary,section:1,day,value};
         }
         const id=patch.date || patch.day;
         if(seen.has(id))throw Error(`第 ${index+1} 行的日期或日序重复`);
@@ -364,8 +451,35 @@ const campaignEditor = (() => {
       });
       await apply(mapped);
     },'应用');
+    const form=$('#dialog-body form');
+    let compare=null, refreshDifference=()=>{};
+    if(!daily && progressName==='大定进度') {
+      const input=batch?form.elements.rows:form.elements.amount;
+      const show=dayDifferenceHint(input);
+      refreshDifference=()=>{
+        if(!compare)return show('');
+        if(!batch)return show(compare('D'+form.elements.day.value, input.valueAsNumber));
+        const differences=[];
+        for(const line of input.value.trim().split(/\r?\n/).slice(0,1000)){
+          const [day,value]=line.trim().split('\t');
+          if(!/^(?:D)?[1-9]\d*$/i.test(day) || !value?.trim())continue;
+          const field='D'+Number(day.replace(/^D/i,''));
+          const message=compare(field,Number(value));
+          if(message)differences.push(field+' · '+message);
+        }
+        const preview=differences.slice(0,3).join('；');
+        show(differences.length>3 ? preview+'（共 '+differences.length+' 天有差额）' : preview);
+      };
+      const selectComparison=()=>{
+        const value=form.elements.stage.value;
+        compare=value?dayComparison(...JSON.parse(value)):null;
+        refreshDifference();
+      };
+      form.elements.stage.addEventListener('change',selectComparison);
+      input.addEventListener('input',refreshDifference);
+      selectComparison();
+    }
     if(!batch) {
-      const form=$('#dialog-body form');
       const block=progressBlock();
       const findIndex=()=>{
         if(!form.elements.stage.value)return -1;
@@ -373,15 +487,11 @@ const campaignEditor = (() => {
         const secondaryCol=block.labels.indexOf('二级代际名');
         return block.s.rows.findIndex((r,i)=>i>block.start && i<block.end && r[0]===model && (r[secondaryCol]||'')===secondary);
       };
-      const derived = new Set(block.s.derivedCells || []);
       const syncAmount=()=>{
         const index=findIndex(),col=block.labels.indexOf('D'+form.elements.day.value);
         const value=block.s.rows[index]?.[col];
-        const locked=derived.has((index+1)+':'+(col+1));
-        form.elements.amount.value=used(value)?ratio?Number((value*100).toFixed(10)):value:'';
-        form.elements.amount.readOnly=locked;
-        $('#confirm').disabled=locked;
-        form.elements.amount.labels[0].firstChild.textContent=locked?'自动计算（%）':column;
+        form.elements.amount.value=value ?? '';
+        refreshDifference();
       };
       form.elements.stage.onchange=()=>{
         const row=block.s.rows[findIndex()] || [],latest=block.days.filter(i=>used(row[i])).at(-1);
@@ -400,8 +510,26 @@ const campaignEditor = (() => {
     if(kind==='progress-row'){
       const p=progressBlock();
       const record=p.s.rows[row-1];
-      const subject=stageLabel(record[0],record[p.labels.indexOf('二级代际名')]);
-      return rowForm(p.s,row,p.labels.map((_,i)=>i).filter(i=>i!==0),subject+' · '+progressName+' · '+blockTitle(section));
+      const secondary=record[p.labels.indexOf('二级代际名')] || '';
+      const subject=stageLabel(record[0],secondary);
+      const independentEnd=p.labels.indexOf('小转大结束日期');
+      const columns=independentEnd<0?p.days:[independentEnd,...p.days];
+      rowForm(p.s,row,columns,subject+' · '+progressName);
+      if(progressName==='大定进度') {
+        const compare=dayComparison(record[0],secondary);
+        if(!compare)return;
+        const form=$('#dialog-body form');
+        for(const index of p.days) {
+          const day=p.labels[index];
+          const control=form.elements['f'+index] || form.querySelector('output[aria-label="'+day+'"]');
+          if(!control)continue;
+          const show=dayDifferenceHint(control);
+          const update=()=>show(compare(day,readonly?record[index]:control.valueAsNumber));
+          control.addEventListener('input',update);
+          update();
+        }
+      }
+      return;
     }
     if(['identity','stage','totals'].includes(kind)){
       const s=sheet(summaryName);
@@ -409,8 +537,7 @@ const campaignEditor = (() => {
       const subject=stageLabel(record[0],record[1]);
       if(kind==='identity')return rowForm(s,row,identityColumns,subject+' · 车型资料');
       if(kind==='stage')return rowForm(s,row,scheduleColumns,subject+' · 发布日程',scheduleGroups);
-      const metrics=s.rows[0].map((_,i)=>i).slice(15);
-      return rowForm(s,row,metrics,subject+' · 经营汇总',totalsGroups);
+      return reviewTotals(s,row,subject);
     }
     if(readonly)return;
     if(kind==='new-stage') switchView('schedule','launchSchedule');

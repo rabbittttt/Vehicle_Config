@@ -33,10 +33,23 @@ def action(page, kind):
 
 def legacy_file(model):
     fields = {1: model, 2: '纯电版', 3: '中型', 4: '纯电', 5: '标准发布',
-              9: '2026-11-01', 10: '2026-11-02', 19: 77}
+              9: '2026-11-01', 10: '2026-11-02', 16: 160, 17: 60, 19: 77,
+              20: 20, 22: 5, 26: 40, 28: 30}
     edits = [{'sheet': '车型汇总', 'row': 2, 'col': col, 'value': value}
              for col, value in fields.items()]
-    return export_workbook(apply_edits(empty_workbook(), edits))
+    edits.append({'sheet': '小转大进度', 'model': model, 'secondary': '纯电版',
+                  'section': 1, 'day': 1, 'value': 6})
+    book = load_workbook(BytesIO(export_workbook(apply_edits(empty_workbook(), edits))))
+    # These independently maintained legacy values must survive a trip through the editor.
+    summary = book['车型汇总']
+    summary['X2'], summary['Y2'], summary['AA2'] = 91, .59, .46
+    curve = book['小转大进度']
+    d1 = next(cell.column for cell in curve[1] if cell.value == 'D1')
+    curve.cell(curve.max_row, d1).value = .18
+    output = BytesIO()
+    book.save(output)
+    book.close()
+    return output.getvalue()
 
 
 def legacy_preview(page):
@@ -94,15 +107,83 @@ def check_configuration(page):
     assert row[2] == '中大型' and row[12] == 3
 
 
+def check_result_review(page):
+    view(page, 'businessTotals')
+    expect(page.locator('[data-view=businessTotals]')).to_have_text('结果核对')
+    expect(page.locator('#content')).not_to_contain_text('小订待转单')
+    expect(page.locator('#content')).not_to_contain_text('小订转化率')
+    action(page, 'totals').click()
+    dialog = page.locator('#dialog')
+    expect(dialog.locator('input[type=number]')).to_have_count(7)
+    expect(dialog).not_to_contain_text('小订待转单')
+    rates = dialog.locator('details').filter(has=page.locator('summary', has_text='查看比例'))
+    toggle = rates.locator('summary')
+    expect(toggle).to_be_visible()
+    assert not rates.evaluate('el => el.open')
+    toggle.click()
+    for rate in ['小订转化率', '直接大定占比', '小订后退定占比', '净大定率', '留存大定到锁单率', '大定到锁单率']:
+        expect(rates.get_by_text(rate, exact=True)).to_be_visible()
+    expect(rates.locator('input')).to_have_count(0)
+    expect(rates).to_contain_text('46%')
+    for rate, formula in [('留存大定到锁单率', '首销期锁单 30 ÷ 首销期净大定 40'),
+                          ('大定到锁单率', '首销期锁单 30 ÷ 大定量 77')]:
+        entry = rates.locator('div').filter(has=page.get_by_text(rate, exact=True))
+        expect(entry).to_contain_text(formula)
+    toggle.click()
+    gross = page.get_by_label('大定量', exact=True)
+    direct = page.get_by_label('直接大定量', exact=True)
+    expect(gross).to_have_value('77')
+    direct.fill('')
+    expect(dialog.get_by_text('差额', exact=False).filter(visible=True)).to_have_count(0)
+    direct.fill('0')
+    expect(dialog).to_contain_text('+17')
+    direct.fill('20')
+    gross.fill('80')
+    expect(dialog.get_by_text('差额', exact=False).filter(visible=True)).to_have_count(0)
+    gross.fill('83')
+    expect(dialog).to_contain_text('+3')
+    confirm(page)
+    expect(page.locator('#content')).to_contain_text('+3')
+
+
+def check_quantity_progress(page):
+    view(page, 'stageProgress')
+    metric = page.get_by_label('指标', exact=True)
+    expect(page.get_by_label('分组', exact=True)).to_have_count(0)
+    metric.select_option('小转大进度')
+    page.get_by_role('button', name='批量粘贴').click()
+    page.locator('[name=rows]').fill('D1\t8\nD2\t0')
+    confirm(page)
+    metric.select_option('直接大定进度')
+    page.get_by_role('button', name='填进度', exact=True).click()
+    page.get_by_label('日序').fill('1')
+    page.get_by_label('数量', exact=True).fill('0')
+    confirm(page)
+    metric.select_option('大定进度')
+    page.get_by_role('button', name='填进度', exact=True).click()
+    expect(page.get_by_label('百分比')).to_have_count(0)
+    day = page.get_by_label('日序')
+    amount = page.get_by_label('数量', exact=True)
+    difference = page.locator('[data-gross-difference]')
+    day.fill('1')
+    amount.fill('11')
+    expect(difference).to_contain_text('+3')
+    amount.fill('8')
+    expect(difference).to_be_hidden()
+    day.fill('2')
+    amount.fill('12')
+    expect(difference).to_be_hidden()
+    confirm(page)
+    action(page, 'progress-row').click()
+    expect(page.locator('#dialog')).not_to_contain_text('占比')
+    expect(page.get_by_label('D2', exact=True)).to_have_value('12')
+    page.locator('#cancel').click()
+
+
 def check_reporting(page):
     tab(page, 'reporting')
     expect(page.locator('[data-view=dailyOrders]')).to_have_attribute('aria-pressed', 'true')
-    view(page, 'businessTotals')
-    action(page, 'totals').click()
-    expect(page.get_by_label('大定量', exact=True)).to_have_value('77')
-    expect(page.locator('#dialog [name=f2], #dialog [name=f9]')).to_have_count(0)
-    page.get_by_label('大定量', exact=True).fill('83')
-    confirm(page)
+    check_result_review(page)
     view(page, 'dailyOrders')
     page.get_by_role('button', name='批量粘贴').click()
     page.locator('[name=rows]').fill('2026-11-01\t0\n2026-11-02\t15')
@@ -117,14 +198,7 @@ def check_reporting(page):
     expect(rows.first.locator('td').nth(2)).to_have_text('15')
     page.locator('#redo').click()
     expect(rows.first.locator('td').nth(2)).to_have_text('16')
-    view(page, 'stageProgress')
-    page.get_by_label('指标', exact=True).select_option('小转大进度')
-    page.get_by_label('分组', exact=True).select_option('2')
-    page.get_by_role('button', name='填进度', exact=True).click()
-    page.get_by_label('日序').fill('2')
-    page.get_by_label('百分比').fill('15')
-    confirm(page)
-    expect(page.locator('#content')).to_contain_text('15%')
+    check_quantity_progress(page)
     page.locator('#save').click()
     ready(page)
     page.reload()
@@ -140,6 +214,15 @@ def check_reporting(page):
     page.locator('#export').click()
     ready(page)
     expect(page.locator('[name=sheets]')).to_have_count(8)
+    complete = download(page)
+    assert len(complete) == 8
+    headers, row = complete['车型汇总']
+    result = dict(zip(headers, row))
+    assert (result['小订待转单'], result['小订待转单占比'], result['净大定率']) == (91, .59, .46)
+    curve = complete['小转大进度']
+    assert curve[-1][curve[0].index('D1')] == .18
+    page.locator('#export').click()
+    ready(page)
     for box in page.locator('[name=sheets]').all():
         box.set_checked(box.input_value() == '小订by天')
     page.get_by_label('开始日期', exact=True).fill('2026-11-02')
