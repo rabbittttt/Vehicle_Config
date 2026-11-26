@@ -28,6 +28,8 @@ def test_editor(browser):
         page.reload()
         ready(page)
         expect(page.locator("#published")).to_be_visible()
+        excel_captions = page.locator("#template span, #import span, #export span")
+        expect(excel_captions).to_have_text(["模板", "批量导入", "导出"])
         expect(page.locator("#template")).to_have_accessible_name("下载车型配置模板（Excel）")
         expect(page.locator("#import")).to_have_accessible_name("批量导入车型配置（Excel）")
         expect(page.locator("#export")).to_have_accessible_name("导出车型配置（Excel）")
@@ -102,6 +104,7 @@ def test_editor(browser):
 
         switch_view(page, "aliases", "gen_names")
         expect(page.locator("#published")).to_be_hidden()
+        expect(excel_captions).to_have_text(["模板", "批量导入", "导出"])
         expect(page.locator("#template")).to_have_accessible_name("下载脚本规则模板（Excel）")
         expect(page.locator("#import")).to_have_accessible_name("批量导入脚本规则（Excel）")
         expect(page.locator("#export")).to_have_accessible_name("导出脚本规则（Excel）")

@@ -261,13 +261,12 @@ filterToggle.onclick = () => {
 const viewTabs = $('#view-tabs');
 function updateExcelActions() {
   const scope = isRuleView() ? '脚本规则' : '车型配置';
-  for (const [id, caption, description] of [
-    ['template', scope + '模板', '下载' + scope + '模板（Excel）'],
-    ['import', '批量导入' + scope, '批量导入' + scope + '（Excel）'],
-    ['export', '导出' + scope, '导出' + scope + '（Excel）'],
+  for (const [id, description] of [
+    ['template', '下载' + scope + '模板（Excel）'],
+    ['import', '批量导入' + scope + '（Excel）'],
+    ['export', '导出' + scope + '（Excel）'],
   ]) {
     const button = $('#' + id);
-    setText(button.querySelector('span'), caption);
     button.title = description;
     button.setAttribute('aria-label', description);
   }
