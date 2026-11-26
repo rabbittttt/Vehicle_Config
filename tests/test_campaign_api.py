@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from io import BytesIO
 from tempfile import TemporaryDirectory
 from threading import Thread
@@ -9,6 +10,7 @@ from urllib.request import Request, urlopen
 from openpyxl import load_workbook
 from catalog import Store
 from server import make_server
+from stage_workbook import SUMMARY, SUMMARY_FIELDS
 
 
 class CampaignApiTests(unittest.TestCase):
@@ -53,6 +55,49 @@ class CampaignApiTests(unittest.TestCase):
             self.assertNotIn(12, entries[1])
         finally:
             book.close()
+
+    def test_schedule_only_exports_selected_stage_and_saved_edition(self):
+        values = [(2, 1, '车型甲'), (2, 2, '甲一期'), (2, 3, '标准'),
+                  (2, 9, '2026-11-04'), (2, 10, '2026-11-06'), (2, 16, 35),
+                  (3, 1, '车型甲'), (3, 2, '甲二期')]
+        edits = [{'sheet': SUMMARY, 'row': row, 'col': col, 'value': value}
+                 for row, col, value in values]
+        with self.post('publish', {'revision': 0, 'edits': edits}) as response:
+            revision = json.load(response)['revision']
+        with self.post('save', {'revision': revision, 'edits': [
+                {'sheet': SUMMARY, 'row': 2, 'col': 3, 'value': '新档位'}]}) as response:
+            self.assertTrue(json.load(response)['hasUnpublishedChanges'])
+        for source, tier in [('draft', '新档位'), ('published', '标准')]:
+            with self.post('export', {'scope': 'schedule', 'models': ['甲一期'], 'source': source,
+                                      'sheets': [SUMMARY, '大定进度']}) as response:
+                book = load_workbook(BytesIO(response.read()), read_only=True)
+            try:
+                self.assertEqual(book.sheetnames, [SUMMARY])
+                headers, row = list(book.active.values)
+                self.assertEqual(headers, tuple(SUMMARY_FIELDS[:14]))
+                self.assertEqual(row[:3], ('车型甲', '甲一期', tier))
+                self.assertEqual(row[8], datetime(2026, 11, 4))
+                self.assertEqual(row[12], 3)
+            finally:
+                book.close()
+
+    def test_campaign_publication_history_excludes_initial_version_and_drafts(self):
+        def history(query=''):
+            with urlopen(self.base + 'campaign/history' + query) as response:
+                return json.load(response)
+
+        self.assertEqual(history(), {'history': [], 'total': 0, 'page': 1})
+        with self.post('save', {'revision': 0, 'edits': [
+                {'sheet': SUMMARY, 'row': 2, 'col': 1, 'value': '车型甲'}]}) as response:
+            draft_revision = json.load(response)['revision']
+        self.assertEqual(history()['total'], 0)
+        with self.post('publish', {'revision': draft_revision, 'edits': []}) as response:
+            published_revision = json.load(response)['publishedRevision']
+        entry, = history()['history']
+        self.assertEqual((entry['id'], entry['kind']), (published_revision, '发布'))
+        self.assertTrue(entry['actor'])
+        self.assertIsInstance(datetime.fromisoformat(entry['time']), datetime)
+        self.assertEqual(history('?q=does-not-match')['total'], 0)
 
     def test_invalid_upload_and_missing_csrf_leave_empty_draft(self):
         for body, token, status in (({'revision':0,'content':'bad'}, None, 400),

@@ -305,7 +305,7 @@ const orderRules = (() => {
   }
 
   function syncFromScript() {
-    if (readonly || busy || !data) return;
+    if (readonly || busy || !csrf) return;
     return run(async () => {
       const current = await api('rules/state');
       if (!current.source.available) {
@@ -360,7 +360,7 @@ const orderRules = (() => {
       }, '删除');
     }
     if (action === 'up' || action === 'down') {
-      if (ruleQuery) return;
+      if (searchValue()) return;
       const rows = [...draft[table]];
       const index = rows.findIndex(row => row.id === id);
       const target = index + (action === 'up' ? -1 : 1);

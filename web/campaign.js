@@ -16,7 +16,7 @@ const campaignEditor = (() => {
   function accept(result) {
     saved = current = result;
     edits = []; undo = []; redo = [];
-    if (tab === 'campaign') renderKeepingScroll();
+    if (isCampaignView()) renderKeepingScroll();
     else flags();
   }
   async function load() { accept(await api('campaign/state')); }
@@ -53,8 +53,8 @@ const campaignEditor = (() => {
     const counts = new Map();
     for (const item of edits) counts.set(item.sheet,(counts.get(item.sheet)||0)+1);
     const list = [...counts].map(([name,count]) => `<dt>${esc(name)}</dt><dd>${count} 处编辑</dd>`).join('');
-    const description = list ? `<dl>${list}</dl>` : '<p>发布当前已保存的草稿。</p>';
-    modal('发布小订与首销数据', description, async () => {
+    const description = '<p>同时发布本次草稿中的车型资料、发布日程和填报数据。</p>' + (list ? `<dl>${list}</dl>` : '');
+    modal('发布车型日程与填报数据', description, async () => {
       accept(await api('campaign/publish',payload()));
       notice(current.projectionPending ? current.projectionError || '数据已发布，下游同步待重试' : '小订与首销数据已发布', Boolean(current.projectionPending));
     },'确认发布');
@@ -79,6 +79,8 @@ const campaignEditor = (() => {
   function stages() {
     return (sheet(summaryName)?.rows.slice(1) || []).filter(r => r?.[0]);
   }
+  const modelNames = () => [...new Set(stages().map(row=>row[0]))];
+  const modelYears = () => [...new Set(stages().flatMap(row=>[modelYear(row[0]),modelYear(row[1])]).filter(Boolean))].sort().reverse();
   function choices() {
     return stages().map(r => ({model:r[0], secondary:r[1] || '', label:r[1] ? r[0]+' · '+r[1] : r[0]}));
   }
@@ -88,20 +90,67 @@ const campaignEditor = (() => {
     const initial = pairs.some(([key])=>key===lastModel) ? lastModel : pairs.length===1 ? pairs[0][0] : '';
     return `<label class="wide">车型与阶段${formSelect('stage', pairs, initial, true)}</label>`;
   }
-  function renderSummary(query) {
+  const identityColumns = [0,1,2,3];
+  const scheduleColumns = [4,5,6,7,8,9,10,11,12,13];
+  const scheduleGroups = [
+    ['发布信息',[4,7]], ['小订期',[5,8,9,12]], ['首销期',[6,10,11,13]],
+  ];
+  const totalsGroups = [
+    ['小订与转化',[15,16,17,21,22,23,24]],
+    ['大定与留存',[18,19,20,25,26]],
+    ['锁单',[27,28,29]],
+  ];
+  function summaryRows(query, columns) {
     const info = sheet(summaryName);
-    $('#actions').innerHTML = readonly ? '' : action('add-stage','新增发布日程');
-    const rows = info.rows.map((r,i)=>({r,i})).slice(1).filter(({r})=>r[0] && matched(r,query));
-    const body = pageRows(rows).map(({r,i})=>`<tr>
-      <td>${esc(r[0])}${r[1] ? `<small>${esc(r[1])}</small>` : ''}</td>
-      <td>${esc(displayValue(r[4]))}</td><td>${esc(displayValue(r[8]))}<small>至 ${esc(displayValue(r[9]))}</small></td>
-      <td>${esc(displayValue(r[10]))}<small>至 ${esc(displayValue(r[11]))}</small></td>
-      <td>${esc(numericText(r[15]))}</td><td>${esc(numericText(r[18]))}</td>
-      <td class="operation">${action('stage','日程',`class="link" data-row="${i+1}"`)} ${action('totals','经营数据',`class="link" data-row="${i+1}"`)}</td></tr>`).join('');
-    $('#content').innerHTML = body ? table(['车型与阶段','发布类型','小订期','首销期','总小订','大定量','明细'],body) : empty(query?'没有匹配的日程':'暂无发布日程');
+    return info.rows.map((r,i)=>({r,row:i+1})).slice(1)
+      .filter(({r})=>r[0] && (isReportingView() || matchesScheduleModel(r[0],r[1])) && matched(columns.map(index=>r[index]),query));
   }
+  function identityCell(r) {
+    return `<td>${esc(r[0])}${r[1] ? `<small>${esc(r[1])}</small>` : ''}</td>`;
+  }
+  function stageLabel(primary,secondary) {
+    return secondary && !String(secondary).startsWith(primary) ? primary+' · '+secondary : secondary || primary;
+  }
+  function rowAction(kind,row) {
+    return `<td class="operation">${action(kind,readonly?'查看':'编辑',`class="link" data-row="${row}"`)}</td>`;
+  }
+  function renderIdentity(query) {
+    $('#actions').innerHTML = readonly ? '' : action('add-stage','新增车型');
+    const headings = ['代际名','二级代际名','产品档位','能源类型','操作'];
+    const details = identityColumns.slice(1);
+    const body = pageRows(summaryRows(query,identityColumns)).map(({r,row}) => {
+      const metadata = details.filter(index=>used(r[index])).map(index=>
+        `<div><dt>${headings[index]}</dt><dd>${esc(r[index])}</dd></div>`).join('');
+      return `<tr><td><span class="identity-name">${esc(r[0])}</span>${metadata ? `<dl class="identity-details">${metadata}</dl>` : ''}</td>
+        ${details.map(index=>`<td>${esc(displayValue(r[index]))}</td>`).join('')}${rowAction('identity',row)}</tr>`;
+    }).join('');
+    $('#content').innerHTML = body ? `<div class="campaign-identities">${table(headings,body)}</div>` : empty(query?'没有匹配的车型':'暂无车型资料');
+  }
+  function timeWindow(r,start,end) {
+    if (!used(r[start]) && !used(r[end])) return '<td>—</td>';
+    return `<td>${esc(displayValue(r[start]))}<small>至 ${esc(displayValue(r[end]))}</small></td>`;
+  }
+  function renderSchedule(query) {
+    $('#actions').innerHTML = readonly ? '' : action('add-stage','新增发布日程');
+    const body = pageRows(summaryRows(query,[0,1,...scheduleColumns])).map(({r,row})=>`<tr>
+      ${identityCell(r)}<td>${esc(displayValue(r[4]))}</td><td>${esc(displayValue(r[7]))}</td>
+      <td>${esc(displayValue(r[5]))}</td>${timeWindow(r,8,9)}<td>${esc(displayValue(r[12]))}</td>
+      <td>${esc(displayValue(r[6]))}</td>${timeWindow(r,10,11)}<td>${esc(displayValue(r[13]))}</td>${rowAction('stage',row)}</tr>`).join('');
+    $('#content').innerHTML = body ? table(['车型与阶段','发布类型','留资日期','小订发布时间','小订日期','小订天数','首销发布时段','首销日期','首销期天数','操作'],body) : empty(query?'没有匹配的日程':'暂无发布日程');
+  }
+  function renderTotals(query) {
+    $('#actions').innerHTML = !readonly && !stages().length ? action('new-stage','新增发布日程') : '';
+    const cols = [15,16,18,19,25,27];
+    const body = pageRows(summaryRows(query,[0,1,...cols])).map(({r,row})=>`<tr>${identityCell(r)}
+      ${cols.map(index=>`<td>${esc(numericText(r[index]))}</td>`).join('')}${rowAction('totals',row)}</tr>`).join('');
+    const labels=sheet(summaryName).rows[0];
+    $('#content').innerHTML = body ? table(['车型与阶段',...cols.map(index=>labels[index]),'操作'],body) : empty(query?'没有匹配的车型':'暂无经营汇总');
+  }
+  const dailyEntriesBySheet = new WeakMap();
   function dailyEntries() {
     const info = sheet(dailyName);
+    const cached = dailyEntriesBySheet.get(info);
+    if (cached) return cached;
     const headers = new Set(info.headerRows || [1]);
     const result = [];
     let header = [];
@@ -110,17 +159,22 @@ const campaignEditor = (() => {
       if (!row[0] || /^(合计|总计)$/.test(row[0])) return;
       const secondary = row[header.indexOf('二级代际名')];
       const model = secondary ? row[0]+' · '+secondary : row[0];
+      const modelSearch = lower(model);
       row.forEach((value,index) => {
         const stamp = dateText(header[index]);
-        if (index && used(value) && /^\d{4}-\d{2}-\d{2}$/.test(stamp)) result.push({date:stamp,model,value,row:i+1,col:index+1});
+        if (index && used(value) && /^\d{4}-\d{2}-\d{2}$/.test(stamp)) result.push({date:stamp,model,modelSearch,value,row:i+1,col:index+1});
       });
     });
-    return result.sort((a,b)=>b.date.localeCompare(a.date) || a.row-b.row);
+    result.sort((a,b)=>b.date.localeCompare(a.date) || a.row-b.row);
+    dailyEntriesBySheet.set(info,result);
+    return result;
   }
   function renderDaily(query) {
     const available = stages().length;
     $('#actions').innerHTML = readonly ? '' : available ? action('batch','批量粘贴')+action('daily','填小订') : action('new-stage','新增发布日程');
-    const rows = dailyEntries().filter(r=>matched([r.date,r.model],query));
+    const entries = dailyEntries();
+    const term = lower(query);
+    const rows = term ? entries.filter(r=>r.date.includes(term) || r.modelSearch.includes(term)) : entries;
     const body = pageRows(rows).map(r=>`<tr><td>${esc(r.date)}</td><td>${esc(r.model)}</td><td>${esc(numericText(r.value))}</td>${readonly?'':`<td class="operation">${action('edit-daily','编辑',`class="link" data-row="${r.row}" data-col="${r.col}"`)}</td>`}</tr>`).join('');
     $('#content').innerHTML = body ? table(['日期','车型与阶段','小订量',...(readonly?[]:['操作'])],body) : empty(query?'没有匹配的记录':'暂无每日小订');
   }
@@ -168,7 +222,9 @@ const campaignEditor = (() => {
     }
     if (view==='dailyOrders') renderDaily(query);
     else if (view==='stageProgress') renderProgress(query);
-    else renderSummary(query);
+    else if (view==='businessTotals') renderTotals(query);
+    else if (view==='launchSchedule') renderSchedule(query);
+    else renderIdentity(query);
   }
 
   function numericValue(value,percent=false) {
@@ -179,15 +235,14 @@ const campaignEditor = (() => {
     return percent || text.endsWith('%') ? amount/100 : amount;
   }
   function dateField(label) { return label==='留资' || String(label).includes('日期'); }
-  function rowForm(info,row,indexes,title) {
+  function rowForm(info,row,indexes,title,groups=null) {
     const r = info.rows[row-1] || [];
     const head = (info.headerRows || [1]).filter(x=>x<=row).at(-1) || 1;
     const labels = info.rows[head-1];
     const changes = [];
     const derived = new Set(info.derivedCells || []);
-    const generation = m => m.generation || modelName(m);
-    const suggestions = [...new Set([...data.models.map(generation),...stages().map(r=>r[0])].filter(Boolean))];
-    const controls = indexes.filter(i=>used(labels[i])).map(i=>{
+    const scheduleReferences = info.name===summaryName ? [] : sheet(summaryName).rows[0].slice(0,14);
+    function control(i) {
       const field = String(labels[i]);
       const coord = row+':'+(i+1);
       const computed = derived.has(coord) || (info.computed.includes(i+1) && !(info.literalCells||[]).includes(coord));
@@ -199,13 +254,16 @@ const campaignEditor = (() => {
       if (date) val = dateText(val);
       const unit = percent?'（%）':'';
       const label = field==='留资'?'留资日期':field;
-      if (readonly || computed) return `<label>${esc(label)}${unit}<output>${esc(displayValue(val))}</output></label>`;
+      if (readonly || computed || scheduleReferences.includes(field)) return `<label>${esc(label)}${unit}<output aria-label="${esc(label)}${unit}">${esc(displayValue(val))}</output></label>`;
       const type = date?'date':number?'number':'text';
       const opts = number?'min="0" step="any"':'maxlength="256"';
       changes.push({i,number,percent,original:String(val)});
       return `<label>${esc(label)}${unit}<input name="f${i}" type="${type}" ${opts} value="${esc(val)}" ${i===0?'required list="campaign-models"':''}></label>`;
-    }).join('');
-    modal(title,`<form class="form campaign-form">${controls}<datalist id="campaign-models">${suggestions.map(s=>option(s,s,'')).join('')}</datalist></form>`, readonly?null:async values=>{
+    }
+    const renderFields = columns => columns.filter(i=>used(labels[i])).map(control).join('');
+    const controls = groups ? groups.map(([name,columns])=>`<fieldset class="wide campaign-field-group"><legend>${esc(name)}</legend><div class="form">${renderFields(columns)}</div></fieldset>`).join('') : renderFields(indexes);
+    const suggestions = indexes.includes(0) ? `<datalist id="campaign-models">${modelNames().map(name=>option(name,name,'')).join('')}</datalist>` : '';
+    modal(title,`<form class="form campaign-form">${controls}${suggestions}</form>`, readonly?null:async values=>{
       const pending = [];
       for (const {i,number,percent,original} of changes) {
         const raw = String(values.get('f'+i)).trim();
@@ -217,22 +275,16 @@ const campaignEditor = (() => {
     if(info.name===summaryName && row>info.rows.length) {
       const form=$('#dialog-body form');
       const manual=new Set();
-      for(const i of [1,2,3,8,10]) form.elements['f'+i].oninput=()=>manual.add(i);
+      for(const i of [2,3]) form.elements['f'+i].oninput=()=>manual.add(i);
       form.elements.f0.oninput=()=>{
         const name=form.elements.f0.value.trim();
-        const matches=data.models.filter(m=>generation(m)===name);
         const existing=stages().filter(r=>r[0]===name);
         const common=i=>{
           const values=[...new Set(existing.map(r=>r[i]).filter(used))];
           return values.length===1?values[0]:'';
         };
-        const vehicle=matches.length===1?matches[0]:null;
-        const phases=vehicle?data.phases.filter(p=>p.model_id===vehicle.id):[];
-        const phase=phases.length===1?phases[0]:null;
-        const fields={1:vehicle?.subgeneration,2:vehicle?.tier||common(2),3:vehicle?.energy||common(3),
-          8:phase?.presale_date,10:phase?.sale_date};
-        for(const [index,value] of Object.entries(fields)) {
-          if(!manual.has(Number(index)))form.elements['f'+index].value=value || '';
+        for(const index of [2,3]) {
+          if(!manual.has(index))form.elements['f'+index].value=common(index);
         }
       };
     }
@@ -347,18 +399,25 @@ const campaignEditor = (() => {
     const row=Number(button.dataset.row),col=Number(button.dataset.col);
     if(kind==='progress-row'){
       const p=progressBlock();
-      return rowForm(p.s,row,p.labels.map((_,i)=>i).filter(i=>i!==0),p.s.rows[row-1][0]+' · '+progressName+' · '+blockTitle(section));
+      const record=p.s.rows[row-1];
+      const subject=stageLabel(record[0],record[p.labels.indexOf('二级代际名')]);
+      return rowForm(p.s,row,p.labels.map((_,i)=>i).filter(i=>i!==0),subject+' · '+progressName+' · '+blockTitle(section));
     }
-    if(kind==='stage'||kind==='totals'){
+    if(['identity','stage','totals'].includes(kind)){
       const s=sheet(summaryName);
-      const indexes=s.rows[0].map((_,i)=>i).filter(i=>kind==='stage'?i<14:i>14);
-      return rowForm(s,row,indexes,s.rows[row-1][0]+' · '+(kind==='stage'?'发布日程':'经营数据'));
+      const record=s.rows[row-1];
+      const subject=stageLabel(record[0],record[1]);
+      if(kind==='identity')return rowForm(s,row,identityColumns,subject+' · 车型资料');
+      if(kind==='stage')return rowForm(s,row,scheduleColumns,subject+' · 发布日程',scheduleGroups);
+      const metrics=s.rows[0].map((_,i)=>i).slice(15);
+      return rowForm(s,row,metrics,subject+' · 经营汇总',totalsGroups);
     }
     if(readonly)return;
-    if(kind==='new-stage') switchView('campaign','campaign');
+    if(kind==='new-stage') switchView('schedule','launchSchedule');
     if(kind==='new-stage'||kind==='add-stage') {
       const s=sheet(summaryName);
-      return rowForm(s,s.rows.length+1,Array.from({length:14},(_,i)=>i),'新增发布日程');
+      if(view==='vehicleIdentity')return rowForm(s,s.rows.length+1,identityColumns,'新增车型');
+      return rowForm(s,s.rows.length+1,[...identityColumns,...scheduleColumns],'新增发布日程',[['车型资料',identityColumns],...scheduleGroups]);
     }
     if(kind==='batch'||kind==='progress') return entryForm(kind==='batch');
     if(kind==='daily')return dailyForm();
@@ -366,33 +425,36 @@ const campaignEditor = (() => {
   }
   async function openExport() {
     if(!ready())return;
+    const reporting=isReportingView();
     const check=(name,value,label)=>`<label><input type="checkbox" name="${name}" value="${esc(value)}" ${name==='sheets'?'checked':''}>${esc(label)}</label>`;
     const sheetList=current.sheets.map(s=>check('sheets',s.name,s.name)).join('');
     const publishedData=saved.publishedRevision?await api('campaign/published'):null;
     const modelBoxes=dataset=>{
       const rows=dataset.sheets.find(s=>s.name===summaryName).rows.slice(1);
-      return [...new Set(rows.filter(r=>r[0]).map(r=>r[1]||r[0]))].map(m=>check('models',m,m)).join('');
+      return [...new Set(rows.filter(r=>r[0]).map(r=>reporting ? r[1]||r[0] : r[0]))].map(m=>check('models',m,m)).join('');
     };
     const models=modelBoxes(publishedData||saved);
-    modal('导出小订与首销',`<form class="campaign-export"><label>数据版本<select name="source">
-      ${saved.publishedRevision ? '<option value="published">已发布数据</option>':''}<option value="draft">已保存草稿</option></select></label>
-      <fieldset><legend>工作表</legend><div class="members">${sheetList}</div></fieldset>
+    const sheetOptions=reporting ? `<fieldset><legend>工作表</legend><div class="members">${sheetList}</div></fieldset>
       <fieldset class="campaign-window"><legend>每日小订日期范围</legend><div class="form">
-        <label>开始日期<input type="date" name="dateFrom"></label><label>截止日期<input type="date" name="dateTo"></label></div></fieldset>
+        <label>开始日期<input type="date" name="dateFrom"></label><label>截止日期<input type="date" name="dateTo"></label></div></fieldset>` : '';
+    modal(reporting?'导出小订与首销':'导出车型与日程',`<form class="campaign-export"><label>数据版本<select name="source">
+      ${saved.publishedRevision ? '<option value="published">已发布数据</option>':''}<option value="draft">已保存草稿</option></select></label>
+      ${sheetOptions}
       <details class="campaign-export-models" ${models?'':'hidden'}><summary>筛选车型（默认全部）</summary><div class="members">${models}</div></details></form>`,async values=>{
-      const sheets=values.getAll('sheets');
+      const sheets=reporting?values.getAll('sheets'):[summaryName];
       if(!sheets.length)throw Error('请至少选择一个工作表');
       const selection={sheets,models:values.getAll('models'),source:values.get('source')};
+      if(!reporting)selection.scope='schedule';
       if(sheets.includes(dailyName)) {
         const start=values.get('dateFrom'),end=values.get('dateTo');
         if(start && end && start>end)throw Error('每日小订截止日期不能早于开始日期');
         if(start)selection.dateFrom=start;
         if(end)selection.dateTo=end;
       }
-      await download('campaign/export',selection,'小订与首销.xlsx');
+      await download('campaign/export',selection,reporting?'小订与首销.xlsx':'车型与日程.xlsx');
     },'下载 Excel');
     const dailyBox=$('[name="sheets"][value="小订by天"]');
-    dailyBox.onchange=()=>{$('.campaign-window').hidden=!dailyBox.checked;};
+    if(dailyBox)dailyBox.onchange=()=>{$('.campaign-window').hidden=!dailyBox.checked;};
     $('[name="source"]').onchange=e=>{
       const area=$('.campaign-export-models');
       const names=modelBoxes(e.target.value==='published'?publishedData:saved);
@@ -400,7 +462,7 @@ const campaignEditor = (() => {
       area.hidden=!names;
     };
   }
-  const saveBeforeImport = '小订与首销有未保存修改。请先在「小订与首销」保存草稿，再导入旧表。';
+  const saveBeforeImport = '车型日程或填报数据有未保存修改。请先保存草稿，再导入旧表。';
   function selectLegacy() {
     if (readonly || busy) return;
     if (isDirty()) {notice(saveBeforeImport,true);return;}
@@ -449,7 +511,7 @@ const campaignEditor = (() => {
     if (current.projectionPending) return '已发布 · 下游同步待重试';
     return `小订与首销草稿 r${saved.revision} · ${saved.hasUnpublishedChanges?'待发布':'已保存'}`;
   }
-  return {ready,isDirty,canUndoImport,selectLegacy,undoImport,canPublish:()=>isDirty()||Boolean(saved?.hasUnpublishedChanges),
+  return {ready,isDirty,modelNames,modelYears,canUndoImport,selectLegacy,undoImport,canPublish:()=>isDirty()||Boolean(saved?.hasUnpublishedChanges),
     canUndo:()=>undo.length>0,canRedo:()=>redo.length>0,undo:()=>step(true),redo:()=>step(false),
     render:renderView,load,reload,status,handle,save,previewPublish,openExport,importFiles};
 })();

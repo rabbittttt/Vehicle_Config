@@ -15,7 +15,8 @@ from playwright.sync_api import expect, sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from catalog import Store, empty
+from campaign_store import CampaignStore
+from catalog import Store
 from server import make_server
 from shared_rules import RuleStore
 
@@ -92,12 +93,10 @@ def switch_view(page, tab, view):
 
 
 def add_vehicle(page):
-    page.locator('#actions [data-action="add:models"]').click()
-    values = {'brand': '验收品牌', 'series': '未保存车型甲', 'generation': '一代',
-              'year': '2026', 'energy': '纯电'}
-    for field, value in values.items():
-        page.locator(f'#dialog [name="{field}"]').fill(value)
+    page.locator('[data-campaign-action="add-stage"]').click()
+    page.get_by_label('代际名', exact=True).fill('未保存车型甲')
     page.locator('#confirm').click()
+    expect(page.locator('#dialog')).to_be_hidden()
     ready(page)
 
 
@@ -109,7 +108,7 @@ def check_conditional_prices(browser):
             page = browser.new_page()
             page.goto(url)
             ready(page)
-            switch_view(page, 'matrix', 'option_prices')
+            switch_view(page, 'options', 'option_prices')
             content = page.locator('#content')
             page.locator('#search').fill('条件甲')
             expect(content).to_contain_text('条件乙 21 元 / 条件甲 12 元')
@@ -163,11 +162,8 @@ def check_conditional_prices(browser):
 
 def main():
     with tempfile.TemporaryDirectory() as tmp, isolated_server(tmp) as (url, store, rules, source), sync_playwright() as pw:
-        catalog = empty()
-        catalog['models'].append(dict(id='model-b', brand='验收品牌', series='已保存车型乙',
-                                      generation='一代', subgeneration='', year='2027',
-                                      energy='纯电', tier='', status='在售'))
-        store.save(catalog, 0, '浏览器验收')
+        campaign = CampaignStore(store.root)
+        campaign.save(0, [dict(sheet='车型汇总', row=2, col=1, value='已保存车型乙 2027款')], '浏览器验收')
         initial_rules=rules.get()['draft']['data']
         with rules.db:
             rules._event('草稿','早期操作人',initial_rules,[])
@@ -187,12 +183,12 @@ def main():
         title = heading.get_by_role('heading', level=1)
         expect(title).to_have_text('车型配置')
         primary_nav = header.locator('nav [data-tab]')
-        expect(primary_nav).to_have_text(['车型档案', '小订与首销', '版本与选配', '名称映射', '汇总规则', '变更记录'])
+        expect(primary_nav).to_have_text(['车型与日程', '代际规则', '电池与选配', '小订首销填报', '变更记录'])
         expect(header.get_by_role('link', name='订单配置规则')).to_have_count(0)
         title_box = title.bounding_box()
         title_mid_y = title_box['y'] + title_box['height'] / 2
         nav_top = header.locator('nav').bounding_box()['y']
-        for selector in ['#model', '#year', '#status-filter', '#search']:
+        for selector in ['#model', '#year', '#search']:
             control = heading.locator(selector)
             expect(control).to_be_visible()
             box = control.bounding_box()
@@ -207,19 +203,16 @@ def main():
         expect(content).not_to_contain_text('未保存车型甲')
         expect(content).to_contain_text('已保存车型乙')
         header.locator('#clear-filters').click()
-        header.locator('#model').select_option('model-b')
-        expect(content).not_to_contain_text('未保存车型甲')
-        header.locator('#clear-filters').click()
-        header.locator('#status-filter').select_option('在售')
+        header.locator('#model').select_option('已保存车型乙 2027款')
         expect(content).not_to_contain_text('未保存车型甲')
         header.locator('#clear-filters').click()
         header.locator('#search').fill('未保存车型甲')
         expect(content).not_to_contain_text('已保存车型乙')
 
-        switch_view(page, 'aliases', 'gen_names')
+        switch_view(page, 'generation', 'gen_names')
         expect(page).to_have_url(url)
         expect(page.locator('h1')).to_have_text('车型配置')
-        expect(primary_nav).to_have_text(['车型档案', '小订与首销', '版本与选配', '名称映射', '汇总规则', '变更记录'])
+        expect(primary_nav).to_have_text(['车型与日程', '代际规则', '电池与选配', '小订首销填报', '变更记录'])
         for selector in ['#model', '#year', '#status-filter']:
             expect(header.locator(selector)).to_be_hidden()
         header.locator('#search').fill('不存在的旧名')
@@ -236,29 +229,30 @@ def main():
         expect(content.get_by_text('车型甲标准名', exact=True)).to_be_visible()
 
         # Each draft remains in its editor, and the shared save button writes only the active draft.
-        page.locator('[data-tab="models"]').click()
+        page.locator('[data-tab="schedule"]').click()
         expect(header.locator('#search')).to_have_value('未保存车型甲')
         expect(content).to_contain_text('未保存车型甲')
         expect(page.locator('#save')).to_be_enabled()
-        switch_view(page, 'aliases', 'gen_names')
+        switch_view(page, 'generation', 'gen_names')
         expect(content).to_contain_text('车型甲标准名')
         page.locator('#save').click()
         ready(page)
-        assert store.get()['draft']['data']['models'] == catalog['models']
+        assert len(campaign.get()['sheets'][0]['rows']) == 2
         assert assignments(source)['GEN_DISPLAY_NAME_MAP']['车型甲旧名'] == '车型甲 2026款'
-        page.locator('[data-tab="models"]').click()
+        page.locator('[data-tab="schedule"]').click()
         page.locator('#save').click()
         ready(page)
-        assert len(store.get()['draft']['data']['models']) == 2
+        assert campaign.get()['sheets'][0]['rows'][2][0] == '未保存车型甲'
 
-        switch_view(page, 'aliases', 'option_names')
+        switch_view(page, 'options', 'option_names')
         header.locator('#search').fill('')
         expect(content).to_contain_text('旧选配名称')
-        switch_view(page, 'groups', 'merge_groups')
+        switch_view(page, 'generation', 'merge_groups')
+        header.locator('#search').fill('')
         expect(content).to_contain_text('车型甲&乙 2026款')
-        switch_view(page, 'matrix', 'battery_rules')
+        switch_view(page, 'options', 'battery_rules')
         content.get_by_role('button', name='下移', exact=True).first.click()
-        switch_view(page, 'matrix', 'option_prices')
+        switch_view(page, 'options', 'option_prices')
         content.get_by_role('button', name='编辑', exact=True).click()
         page.locator('[name=price]').fill('4500')
         page.locator('#confirm').click()
@@ -285,7 +279,7 @@ def main():
         expect(page.locator('#dialog')).to_be_visible()
         page.locator('#cancel').click()
         header.locator('#search').fill('')
-        switch_view(page, 'matrix', 'option_prices')
+        switch_view(page, 'options', 'option_prices')
         source.write_text(source.read_text(encoding='utf-8') + '\n# external\n', encoding='utf-8')
         content.get_by_role('button', name='编辑', exact=True).click()
         page.locator('[name=price]').fill('5000')
@@ -300,7 +294,7 @@ def main():
 
         page.set_viewport_size({'width': 390, 'height': 844})
         mobile_tab = header.get_by_role('combobox', name='配置管理模块')
-        expect(mobile_tab).to_have_value('matrix')
+        expect(mobile_tab).to_have_value('options')
         expect(header.locator('#search')).to_be_hidden()
         header.get_by_role('button', name='筛选', exact=True).click()
         expect(header.locator('#search')).to_be_visible()
@@ -309,17 +303,17 @@ def main():
         out = ROOT / 'artifacts'
         out.mkdir(exist_ok=True)
         page.screenshot(path=str(out / 'rules-mobile.png'), full_page=True)
-        mobile_tab.select_option('models')
+        mobile_tab.select_option('schedule')
         header.locator('#clear-filters').click()
         expect(header.locator('#year')).to_be_in_viewport(ratio=1)
         header.locator('#year').select_option('2027')
         expect(content).to_contain_text('已保存车型乙')
         header.get_by_role('button', name='筛选 · 1', exact=True).click()
         expect(header.locator('#year')).to_be_hidden()
-        mobile_tab.select_option('aliases')
-        expect(page.locator('#view-tabs [aria-pressed="true"]')).to_have_text('业务名称映射')
+        mobile_tab.select_option('generation')
+        expect(page.locator('#view-tabs [aria-pressed="true"]')).to_have_text('代际显示名称')
         page.set_viewport_size({'width': 1440, 'height': 1000})
-        expect(header.locator('[data-tab="aliases"]')).to_have_attribute('aria-current', 'page')
+        expect(header.locator('[data-tab="generation"]')).to_have_attribute('aria-current', 'page')
         assert not errors, errors
         check_conditional_prices(browser)
         browser.close()

@@ -53,6 +53,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 self.check_host()
                 if path=='/healthz':return self.send(200,{'ok':True,'app':'vehicle-config','public_prefix':prefix})
                 self.actor()
+                if path=='/api/session':return self.send(200,{'csrf':token,'readonly':readonly})
                 if path=='/api/state':return self.send(200,{**store.get(),'csrf':token,'readonly':readonly,'required':PUBLISH_REQUIRED,'identity_fields':IDENTITY_FIELDS})
                 if path=='/api/runtime':
                     return self.send(200,runtime_info(store.root,rules.source_path,path_sources or {}))
@@ -61,10 +62,10 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 if path=='/api/campaign/published':
                     requested=parse_qs(urlsplit(self.path).query).get('revision')
                     return self.send(200,campaigns.published(int(requested[0]) if requested else None))
-                if path in ('/api/history','/api/rules/history'):
+                if path in ('/api/history','/api/rules/history','/api/campaign/history'):
                     params=parse_qs(urlsplit(self.path).query)
                     page=int(params.get('page',['1'])[0])
-                    owner=rules if path=='/api/rules/history' else store
+                    owner={'/api/history':store,'/api/rules/history':rules,'/api/campaign/history':campaigns}[path]
                     return self.send(200,owner.history_page(page,params.get('q',[''])[0]))
                 if path.startswith('/api/rules/history/'):return self.send(200,rules.history(int(path.rsplit('/',1)[1])))
                 if path=='/api/rules/template':return self.send(200,rules_excel(rules.get()['draft']['data'],template=True),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
@@ -121,7 +122,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     if path=='/api/campaign/preview':
                         return self.send(200,campaigns.preview(body['revision'],body['edits']))
                     if path=='/api/campaign/export':
-                        selection={key:body[key] for key in ('sheets','models','dateFrom','dateTo') if key in body}
+                        selection={key:body[key] for key in ('scope','sheets','models','dateFrom','dateTo') if key in body}
                         result=campaigns.export(selection,source=body.get('source','published'))
                         return self.send(200,result,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                     return self.send(404,{'error':'未找到'})

@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 from tempfile import NamedTemporaryFile
 
-from catalog import Conflict, now
+from catalog import Conflict, now, read_history_page
 from stage_workbook import (
     apply_edits, empty_workbook, export_workbook, import_workbook, validate_publication,
 )
@@ -55,6 +55,9 @@ class CampaignStore:
                     revision INTEGER PRIMARY KEY, data TEXT NOT NULL,
                     actor TEXT NOT NULL, created_at TEXT NOT NULL
                 );
+                CREATE VIEW IF NOT EXISTS events AS
+                    SELECT revision AS id, '发布' AS kind, actor, created_at AS time
+                    FROM publications WHERE revision > 0;
                 CREATE TABLE IF NOT EXISTS draft (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     revision INTEGER NOT NULL, published_revision INTEGER NOT NULL,
@@ -158,6 +161,10 @@ class CampaignStore:
                 row = self._current(db)
             return self._response(row, error=error)
         return self._response(row)
+
+    def history_page(self, page=1, query=''):
+        with closing(self.connect()) as db:
+            return read_history_page(db, page, query)
 
     def published(self, revision=None):
         with closing(self.connect()) as db:

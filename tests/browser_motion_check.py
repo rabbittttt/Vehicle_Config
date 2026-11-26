@@ -1,49 +1,98 @@
-"""Measure repeated edits in a paginated matrix and verify the rendering contracts."""
+"""Measure daily entry, search and dialogs with a paginated order list and verify the rendering contracts."""
 import json
 import statistics
 import tempfile
 
 from playwright.sync_api import expect, sync_playwright
 
-from browser_bulk_check import seed
 from browser_rules_check import ROOT, isolated_server, ready
+from campaign_store import CampaignStore
 
 
-def matrix_data():
-    data = seed()
-    data['models'] = data['models'][:1]
-    data['versions'] = [dict(data['versions'][0], id=f'v{n}', name=f'版本 {n:02d}') for n in range(12)]
-    data['options'] = [dict(data['options'][0], id=f'o{n}', name=f'外观项目 {n:03d}') for n in range(800)]
-    data['matrix'] = []
-    return data
+MODELS = 32
+DAYS = 28
+FIRST_MODEL = '测量车型 00'
 
 
-# Use real change listeners, native scrolling and the browser frame clock. No network writes.
-SAMPLE = """async () => {
-    const tick=()=>new Promise(resolve=>requestAnimationFrame(resolve));
-    const intervals=[], idle=[], edits=[];
-    const cell=document.querySelector('[data-v="v10"][data-o="o5"]');
-    const scroll=document.querySelector('.matrix-scroll');
-    cell.focus();
-    scroll.scrollLeft=scroll.scrollWidth;
-    const left=scroll.scrollLeft;
-    for(let n=0;n<16;n++)await tick();
-    let last=await tick();
-    for(let n=0;n<48;n++){const frame=await tick();idle.push(frame-last);last=frame;}
-    for(let n=0;n<96;n++){
-        const time=await tick();
-        intervals.push(time-last);
-        last=time;
-        if(n%2===0){
-            const start=performance.now();
-            cell.value=n%4===0?'标配':'选配';
-            cell.dispatchEvent(new Event('change',{bubbles:true}));
-            edits.push(performance.now()-start);
-        }
+def seed_orders(store):
+    edits = []
+    for index in range(MODELS):
+        model = f'测量车型 {index:02d}'
+        edits.append(dict(sheet='车型汇总', row=index + 2, col=1, value=model))
+        for day in range(1, DAYS + 1):
+            edits.append(dict(sheet='小订by天', model=model, date=f'2026-11-{day:02d}', value=day + index))
+    CampaignStore(store.root).save(0, edits, '合成数据')
+
+
+# Measure from input through the visible result and next frame, including deferred rendering.
+SAMPLE = """async ({model, days, total}) => {
+    const tick = () => new Promise(requestAnimationFrame);
+    const search = document.querySelector('#search');
+    const count = document.querySelector('#count');
+    const idle = [], intervals = [], searches = [];
+    search.focus();
+    let last = await tick();
+    for (let i = 0; i < 36; i++) {
+        const now = await tick();
+        idle.push(now - last);
+        last = now;
     }
-    return {intervals, idle, edits, focus:document.activeElement===cell, scroll:scroll.scrollLeft===left,
-            cells:document.querySelectorAll('.matrix-table select').length};
+    for (let i = 0; i < 36; i++) {
+        const filtered = i % 2 === 0, start = performance.now();
+        search.value = filtered ? model : '';
+        search.dispatchEvent(new Event('input', {bubbles:true}));
+        const expected = (filtered ? days : total) + ' 条记录';
+        let rendered = false;
+        for (let n = 0; n < 12; n++) {
+            const now = await tick();
+            intervals.push(now - last);
+            last = now;
+            if (count.textContent === expected) {
+                rendered = true;
+                break;
+            }
+        }
+        if (!rendered) throw new Error('搜索没有显示匹配记录数 ' + expected);
+        const painted = await tick();
+        intervals.push(painted - last);
+        last = painted;
+        searches.push(performance.now() - start);
+    }
+    return {idle, intervals, searches, focused:document.activeElement === search};
 }"""
+
+
+def batch_timing(page):
+    page.locator('#search').fill(FIRST_MODEL)
+    expect(page.locator('#count')).to_have_text(f'{DAYS} 条记录')
+    page.locator('[data-campaign-action="batch"]').click()
+    page.get_by_label('车型与阶段').select_option(label=FIRST_MODEL)
+    values = [f'2026-11-{day:02d}\t{700 + day}' for day in range(1, DAYS + 1)]
+    page.locator('[name=rows]').fill('\n'.join(values))
+    button = page.locator('#confirm')
+    # Time the actual app update and its paint, independently of Playwright polling.
+    button.evaluate("""(button, expected) => button.addEventListener('click', () => {
+        const started = performance.now();
+        window.batchTiming = new Promise(resolve => {
+            function waitForResult() {
+                const quantity = document.querySelector('#content tbody tr td:nth-child(3)');
+                if (!document.querySelector('#dialog').open && quantity?.textContent === expected) {
+                    requestAnimationFrame(() => resolve(performance.now() - started));
+                } else if (performance.now() - started > 10000) {
+                    resolve(null);
+                } else {
+                    requestAnimationFrame(waitForResult);
+                }
+            }
+            requestAnimationFrame(waitForResult);
+        });
+    }, {once:true, capture:true})""", str(700 + DAYS))
+    button.click()
+    elapsed = page.evaluate('window.batchTiming')
+    assert elapsed is not None, 'Batch result did not appear'
+    expect(page.locator('#dialog')).to_be_hidden()
+    expect(page.locator('#content tbody tr').first.locator('td').nth(2)).to_have_text(str(700 + DAYS))
+    return round(elapsed, 2)
 
 
 def percentile(values, p):
@@ -54,7 +103,7 @@ def main():
     output = ROOT / 'artifacts' / 'motion'
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp, isolated_server(tmp) as (url, store, *_), sync_playwright() as pw:
-        store.save(matrix_data(), 0, '测量')
+        seed_orders(store)
         browser = pw.chromium.launch(channel='msedge')
         results = []
         for width, height, theme, motion in [(1440, 900, 'light', 'no-preference'), (390, 844, 'dark', 'reduce')]:
@@ -64,34 +113,38 @@ def main():
             page.goto(url)
             ready(page)
             if width > 700:
-                page.get_by_role('button', name='版本与选配', exact=True).click()
+                page.locator('[data-tab=reporting]').click()
             else:
-                page.get_by_label('配置管理模块').select_option('matrix')
-            expect(page.locator('.matrix-table select')).to_have_count(96)
-            expect(page.locator('#content tbody tr')).to_have_count(8)
+                page.get_by_label('配置管理模块').select_option('reporting')
+                page.get_by_role('button', name='筛选', exact=True).click()
+            expect(page.locator('#count')).to_have_text(f'{MODELS * DAYS} 条记录')
+            expect(page.locator('#content tbody tr')).to_have_count(40)
             page.evaluate('document.fonts.ready')
-            sample = page.evaluate(SAMPLE)
-            assert sample['focus'] and sample['scroll'], 'Editing moved focus or the horizontal scroll position'
+            sample = page.evaluate(SAMPLE, dict(model=FIRST_MODEL, days=DAYS, total=MODELS * DAYS))
+            assert sample['focused'], 'Rerender interrupted typing'
             assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')
             assert not errors, errors
             results.append(dict(browser=browser.version, viewport=f'{width}x{height}', theme=theme, motion=motion,
-                                controls=sample['cells'], frames=len(sample['intervals']), edits=len(sample['edits']),
+                                dailyEntries=MODELS * DAYS, frames=len(sample['intervals']), searches=len(sample['searches']),
                                 frameMedianMs=round(statistics.median(sample['intervals']), 2),
                                 frameP95Ms=percentile(sample['intervals'], 95), idleP95Ms=percentile(sample['idle'],95),
                                 frameMaxMs=round(max(sample['intervals']), 2),
                                 framesOver33Ms=sum(value>33.4 for value in sample['intervals']),
-                                editP95Ms=percentile(sample['edits'], 95)))
+                                searchToFrameP95Ms=percentile(sample['searches'], 95)))
             # Measure reversible modal motion on the same large live table.
             modal = page.evaluate("""async () => {
                 const frames=[], dialog=document.querySelector('dialog');
                 const tick=()=>new Promise(requestAnimationFrame);
-                const trigger=document.querySelector('[data-action="add:options"]');
+                const trigger=document.querySelector('[data-campaign-action="daily"]');
                 let last=await tick();
                 for(let n=0;n<72;n++){
                     const frame=await tick();
                     frames.push(frame-last);
                     last=frame;
-                    if(n%12===0)trigger.click();
+                    if(n%12===0){
+                        trigger.click();
+                        if(!dialog.open)throw new Error('填小订未打开');
+                    }
                     if(n%12===4)document.querySelector('#cancel').click();
                 }
                 return {frames,open:dialog.open, transition:getComputedStyle(dialog).transitionDuration};
@@ -101,10 +154,12 @@ def main():
                 assert all(t.strip() == '0s' for t in modal['transition'].split(','))
             results[-1].update(modalFrames=len(modal['frames']), modalFrameP95Ms=percentile(modal['frames'], 95),
                                modalFrameMaxMs=round(max(modal['frames']), 2))
+            results[-1].update(batchRows=DAYS, batchPreviewMs=batch_timing(page))
             page.locator('#undo').click()
             ready(page)
-            page.evaluate("() => {scrollTo(0,0); document.querySelector('.matrix-scroll').scrollLeft=0;}")
-            page.screenshot(path=str(output / f'matrix-{width}-{theme}.png'))
+            expect(page.locator('#content tbody tr').first.locator('td').nth(2)).to_have_text(str(DAYS))
+            assert not errors, errors
+            page.screenshot(path=str(output / f'daily-{width}-{theme}.png'))
             page.close()
         browser.close()
     report = json.dumps(results, ensure_ascii=False, indent=2)

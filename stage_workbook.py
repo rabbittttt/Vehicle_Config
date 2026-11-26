@@ -907,7 +907,10 @@ def export_workbook(data, selection=None):
     selection = {} if selection is None else selection
     if not isinstance(selection,dict):
         raise ValueError('导出条件无效')
-    sheets = selection.get('sheets', SHEETS)
+    scope = selection.get('scope', 'full')
+    if scope not in ('full', 'schedule'):
+        raise ValueError('未知的导出范围')
+    sheets = [SUMMARY] if scope == 'schedule' else selection.get('sheets', SHEETS)
     models = selection.get('models', [])
     if not isinstance(sheets,list) or not sheets or any(not isinstance(v,str) or v not in SHEETS for v in sheets):
         raise ValueError('请至少选择一张有效的数据表')
@@ -924,6 +927,8 @@ def export_workbook(data, selection=None):
     for sheet in data['sheets']:
         if sheet['name'] not in sheets:
             continue
+        if scope == 'schedule':
+            sheet = {**sheet, 'rows': [row[:14] for row in sheet['rows']]}
         if sheet['name'] == DAILY and (start or end):
             sheet = _within_dates(sheet,start,end)
         ws = book.create_sheet(sheet['name'])
