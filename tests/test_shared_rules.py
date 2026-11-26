@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 from openpyxl import Workbook
-from shared_rules import RuleStore, parse_source, render_source, Conflict
+from shared_rules import RuleStore, parse_source, render_source, validate, Conflict
 from rules_excel import rules_excel, preview_rules_import
 
 SOURCE = b'# keep\r\nMERGE_GROUPS = {"A&B": ["A", "B"]}\r\nOTHER = 3\r\ndef keep():\r\n    return OTHER\r\n'
@@ -62,6 +62,31 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(render_source(parse_source(SOURCE),parse_source(SOURCE)['data']),SOURCE)
         for raw in [b'MERGE_GROUPS = dict()',b'MERGE_GROUPS = {"A": [], "A": []}',b'MERGE_GROUPS={}\nMERGE_GROUPS={}']:
             with self.assertRaises(ValueError):parse_source(raw)
+
+    def test_invalid_source_price_identifies_rule_and_preserves_draft(self):
+        old_draft = self.store.get()['draft']
+        raw = ('OPTION_CONFIG = {"车型甲": {"外观": [("蓝", 0, False, {})],\n'
+               '    "轮毂": [("旧轮毂", 6000, True, {}), ("样例轮毂",\n'
+               '             "待询价", False, {})]}}').encode()
+        self.path.write_bytes(raw)
+        source = self.store.get()['source']
+        self.assertFalse(source['available'])
+        for detail in ('OPTION_CONFIG 第 3 行', '车型甲 / 轮毂 / 样例轮毂', "'待询价'", 'str', '请填写数字', str(self.path.resolve())):
+            self.assertIn(detail, source['error'])
+        with self.assertRaises(ValueError):
+            self.store.reload(old_draft['revision'], source['hash'], 'tester')
+        self.assertEqual(self.store.get()['draft'], old_draft)
+        self.assertEqual(self.path.read_bytes(), raw)
+
+    def test_price_error_handles_non_finite_and_oversized_values(self):
+        data = self.changed()
+        for value, detail in [(True, 'bool'), (float('inf'), '有限数值'),
+                              (1 << 17000, '范围'), (['x' * 10000], 'list')]:
+            data['option_prices'][0]['price'] = value
+            message, = validate(data)
+            self.assertIn(detail, message)
+            self.assertIn('A / 外观 / 白色', message)
+            self.assertLess(len(message), 400)
     def test_renamed_option_matches_new_key_and_releases_old_key(self):
         data = self.changed()
         rename = workbook_file('改名.xlsx', '选配金', [

@@ -105,7 +105,7 @@ const orderRules = (() => {
   }
 
   function sourceAlert() {
-    const warning = state.sync.error || (!state.source.available ? state.source.error || '脚本不可用' :
+    const warning = state.sync.error || (!state.source.available ? '脚本检查未通过：' + (state.source.error || '脚本不可用') :
       state.source.external_modified ? '脚本已被其他程序修改' : '');
     if (!warning) return '';
     const reload = state.source.available && !readonly ? ' <button class="link" data-reload-rules>从脚本重新载入</button>' : '';
@@ -228,7 +228,11 @@ const orderRules = (() => {
     if (readonly || busy || !data) return;
     return run(async () => {
       const current = await api('rules/state');
-      if (!current.source.available) throw Error(current.source.error || '脚本不可用');
+      if (!current.source.available) {
+        modal('脚本检查未通过', `<p class="error">${esc(current.source.error || '脚本不可用')}</p><p>本次未载入，规则草稿未更改。</p>`);
+        $('#cancel').textContent = '关闭';
+        return;
+      }
       if (isDirty() && state.draft.revision !== current.draft.revision) {
         throw Error('规则草稿已被其他人修改。请在规则表导出当前编辑，再重新载入草稿核对。');
       }

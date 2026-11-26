@@ -177,10 +177,31 @@ def test_global_tools(browser):
         # Start with a catalog-only tab and an unsaved, filtered row. No rule tab has initialized yet.
         add_vehicle(page)
         page.locator("#search").fill("未保存车型甲")
+        invalid_script = script.replace(b', 3000, False', b', "TBD", False')
+        assert invalid_script != script
+        source.write_bytes(invalid_script)
+        requests = []
+        page.on("request", lambda req: requests.append((req.method, req.url.split("/api/")[-1]))
+                if "/api/" in req.url else None)
+        tools.click()
+        reload_rules.click()
+        dialog = page.locator("#dialog")
+        expect(dialog).to_be_visible()
+        for detail in ("脚本检查未通过", "本次未载入", "OPTION_CONFIG 第", "车型甲 2026款",
+                       "舒适/功能选配", "天窗", "TBD", str(source.resolve())):
+            expect(dialog).to_contain_text(detail)
+        assert requests == [("GET", "rules/state")]
+        expect(page.locator("#confirm")).to_be_hidden()
+        page.locator("#cancel").click()
+        expect(page.locator("#save")).to_be_enabled()
+        assert rules.get()["draft"] == original
+        assert source.read_bytes() == invalid_script
+
+        # Retry the same action once the file on disk has a valid price.
+        source.write_bytes(script)
         tools.click()
         expect(reload_rules).to_have_text("从脚本重新载入")
         reload_rules.click()
-        dialog = page.locator("#dialog")
         expect(dialog).to_be_visible()
         for label in ("shared_config.py", "代际显示名称", "代际合并", "电池包规则", "选配名称合并", "选配金"):
             expect(dialog).to_contain_text(label)

@@ -10,6 +10,7 @@ import math
 import os
 import pprint
 import re
+import reprlib
 import sqlite3
 import tempfile
 import threading
@@ -40,21 +41,55 @@ def dump(value): return json.dumps(value,ensure_ascii=False,separators=(',',':')
 def stable_id(table,key): return str(uuid.uuid5(uuid.NAMESPACE_URL,'vehicle-shared-rules:'+table+':'+dump(key)))
 
 
-def validate(data):
+def option_price_error(row):
+    value = row['price']
+    if type(value) not in (int, float):
+        reason = '请填写数字'
+    else:
+        try:
+            if not math.isfinite(value):
+                reason = '金额必须是有限数值'
+            elif value < 0:
+                reason = '金额不能小于 0'
+            else:
+                return ''
+        except OverflowError:
+            reason = '金额超过可处理的数值范围'
+
+    if type(value).__module__ != 'builtins':
+        sample = '未知类型的值'
+    elif type(value) is int and value.bit_length() > 1024:
+        sample = f'整数（{value.bit_length()} 个二进制位）'
+    else:
+        try:
+            sample = reprlib.repr(value)
+            if len(sample) > 120:
+                sample = sample[:117] + '...'
+        except (ValueError, OverflowError):
+            sample = '过大的原值'
+    location = ' / '.join(row[k][:100] if isinstance(row[k], str) and row[k] else '？'
+                          for k in ('generation', 'category', 'name'))
+    return f'选配金「{location}」的金额为 {sample}（{type(value).__name__}），{reason}'
+
+
+def validate(data, *, price_lines=()):
     errors=[]
     if not isinstance(data,dict) or set(data)!=set(TABLES):return ['规则表结构必须包含全部五张表']
     for table,fields in TABLES.items():
         if not isinstance(data[table],list):return [table+' 必须为列表']
         if len(data[table])>10000:return [table+' 超过 10000 行']
         ids=set();keys=set()
-        for row in data[table]:
+        for index,row in enumerate(data[table]):
             if not isinstance(row,dict) or set(row)!=set(fields):return [table+' 字段不完整或包含未知字段']
             for field,value in row.items():
                 if field in ARRAY_FIELDS.get(table,set()):
                     if not isinstance(value,list) or any(not isinstance(v,str) or not v.strip() or len(v)>4000 for v in value):return [table+' / '+field+' 必须是非空文本组成的列表']
                     if len(value)!=len(set(value)):errors.append(table+' / '+row.get('id','')+' / '+field+' 存在重复成员')
                 elif field=='price':
-                    if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or value<0:return ['选配价格必须为有限的非负数字']
+                    error = option_price_error(row)
+                    if error:
+                        if price_lines: error = f'OPTION_CONFIG 第 {price_lines[index]} 行：{error}'
+                        return [error]
                 elif field=='default':
                     if not isinstance(value,bool):return ['默认选配必须为布尔值']
                 elif not isinstance(value,str) or len(value)>4000:return [table+' / '+field+' 必须是文本']
@@ -207,7 +242,12 @@ def parse_source(raw):
         nodes[name]=node.value
     for table,name in CONSTANTS.items():
         if name in values:data[table]=decode_constant(table,values[name])
-    errors=validate(data)
+    # decode_constant already verified the dictionary, list and tuple structure.
+    # Its row order follows the literal, including multiple options on the same line.
+    options = nodes.get('OPTION_CONFIG')
+    price_lines = [item.elts[1].lineno for categories in options.values
+                   for items in categories.values for item in items.elts] if options else []
+    errors=validate(data, price_lines=price_lines)
     if errors:raise ValueError('\n'.join(errors))
     return {'raw':raw,'text':text,'encoding':encoding,'newline':'\r\n' if '\r\n' in text else '\n','nodes':nodes,'values':values,'data':data,'hash':digest(raw)}
 
@@ -300,7 +340,9 @@ class RuleStore:
                 self._parsed_source=parse_source(raw)
             parsed=self._parsed_source
             info.update(available=True,present=list(parsed['nodes']),missing=[n for n in CONSTANTS.values() if n not in parsed['nodes']],parsed=parsed)
-        except (OSError,ValueError,SyntaxError,UnicodeError,RecursionError) as exc:info['error']=str(exc)
+        except OSError as exc:info['error']=str(exc)
+        except (ValueError,SyntaxError,UnicodeError,RecursionError) as exc:
+            info['error']=f'{exc}\n规则脚本：{self.source_path}'
         return info
     def _pending(self):
         row=self.db.execute('SELECT payload FROM journal WHERE id=1').fetchone();return json.loads(row[0]) if row else None
