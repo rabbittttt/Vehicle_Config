@@ -508,7 +508,7 @@ function modal(title,html,action,label='确定') {
   if(!$('#dialog').open){returnFocus=lastOpener;$('#dialog').showModal();}flags();
   const form=$('#dialog-body form');
   if(form){
-    const controls=[...form.querySelectorAll('input:not([type=checkbox]),select,textarea')];
+    const controls=[...form.querySelectorAll('input:not([type=checkbox],[type=hidden],:disabled),select:not(:disabled),textarea:not(:disabled)')];
     (controls.find(control=>control.required&&!control.value)||controls[0])?.focus();
   }
 }

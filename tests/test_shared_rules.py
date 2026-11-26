@@ -5,7 +5,7 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from shared_rules import RuleStore, parse_source, render_source, validate, Conflict
 from rules_excel import rules_excel, preview_rules_import
 
@@ -58,6 +58,52 @@ class RuleTests(unittest.TestCase):
         other=copy.deepcopy(data);other['option_prices'][0]['price']=7
         p=preview_rules_import(data,[{'raw':rules_excel(data)},{'raw':rules_excel(other)}]);self.assertTrue(any('冲突' in x for x in p['errors']))
         p=preview_rules_import(data,[{'raw':rules_excel(data,True)}]);self.assertEqual(p['data'],data)
+
+    def test_excel_fixed_and_conditional_prices_roundtrip(self):
+        data = self.changed()
+        prices = data['option_prices']
+        for i, price in enumerate([{'条件甲': 18.5, '条件乙': 0}, {'default': 40, '条件丙': 30}], 2):
+            prices.append(dict(prices[0], id=f'p{i}', name=f'选配{i}', price=price))
+        raw = rules_excel(data)
+        with BytesIO(raw) as stream:
+            book = load_workbook(stream)
+            sheet = book['选配金']
+            cells = [sheet.cell(row, 5) for row in (2, 3, 4)]
+            self.assertEqual([cell.data_type for cell in cells], ['n', 's', 's'])
+            self.assertEqual([cell.value for cell in cells], [6000, '{"条件甲":18.5,"条件乙":0}', '{"default":40,"条件丙":30}'])
+            book.close()
+        preview = preview_rules_import(data, [{'raw': raw}])
+        self.assertEqual(preview['issues'], [])
+        self.assertEqual(preview['changes'], [])
+        self.assertEqual(list(preview['data']['option_prices'][1]['price']), ['条件甲', '条件乙'])
+        with BytesIO(rules_excel(data, template=True)) as stream:
+            book = load_workbook(stream)
+            validation, = [v for v in book['选配金'].data_validations.dataValidation if 'E2' in v]
+            self.assertEqual(validation.type, 'custom')
+            self.assertIn('条件价格', validation.prompt)
+            book.close()
+
+    def test_excel_condition_price_edits_and_rejections(self):
+        data = self.changed()
+        data['option_prices'][0]['price'] = {'甲': 3, '乙': 5}
+
+        def price_file(value):
+            return workbook_file('价格.xlsx', '选配金', [['编号', '金额'], ['p1', value]])
+
+        reverse = price_file('{"乙":5,"甲":3}')
+        changed = preview_rules_import(data, [reverse])
+        self.assertFalse(changed['issues'])
+        self.assertEqual(changed['summary']['updated'], 1)
+        self.assertEqual(len(changed['changes']), 1)
+        self.assertEqual(list(changed['data']['option_prices'][0]['price']), ['乙', '甲'])
+        conflict = preview_rules_import(data, [reverse, price_file('{"甲":3,"乙":5}')])
+        self.assertIn('冲突', conflict['issues'][0]['message'])
+        for invalid in ('{"甲":4,"甲":5}', '{"甲":-3}', '{"甲":1e400}', '{"甲":true}', '{}', '{"甲":"20"}', '{"甲":'):
+            with self.subTest(value=invalid):
+                result = preview_rules_import(data, [price_file(invalid)])
+                self.assertEqual(result['data'], data)
+                issue, = result['issues']
+                self.assertEqual((issue['sheet'], issue['row'], issue['field']), ('选配金', 2, '金额'))
     def test_literal_rejection_and_noop(self):
         self.assertEqual(render_source(parse_source(SOURCE),parse_source(SOURCE)['data']),SOURCE)
         for raw in [b'MERGE_GROUPS = dict()',b'MERGE_GROUPS = {"A": [], "A": []}',b'MERGE_GROUPS={}\nMERGE_GROUPS={}']:
@@ -87,6 +133,28 @@ class RuleTests(unittest.TestCase):
             self.assertIn(detail, message)
             self.assertIn('A / 外观 / 白色', message)
             self.assertLess(len(message), 400)
+
+    def test_conditional_price_order_and_repeated_battery_keywords_roundtrip(self):
+        raw = (b'BATTERY_RULES = [(["demo"], ["EV", "EV"], [], "60")]\n'
+               b'OPTION_CONFIG = {"demo": {"screen": [("screen", {"EV": 30, "EV Max": 50}, False, {})]}}\n')
+        self.path.write_bytes(raw)
+        loaded = self.store.reload(0, self.store.get()['source']['hash'], 'tester')
+        data = loaded['draft']['data']
+        self.assertEqual(self.path.read_bytes(), raw)
+        self.assertEqual(data['battery_rules'][0]['version'], ['EV', 'EV'])
+        self.assertEqual(self.store.preview(data, 1)['script_diff'], '')
+        data['option_prices'][0]['price'] = {'EV Max': 50, 'EV': 30}
+        saved = self.store.save(data, 1, 'tester')
+        self.assertEqual(saved['sync']['status'], 'draft')
+        preview = self.store.preview(data, saved['draft']['revision'])
+        self.assertEqual(len(preview['changes']), 1)
+        self.assertIn('OPTION_CONFIG', preview['script_diff'])
+        result = self.store.publish(data, saved['draft']['revision'], preview['source_hash'], 'tester')
+        self.assertEqual(result['sync']['status'], 'synced')
+        parsed = parse_source(self.path.read_bytes())
+        self.assertEqual(list(parsed['data']['option_prices'][0]['price'].items()), [('EV Max', 50), ('EV', 30)])
+        self.assertIn(raw.splitlines()[0], self.path.read_bytes())
+
     def test_renamed_option_matches_new_key_and_releases_old_key(self):
         data = self.changed()
         rename = workbook_file('改名.xlsx', '选配金', [

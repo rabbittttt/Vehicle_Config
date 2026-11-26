@@ -41,21 +41,18 @@ def dump(value): return json.dumps(value,ensure_ascii=False,separators=(',',':')
 def stable_id(table,key): return str(uuid.uuid5(uuid.NAMESPACE_URL,'vehicle-shared-rules:'+table+':'+dump(key)))
 
 
-def option_price_error(row):
-    value = row['price']
+def _amount_error(value):
     if type(value) not in (int, float):
-        reason = '请填写数字'
-    else:
-        try:
-            if not math.isfinite(value):
-                reason = '金额必须是有限数值'
-            elif value < 0:
-                reason = '金额不能小于 0'
-            else:
-                return ''
-        except OverflowError:
-            reason = '金额超过可处理的数值范围'
+        return '请填写数字'
+    try:
+        if not math.isfinite(value):
+            return '金额必须是有限数值'
+    except OverflowError:
+        return '金额超过可处理的数值范围'
+    return '金额不能小于 0' if value < 0 else ''
 
+
+def _price_sample(value):
     if type(value).__module__ != 'builtins':
         sample = '未知类型的值'
     elif type(value) is int and value.bit_length() > 1024:
@@ -67,9 +64,35 @@ def option_price_error(row):
                 sample = sample[:117] + '...'
         except (ValueError, OverflowError):
             sample = '过大的原值'
-    location = ' / '.join(row[k][:100] if isinstance(row[k], str) and row[k] else '？'
-                          for k in ('generation', 'category', 'name'))
-    return f'选配金「{location}」的金额为 {sample}（{type(value).__name__}），{reason}'
+    return f'{sample}（{type(value).__name__}）'
+
+
+def option_price_error(row):
+    price = row['price']
+    if isinstance(price, dict):
+        detail = '至少需要一条条件价格' if not price else ''
+        for condition, amount in price.items():
+            if not isinstance(condition, str) or not condition.strip() or len(condition) > 4000:
+                detail = f'价格条件 {_price_sample(condition)} 须为 1 至 4000 字符的非空文本'
+                break
+            reason = _amount_error(amount)
+            if reason:
+                detail = f'条件「{condition[:100]}」的金额为 {_price_sample(amount)}，{reason}'
+                break
+    else:
+        reason = _amount_error(price)
+        detail = f'金额为 {_price_sample(price)}，{reason}' if reason else ''
+    if not detail:
+        return ''
+    location = ' / '.join(row[k][:100] for k in ('generation','category','name')
+                          if isinstance(row.get(k),str) and row[k])
+    return f'选配金「{location}」：{detail}' if location else detail
+
+
+def same_price(left, right):
+    if isinstance(left, dict) and isinstance(right, dict):
+        return list(left.items()) == list(right.items())
+    return left == right
 
 
 def validate(data, *, price_lines=()):
@@ -84,7 +107,7 @@ def validate(data, *, price_lines=()):
             for field,value in row.items():
                 if field in ARRAY_FIELDS.get(table,set()):
                     if not isinstance(value,list) or any(not isinstance(v,str) or not v.strip() or len(v)>4000 for v in value):return [table+' / '+field+' 必须是非空文本组成的列表']
-                    if len(value)!=len(set(value)):errors.append(table+' / '+row.get('id','')+' / '+field+' 存在重复成员')
+                    if table != 'battery_rules' and len(value)!=len(set(value)):errors.append(table+' / '+row.get('id','')+' / '+field+' 存在重复成员')
                 elif field=='price':
                     error = option_price_error(row)
                     if error:
@@ -130,7 +153,9 @@ def diff_rules(before,after):
     for table in TABLES:
         left={r['id']:r for r in before[table]};right={r['id']:r for r in after[table]}
         for ident in left.keys()|right.keys():
-            if left.get(ident)!=right.get(ident):changes.append({'table':table,'id':ident,'field':'记录','before':left.get(ident),'after':right.get(ident)})
+            old, new = left.get(ident), right.get(ident)
+            if old != new or (table == 'option_prices' and not same_price(old['price'], new['price'])):
+                changes.append({'table':table,'id':ident,'field':'记录','before':old,'after':new})
         if table=='battery_rules' and [r['id'] for r in before[table]]!=[r['id'] for r in after[table]]:
             changes.append({'table':table,'id':'priority','field':'优先级','before':[r['id'] for r in before[table]],'after':[r['id'] for r in after[table]]})
     return changes
@@ -296,7 +321,12 @@ def render_source(parsed,data,published=None):
         if changed_tables is not None and table not in changed_tables:continue
         value=encode_constant(table,data[table],parsed['values'].get(name),
                               (published or parsed['data'])[table])
-        if name in parsed['values'] and value==parsed['values'][name]:continue
+        if name in parsed['values'] and value==parsed['values'][name]:
+            if table != 'option_prices' or all(
+                same_price(item[1], old[1]) for gen, categories in value.items()
+                for category, items in categories.items()
+                for item, old in zip(items, parsed['values'][name][gen][category])
+            ):continue
         if name not in parsed['values'] and not data[table]:continue
         literal=pprint.pformat(value,width=100,sort_dicts=False).replace('\n',parsed['newline'])
         if name in parsed['nodes']:
@@ -369,7 +399,11 @@ class RuleStore:
             source=self._source();source.pop('parsed',None);source['external_modified']=bool(source['hash']!=self._meta('source_hash'))
             draft=self._state(1);published=self._state(2)
             pending=self._pending()
-            status='recovery_required' if pending else 'unavailable' if not source['available'] else 'external_modified' if source['external_modified'] else 'draft' if draft['data']!=published['data'] else 'synced'
+            matches = draft['data'] == published['data'] and all(
+                same_price(a['price'], b['price']) for a, b in
+                zip(draft['data']['option_prices'], published['data']['option_prices'])
+            )
+            status='recovery_required' if pending else 'unavailable' if not source['available'] else 'external_modified' if source['external_modified'] else 'synced' if matches else 'draft'
             return {'draft':draft,'published':published,'history':recent_history(self.db),
                     'source':source,'sync':{'status':status,'error':self.recovery_error,'backup_directory':str(self.root/'backups'),
                                             'pending_token':digest(dump(pending).encode()) if pending else None}}

@@ -33,7 +33,15 @@ const orderRules = (() => {
   const status = () => !ready() ? '脚本规则未载入' : isDirty() ? '脚本规则有未保存修改' : `脚本规则草稿 r${state.draft.revision} · 已保存`;
   const list = (table, field) => ['members', 'version', 'sku', 'versions', 'match_versions'].includes(field) ||
     (table === 'battery_rules' && field === 'generation');
-  const text = value => Array.isArray(value) ? value.join(' / ') : typeof value === 'boolean' ? (value ? '是' : '否') : value;
+  function text(value) {
+    if (Array.isArray(value)) return value.join(' / ');
+    if (typeof value === 'boolean') return value ? '是' : '否';
+    if (value && typeof value === 'object') {
+      return Object.entries(value).map(([key, amount]) =>
+        `${key === 'default' ? '默认价' : key} ${amount} 元`).join(' / ');
+    }
+    return value;
+  }
   const label = (table, field) => table === 'battery_rules' && field === 'generation' ? '代际关键词' : labels[field];
 
   function accept(next) {
@@ -165,6 +173,76 @@ const orderRules = (() => {
     ).join('')}</tbody></table></div>`;
   }
 
+  function priceRow(condition = '', amount = '') {
+    const fallback = condition === 'default';
+    return `<div class="price-row" data-price-row>
+      ${fallback ? '<input type="hidden" name="price_condition" value="default">' :
+        `<label>匹配条件<input name="price_condition" maxlength="4000" required value="${esc(condition)}"></label>`}
+      <label>${fallback ? '默认价' : '金额'}（元）<input name="price_amount" type="number" min="0" step="any" required value="${esc(amount)}"></label>
+      <button type="button" class="link" data-remove-price aria-label="移除此价格">移除</button>
+    </div>`;
+  }
+
+  function priceFields(price) {
+    const conditional = price != null && typeof price === 'object';
+    const entries = conditional ? Object.entries(price) : [];
+    return `<label>计价方式<select name="price_mode"><option value="fixed">固定金额</option><option value="conditional" ${conditional ? 'selected' : ''}>按条件定价</option></select></label>
+      <label data-fixed-price ${conditional ? 'hidden' : ''}>金额（元）<input name="price" type="number" min="0" step="any" required ${conditional ? 'disabled' : ''} value="${esc(conditional ? '' : price ?? 0)}"></label>
+      <fieldset class="conditional-prices wide" ${conditional ? '' : 'hidden disabled'}>
+        <legend>条件价格</legend>
+        <div data-price-rows>${entries.map(([key, amount]) => priceRow(key, amount)).join('')}</div>
+        <button type="button" data-add-price>添加条件价</button>
+        <button type="button" data-add-default ${entries.some(([key]) => key === 'default') ? 'hidden' : ''}>添加默认价</button>
+      </fieldset>`;
+  }
+
+  function wirePriceForm(form) {
+    const mode = form.elements.price_mode;
+    const fixed = form.querySelector('[data-fixed-price]');
+    const fieldset = form.querySelector('.conditional-prices');
+    const rows = fieldset.querySelector('[data-price-rows]');
+    const addDefault = fieldset.querySelector('[data-add-default]');
+    function append(condition) {
+      rows.insertAdjacentHTML('beforeend', priceRow(condition));
+      rows.lastElementChild.querySelector('input:not([type="hidden"])').focus();
+    }
+    mode.onchange = () => {
+      const conditional = mode.value === 'conditional';
+      fixed.hidden = form.elements.price.disabled = conditional;
+      fieldset.hidden = fieldset.disabled = !conditional;
+      if (conditional && !rows.childElementCount) append('');
+    };
+    fieldset.onclick = event => {
+      const button = event.target.closest('button');
+      if (!button) return;
+      if (button.hasAttribute('data-add-price')) append('');
+      else if (button === addDefault) append('default');
+      else if (button.hasAttribute('data-remove-price')) {
+        button.closest('[data-price-row]').remove();
+        fieldset.querySelector('[data-add-price]').focus();
+      }
+      addDefault.hidden = Boolean(rows.querySelector('[name="price_condition"][type="hidden"]'));
+    };
+  }
+
+  function readPrice(values) {
+    function amount(raw) {
+      const value = Number(raw);
+      if (!raw || !Number.isFinite(value) || value < 0) throw Error('金额须为大于或等于零的数字');
+      return value;
+    }
+    if (values.get('price_mode') === 'fixed') return amount(values.get('price'));
+    const entries = new Map();
+    const amounts = values.getAll('price_amount');
+    values.getAll('price_condition').forEach((key, index) => {
+      if (!key.trim()) throw Error('请填写匹配条件');
+      if (entries.has(key)) throw Error('价格条件重复：' + key);
+      entries.set(key, amount(amounts[index]));
+    });
+    if (!entries.size) throw Error('请添加条件价或默认价');
+    return Object.fromEntries(entries);
+  }
+
   function edit(table, id, copy = false) {
     const current = draft[table].find(row => row.id === id) || {};
     const controls = fields[table].map(field => {
@@ -175,15 +253,15 @@ const orderRules = (() => {
       if (field === 'default') {
         return `<label>${caption}<select name="${field}"><option value="false">否</option><option value="true" ${current[field] ? 'selected' : ''}>是</option></select></label>`;
       }
-      const attrs = field === 'price' ? 'type="number" min="0" step="any"' : 'maxlength="4000"';
-      return `<label>${caption}<input name="${field}" ${attrs} value="${esc(current[field] ?? (field === 'price' ? 0 : ''))}" ${field === 'seat' ? '' : 'required'}></label>`;
+      if (field === 'price') return priceFields(current.price);
+      return `<label>${caption}<input name="${field}" maxlength="4000" value="${esc(current[field] ?? '')}" ${field === 'seat' ? '' : 'required'}></label>`;
     });
     modal(copy ? '复制规则' : id ? '编辑规则' : '新增规则', `<form id="rule-form" class="form">${controls.join('')}</form>`, async values => {
       const row = {id: id && !copy ? id : newId()};
       for (const field of fields[table]) {
         const value = values.get(field);
         if (list(table, field)) row[field] = String(value).split(/\r?\n/).map(item => item.trim()).filter(Boolean);
-        else if (field === 'price') row[field] = Number(value);
+        else if (field === 'price') row[field] = readPrice(values);
         else if (field === 'default') row[field] = value === 'true';
         else row[field] = String(value).trim();
       }
@@ -195,7 +273,9 @@ const orderRules = (() => {
       await validate(next);
       change(next);
     });
-    $('#rule-form').onsubmit = event => {
+    const form = $('#rule-form');
+    if (table === 'option_prices') wirePriceForm(form);
+    form.onsubmit = event => {
       event.preventDefault();
       $('#confirm').click();
     };

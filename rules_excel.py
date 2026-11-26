@@ -13,7 +13,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
 
-from shared_rules import validate, diff_rules
+from shared_rules import validate, diff_rules, option_price_error, same_price
 
 FIELDS = {
     'gen_names': ['id', 'source', 'target'],
@@ -28,6 +28,7 @@ LABELS = {'id':'编号', 'source':'原名称', 'target':'标准名称', 'name':'
           'capacity':'电池容量', 'category':'选配分类', 'price':'金额', 'default':'默认选配',
           'versions':'版本包含（每行一项）', 'match_versions':'版本精确（每行一项）', 'seat':'座位类型'}
 LIST_FIELDS = {'members', 'version', 'sku', 'versions', 'match_versions'}
+EXCEL_CELL_LIMIT = 32767
 
 
 def is_list(table, field):
@@ -49,6 +50,10 @@ def rules_excel(data, template=False):
                 row = []
                 for field in fields:
                     value = i if field == 'priority' else item[field]
+                    if field == 'price' and isinstance(value, dict):
+                        value = json.dumps(value, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+                        if len(value) > EXCEL_CELL_LIMIT:
+                            raise ValueError(f'选配金「{item["name"]}」的条件价格超过 Excel 单元格长度上限')
                     if is_list(table, field):
                         value = json.dumps(value, ensure_ascii=False) if not value or any('\n' in s or '\r' in s for s in value) else '\n'.join(value)
                     if field == 'default': value = '是' if value else '否'
@@ -59,17 +64,36 @@ def rules_excel(data, template=False):
             cell.font = Font(name='Microsoft YaHei', bold=True, color='FFFFFF')
             cell.fill = PatternFill('solid', fgColor='2859F5')
         for i, field in enumerate(fields, 1):
-            ws.column_dimensions[get_column_letter(i)].width = 38 if is_list(table, field) or field == 'id' else 25
+            ws.column_dimensions[get_column_letter(i)].width = 38 if is_list(table, field) or field in ('id', 'price') else 25
         for row in ws.iter_rows(min_row=2):
             for cell in row:
                 if isinstance(cell.value, str): cell.data_type = 's'  # formula-like names are literal text
                 cell.alignment = Alignment(vertical='top', wrap_text=True)
-        for field, kind, first in [('default','list','"是,否"'), ('price','decimal','0'), ('priority','whole','1')]:
+        if 'price' in fields:
+            col = get_column_letter(fields.index('price') + 1)
+            ref = col + '2'
+            formula = f'OR(AND(ISNUMBER({ref}),{ref}>=0),AND(ISTEXT({ref}),LEFT(TRIM({ref}),1)="{{",RIGHT(TRIM({ref}),1)="}}"))'
+            dv = DataValidation(type='custom', formula1=formula, allow_blank=True)
+            dv.showInputMessage = dv.showErrorMessage = True
+            dv.promptTitle = dv.errorTitle = '金额'
+            dv.prompt = dv.error = '填写非负数字，或条件价格，如 {"条件甲":3000,"default":1000}'
+            ws.add_data_validation(dv)
+            dv.add(f'{col}2:{col}10001')
+        for field, kind, first in [('default','list','"是,否"'), ('priority','whole','1')]:
             if field not in fields: continue
             dv = DataValidation(type=kind, formula1=first, operator='greaterThanOrEqual' if kind != 'list' else None, allow_blank=True)
             dv.showErrorMessage = True; dv.errorTitle = '值无效'; dv.error = '请填写有效值'
             ws.add_data_validation(dv); col = get_column_letter(fields.index(field)+1); dv.add(f'{col}2:{col}10001')
     out = io.BytesIO(); wb.save(out); return out.getvalue()
+
+
+def _unique_price_conditions(pairs):
+    prices = {}
+    for condition, amount in pairs:
+        if condition in prices:
+            raise ValueError('价格条件重复：' + condition)
+        prices[condition] = amount
+    return prices
 
 
 def _value(table, field, value):
@@ -87,6 +111,14 @@ def _value(table, field, value):
         if text in ['否','false','0']: return False
         raise ValueError('默认选配须为是或否')
     if field in ['price','priority']:
+        if field == 'price' and isinstance(value, str) and value.lstrip().startswith('{'):
+            try:
+                prices = json.loads(value, object_pairs_hook=_unique_price_conditions)
+            except (json.JSONDecodeError, RecursionError):
+                raise ValueError('条件价格须为 JSON 对象，例如 {"条件甲":3000}') from None
+            error = option_price_error({'price': prices})
+            if error: raise ValueError(error)
+            return prices
         if isinstance(value, bool): raise ValueError('须为数字')
         number = float(value)
         if not math.isfinite(number) or number < 0: raise ValueError('须为非负有限数字')
@@ -133,7 +165,8 @@ def preview_rules_import(base, files):
                         if value is None or (isinstance(value,str) and not value.strip()): continue
                         try:
                             if cell.data_type == 'f': raise ValueError('不接受公式，请粘贴为值')
-                            if len(str(value)) > 8000: raise ValueError('单元格超过 8000 字符')
+                            limit = EXCEL_CELL_LIMIT if field == 'price' else 8000
+                            if len(str(value)) > limit: raise ValueError(f'单元格超过 {limit} 字符')
                             values[field] = _value(table, field, value)
                         except (ValueError, TypeError) as exc: issue(source, label(table,field), str(exc)); invalid = True
                     if values and not invalid: records.append((table, values, dict(source)))
@@ -172,8 +205,11 @@ def preview_rules_import(base, files):
         for field, value in values.items():
             if field=='id': continue
             signature = (*identity,field)
-            if signature in seen and seen[signature] != value:
-                issue(source,label(table,field),'同一规则在本批文件中的值冲突'); continue
+            if signature in seen:
+                previous = seen[signature]
+                matches = same_price(previous, value) if field == 'price' else previous == value
+                if not matches:
+                    issue(source,label(table,field),'同一规则在本批文件中的值冲突'); continue
             seen[signature] = value
             if field=='priority': ranks[item['id']] = value
             else: item[field] = value
@@ -201,5 +237,7 @@ def preview_rules_import(base, files):
         before = original[table].get(ident)
         after = by_id[table][ident]
         changed = before != after or (table=='battery_rules' and original_ranks.get(ident) != final_ranks[ident])
+        if before is not None and table == 'option_prices' and not same_price(before['price'], after['price']):
+            changed = True
         counts['added' if before is None else 'updated' if changed else 'unchanged'] += 1
     return {'data':result,'changes':changes,'errors':[i['message'] for i in issues],'issues':issues,'summary':counts}

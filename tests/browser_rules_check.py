@@ -101,6 +101,66 @@ def add_vehicle(page):
     ready(page)
 
 
+def check_conditional_prices(browser):
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / 'shared_config.py'
+        source.write_text(SOURCE.replace('"天窗", 3000', '"天窗", {"条件乙": 21, "条件甲": 12}'), encoding='utf-8')
+        with isolated_server(tmp, source=source) as (url, _, rules, _):
+            page = browser.new_page()
+            page.goto(url)
+            ready(page)
+            switch_view(page, 'matrix', 'option_prices')
+            content = page.locator('#content')
+            page.locator('#search').fill('条件甲')
+            expect(content).to_contain_text('条件乙 21 元 / 条件甲 12 元')
+            edit = content.get_by_role('button', name='编辑', exact=True)
+            edit.click()
+            form = page.locator('#rule-form')
+            mode = form.locator('[name=price_mode]')
+            amounts = form.locator('[name=price_amount]')
+            keys = form.locator('[name=price_condition]')
+            expect(mode).to_have_value('conditional')
+            form.locator('[name=price_mode]').select_option('fixed')
+            form.locator('[name=price]').fill('99')
+            mode.select_option('conditional')
+            expect(amounts.first).to_have_value('21')
+            page.locator('#confirm').click()
+            ready(page)
+            expect(page.locator('#save')).to_be_disabled()
+            edit.click()
+            form.locator('[data-add-default]').click()
+            amounts.last.fill('0')
+            form.locator('[data-add-price]').click()
+            keys.last.fill('条件乙')
+            amounts.last.fill('9')
+            page.locator('#confirm').click()
+            expect(page.locator('#dialog-error')).to_contain_text('价格条件重复')
+            keys.last.fill('条件丙')
+            page.locator('#cancel').click()
+            page.get_by_role('button', name='继续编辑').click()
+            expect(keys.last).to_have_value('条件丙')
+            page.locator('#confirm').click()
+            ready(page)
+            page.locator('#publish').click()
+            expect(page.locator('#dialog-body .diff')).to_contain_text('默认价 0 元 / 条件丙 9 元')
+            page.locator('#confirm').click()
+            ready(page)
+            expected = [('条件乙', 21), ('条件甲', 12), ('default', 0), ('条件丙', 9)]
+            assert list(rules.get()['published']['data']['option_prices'][0]['price'].items()) == expected
+            script_prices = assignments(source)['OPTION_CONFIG']['车型甲 2026款']['舒适/功能选配'][0][1]
+            assert list(script_prices.items()) == expected
+            edit.click()
+            form.locator('[data-price-row]').last.locator('[data-remove-price]').click()
+            form.locator('[data-price-row]').last.locator('[data-remove-price]').click()
+            expect(form.locator('[data-add-default]')).to_be_visible()
+            page.locator('#confirm').click()
+            ready(page)
+            expect(content).not_to_contain_text('默认价')
+            page.locator('#undo').click()
+            expect(content).to_contain_text('默认价 0 元')
+            page.close()
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp, isolated_server(tmp) as (url, store, rules, source), sync_playwright() as pw:
         catalog = empty()
@@ -261,6 +321,7 @@ def main():
         page.set_viewport_size({'width': 1440, 'height': 1000})
         expect(header.locator('[data-tab="aliases"]')).to_have_attribute('aria-current', 'page')
         assert not errors, errors
+        check_conditional_prices(browser)
         browser.close()
     print('Rules browser checks passed: shared navigation, header filters, isolated drafts, publishing, history, and external change conflicts.')
 
