@@ -22,7 +22,7 @@ $releaseVersion = Read-Host '输入新发布版本'
 
 | 资产 | 开发默认位置 | 工作台部署默认位置 |
 | --- | --- | --- |
-| 车型库、规则库与备份 | `Project/工作台数据/database/vehicle-config/` | 运行目录下的 `database/vehicle-config/` |
+| 业务数据根目录 | `Project/工作台数据/database/vehicle-config/` | 运行目录下的 `database/vehicle-config/` |
 | 订单规则脚本 | `Project/订单分析/scripts/config/shared_config.py` | `sopSharedConfig` 配置的相对路径，模板值为 `config/shared_config.py` |
 | 网页导入、导出 Excel | 从浏览器选取文件，导出到浏览器下载目录 | 同开发版 |
 
@@ -71,7 +71,15 @@ SOP 从发布的共享脚本读取 `MERGE_GROUPS`。订单报表展示的数据�
 
 数据路径优先使用 `--data-dir`；否则使用 `PLANHUB_DATA_ROOT/database/vehicle-config`，未设置根目录时为同级 `工作台数据/database/vehicle-config`。发布包统一传入 `planhub-runtime/database/vehicle-config`；旧版共享目录中的数据须先停服迁移。相对 `--data-dir` 仍按进程目录解析；相对 `PLANHUB_DATA_ROOT` 按项目根解析。
 
-当前网页使用 `campaigns/campaigns.sqlite3` 和 `rules/rules.sqlite3`。旧版独立车型档案的 `catalog.sqlite3`、JSON 快照及原有 API 继续供已有调用方使用。这些旧档案与小订首销导入记录分别存储。本次界面调整无需迁库或重新导入。备份时停服并备份整个数据目录。
+数据根目录按业务划分，服务进程共用的 `service.lock` 位于根目录。
+
+| 子目录 | SQLite 主库 | 同目录下的相关文件 |
+| --- | --- | --- |
+| `catalog/` 旧版独立车型档案与配置矩阵 | `catalog.sqlite3` | 已发布快照 `current.json`、草稿 `drafts/current.json`、历史 `history/<事件号>.json` |
+| `campaigns/` 车型与日程、小订首销填报 | `campaigns.sqlite3` | 发布后生成 `published.json` |
+| `rules/` 代际、电池与选配规则 | `rules.sqlite3` | 发布脚本时备份至 `backups/` |
+
+旧服务停止后，用新版启动时会自动把数据根目录原有的车型档案库及其快照迁入 `catalog/`。迁移保留草稿、发布修订号和操作历史，中断后可再次启动续迁。新旧位置若已有两份车型库，服务会停止启动，保留两份文件供核对。直接读取旧版车型快照的程序应将路径更新为 `catalog/current.json`。网页和原有 API 继续使用原地址。备份时请停服并备份整个数据根目录。
 
 ## 工作台接入与部署
 

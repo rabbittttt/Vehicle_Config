@@ -15,8 +15,64 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(Conflict):self.store.save(d,0,'另一用户')
         self.store.save(d,1,'测试用户',True);self.store.db.close();self.store=Store(self.tmp.name)
         self.assertEqual(self.store.get()['published']['data'],d);self.assertEqual(len(self.store.get()['history']),2)
-        self.assertEqual(json.loads((Path(self.tmp.name)/'current.json').read_text('utf8'))['revision'],1)
+        self.assertEqual(json.loads((Path(self.tmp.name)/'catalog'/'current.json').read_text('utf8'))['revision'],1)
         self.assertEqual(self.store.history(2)['data'],d)
+
+    def test_flat_catalog_upgrade_preserves_draft_publication_and_history(self):
+        root = Path(self.tmp.name)
+        directory = root / 'catalog'
+        published = fixture()
+        self.store.save(published, 0, '发布人', True)
+        draft = copy.deepcopy(published)
+        draft['versions'][0]['name'] = '改名后的草稿'
+        self.store.save(draft, 1, '编辑人')
+        expected = self.store.get()
+        self.store.db.close()
+        # Recreate the legacy layout from a populated catalog.
+        for asset in directory.iterdir():
+            asset.rename(root / asset.name)
+        directory.rmdir()
+        unrelated = root / 'rules'
+        unrelated.mkdir()
+        sentinel = unrelated / 'preserved'
+        sentinel.write_bytes(b'unchanged')
+
+        self.store = Store(root)
+        self.assertEqual(self.store.get(), expected)
+        for path, state in [('current.json', 'published'), ('drafts/current.json', 'draft')]:
+            self.assertEqual(json.loads((directory / path).read_text('utf8')), expected[state])
+        for event_id, data in [(1, published), (2, draft)]:
+            event = json.loads((directory / 'history' / f'{event_id}.json').read_text('utf8'))
+            self.assertEqual(event['data'], data)
+        self.assertEqual({path.name for path in root.iterdir()}, {'catalog', 'rules'})
+        self.assertEqual(sentinel.read_bytes(), b'unchanged')
+
+    def test_interrupted_layout_upgrade_resumes_on_next_start(self):
+        root = Path(self.tmp.name)
+        directory = root / 'catalog'
+        self.store.save(fixture(), 0, '测试', True)
+        expected = self.store.get()
+        self.store.db.close()
+        (directory / 'drafts').rename(root / 'drafts')
+        marker = directory / '.migrating-from-flat'
+        marker.touch()
+        self.store = Store(root)
+        self.assertEqual(self.store.get(), expected)
+        self.assertFalse(marker.exists())
+        self.assertFalse((root / 'drafts').exists())
+        self.assertEqual(json.loads((directory / 'drafts/current.json').read_text('utf8')), expected['draft'])
+
+    def test_conflicting_catalog_locations_preserve_both(self):
+        root = Path(self.tmp.name)
+        nested = root / 'catalog' / 'catalog.sqlite3'
+        self.store.db.close()
+        original = nested.read_bytes()
+        legacy = root / 'catalog.sqlite3'
+        legacy.write_bytes(b'other database')
+        with self.assertRaises(ValueError):
+            Store(root)
+        self.assertEqual(nested.read_bytes(), original)
+        self.assertEqual(legacy.read_bytes(), b'other database')
     def test_no_delete(self):
         self.store.save(fixture(),0,'user')
         with self.assertRaises(ValueError):self.store.save(empty(),1,'user')
@@ -50,6 +106,25 @@ class CatalogTests(unittest.TestCase):
                 self.assertEqual(old.read_bytes(),b'legacy')
                 old.unlink()
 
+    def test_default_directory_accepts_previously_centralized_catalog(self):
+        project = Path(self.tmp.name) / 'Project'
+        legacy = project / '共享数据' / '车型配置' / 'catalog.sqlite3'
+        legacy.parent.mkdir(parents=True)
+        self.store.save(fixture(), 0, '测试', True)
+        self.store.db.close()
+        legacy.write_bytes((Path(self.tmp.name) / 'catalog/catalog.sqlite3').read_bytes())
+        for layout in ('flat', 'nested'):
+            with self.subTest(layout=layout):
+                data_root = project / layout
+                target = data_root / 'database/vehicle-config'
+                database = target / ('catalog.sqlite3' if layout == 'flat' else 'catalog/catalog.sqlite3')
+                database.parent.mkdir(parents=True)
+                database.write_bytes(legacy.read_bytes())
+                with patch.object(server, 'ROOT', project / 'app'), patch.dict('os.environ', PLANHUB_DATA_ROOT=str(data_root)), patch('sys.argv', ['server']), patch.object(server, 'RuleStore'), patch.object(server, 'make_server') as start:
+                    server.main()
+                start.return_value.serve_forever.assert_called_once()
+                self.assertEqual(json.loads((target / 'catalog/current.json').read_text('utf8'))['data'], fixture())
+
     def test_history_pagination_and_projection_repair(self):
         draft=fixture()
         with self.store.db:
@@ -59,7 +134,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(len(self.store.get()['history']),40)
         self.assertEqual([r['id'] for r in self.store.history_page(2)['history']],[5,4,3,2,1])
         self.assertEqual(self.store.history_page(1,'actor-0')['history'][0]['id'],1)
-        missing=Path(self.tmp.name)/'history'/'1.json'
+        missing=Path(self.tmp.name)/'catalog'/'history'/'1.json'
         missing.unlink()
         self.store.db.close()
         self.store=Store(self.tmp.name)
@@ -82,6 +157,12 @@ class CatalogTests(unittest.TestCase):
         server=make_server(self.store,port=0,origins=['http://localhost:8080']);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start();base='http://127.0.0.1:'+str(server.server_port)
         try:
             state=json.load(urllib.request.urlopen(base+'/vehicle-config/api/state'));self.assertIn('csrf',state)
+            with urllib.request.urlopen(base+'/vehicle-config/api/runtime') as response:
+                runtime = json.load(response)
+            root = Path(self.tmp.name).resolve()
+            for key, relative in [('catalog','catalog/catalog.sqlite3'), ('rules_db','rules/rules.sqlite3'), ('campaign_db','campaigns/campaigns.sqlite3')]:
+                self.assertEqual(Path(runtime[key]), root / relative)
+                self.assertTrue((root / relative).is_file())
             for origin,token in [('http://evil.test',state['csrf']),('http://localhost:8080','wrong')]:
                 req=urllib.request.Request(base+'/api/save',data=json.dumps({'data':fixture(),'revision':0}).encode(),headers={'Origin':origin,'X-CSRF-Token':token})
                 with self.assertRaises(urllib.error.HTTPError) as ctx:urllib.request.urlopen(req)

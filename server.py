@@ -3,7 +3,7 @@ import argparse, getpass, json, os, secrets, sys, zipfile
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from excel_io import excel, read_excel, preview_import
-from catalog import Store, Conflict, PUBLISH_REQUIRED, IDENTITY_FIELDS, identity, validate as validate_catalog
+from catalog import CATALOG_DB, Store, Conflict, PUBLISH_REQUIRED, IDENTITY_FIELDS, identity, validate as validate_catalog
 from shared_rules import RuleStore, validate as validate_rules
 from rules_excel import rules_excel, preview_rules_import
 from campaign_store import CampaignStore
@@ -179,7 +179,7 @@ def runtime_info(directory,source,sources):
             if isinstance(candidate,dict) and candidate.get('appId')=='vehicle-config':
                 release={k:candidate.get(k) for k in ('version','gitCommit','sourceDirty','sourceRevision')}
         except (ValueError,OSError):pass
-    return {'release':release,'data_dir':str(root),'catalog':str(root/'catalog.sqlite3'),
+    return {'release':release,'data_dir':str(root),'catalog':str(root/CATALOG_DB),
             'rules_db':str(root/'rules'/'rules.sqlite3'),'campaign_db':str(root/'campaigns'/'campaigns.sqlite3'),'shared_config':str(script) if script else '',
             'script_exists':bool(script and script.is_file()),'sources':sources,'excel':'浏览器下载目录'}
 
@@ -198,10 +198,14 @@ def main():
         return
     legacy=(workspace/'共享数据'/'车型配置') if workspace else None
     if legacy and Path(directory).resolve()==(data_root/'database'/'vehicle-config').resolve():
-        for db_file in ('catalog.sqlite3','rules/rules.sqlite3'):
-            target=Path(directory)/db_file
-            if (legacy/db_file).is_file() and (not target.is_file() or target.stat().st_size==0):
-                p.error(f'旧车型配置数据库 {db_file} 尚未迁移，请停服迁移后启动。')
+        root=Path(directory)
+        # An earlier central migration may have copied the catalog into the flat layout.
+        for old_path, targets in (
+            ('catalog.sqlite3', (root/CATALOG_DB, root/'catalog.sqlite3')),
+            ('rules/rules.sqlite3', (root/'rules'/'rules.sqlite3',)),
+        ):
+            if (legacy/old_path).is_file() and not any(path.is_file() and path.stat().st_size for path in targets):
+                p.error(f'旧车型配置数据库 {old_path} 尚未迁移，请停服迁移后启动。')
     secret=os.environ.get('VEHICLE_CONFIG_PROXY_SECRET')
     if a.require_proxy_identity and not secret:p.error('缺少 VEHICLE_CONFIG_PROXY_SECRET')
     # Lifetime OS lock prevents two versions writing the same persistent catalog.

@@ -144,10 +144,47 @@ def diff(old,new):
         for ident in before.keys()-after.keys():out.append({'table':table,'id':ident,'field':'移除','before':before[ident],'after':''})
     return out
 
+CATALOG_DB = Path('catalog') / 'catalog.sqlite3'
+CATALOG_FILES = (
+    CATALOG_DB.name, 'catalog.sqlite3-journal', 'catalog.sqlite3-wal', 'catalog.sqlite3-shm',
+    'current.json', 'current.tmp', 'drafts', 'history',
+)
+
+def prepare_catalog_directory(root):
+    """Move the flat layout under catalog/ while the server holds root/service.lock."""
+    directory = root / CATALOG_DB.parent
+    marker = directory / '.migrating-from-flat'
+    legacy = {name for name in CATALOG_FILES if (root / name).exists()}
+    nested = {name for name in CATALOG_FILES if (directory / name).exists()}
+
+    if legacy and nested and not marker.exists():
+        raise ValueError(f'新旧车型档案同时存在，请停服核对 {root} 与 {directory}。')
+    duplicates = legacy & nested
+    if duplicates:
+        raise ValueError(f'车型档案迁移存在同名冲突：{", ".join(sorted(duplicates))}，请停服核对。')
+    existing = legacy | nested
+    if existing or marker.exists():
+        database = (root if CATALOG_DB.name in legacy else directory) / CATALOG_DB.name
+        if not database.is_file():
+            raise ValueError(f'车型档案缺少 {CATALOG_DB.name}，请在 {root} 核对数据库和快照。')
+        if existing - {CATALOG_DB.name} and database.stat().st_size == 0:
+            raise ValueError(f'车型档案数据库 {database} 为空，请停服核对快照。')
+
+    directory.mkdir(parents=True, exist_ok=True)
+    if legacy or marker.exists():
+        # A durable marker distinguishes our own interrupted move from two independent catalogs.
+        marker.touch(exist_ok=True)
+        for name in CATALOG_FILES:
+            if name in legacy:
+                (root / name).rename(directory / name)
+        marker.unlink()
+    return directory
+
 class Store:
     def __init__(self,root):
-        self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self.lock=threading.RLock()
-        self.db=sqlite3.connect(self.root/'catalog.sqlite3',check_same_thread=False)
+        self.root=Path(root);self.lock=threading.RLock()
+        self.catalog_dir=prepare_catalog_directory(self.root)
+        self.db=sqlite3.connect(self.root/CATALOG_DB,check_same_thread=False)
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.executescript('CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY, revision INTEGER, data TEXT); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, kind TEXT, actor TEXT, time TEXT, data TEXT, changes TEXT);')
         with self.db:
@@ -168,10 +205,10 @@ class Store:
     def atomic(self,path,obj):
         path.parent.mkdir(exist_ok=True);tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(obj,ensure_ascii=False,indent=2),encoding='utf-8');os.replace(tmp,path)
     def project(self):
-        self.atomic(self.root/'current.json',self.state(2))
-        self.atomic(self.root/'drafts'/'current.json',self.state(1))
+        self.atomic(self.catalog_dir/'current.json',self.state(2))
+        self.atomic(self.catalog_dir/'drafts'/'current.json',self.state(1))
         for (event_id,) in self.db.execute('SELECT id FROM events WHERE id>? ORDER BY id',(self.last_projected,)):
-            path=self.root/'history'/f'{event_id}.json'
+            path=self.catalog_dir/'history'/f'{event_id}.json'
             if not path.exists():
                 row=self.db.execute('SELECT id,kind,actor,time FROM events WHERE id=?',(event_id,)).fetchone()
                 self.atomic(path,{**dict(zip(EVENT_FIELDS,row)),**self.history(event_id)})
