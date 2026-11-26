@@ -1,7 +1,7 @@
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-import argparse, getpass, json, os, secrets, sys, zipfile
+import argparse, json, os, secrets, sys, zipfile
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 from excel_io import excel, read_excel, preview_import
 from catalog import CATALOG_DB, Store, Conflict, PUBLISH_REQUIRED, IDENTITY_FIELDS, identity, validate as validate_catalog
 from shared_rules import RuleStore, validate as validate_rules
@@ -9,6 +9,33 @@ from rules_excel import rules_excel, preview_rules_import
 from campaign_store import CampaignStore
 from xlsx_input import WorkbookBatch
 ROOT=Path(__file__).resolve().parent
+
+def valid_identity_text(value):
+    return (isinstance(value, str) and 0 < len(value) <= 100
+            and value == value.strip() and value.isprintable())
+
+def frame_identity(headers):
+    values = headers.get_all('Sop-Frame-Identity', [])
+    if not values:
+        return {}
+    if len(values) != 1 or len(values[0]) > 4096 or not values[0].isascii():
+        raise PermissionError('门户账号信息无效')
+    try:
+        fields = json.loads(unquote(values[0], errors='strict'))
+    except (ValueError, RecursionError):
+        raise PermissionError('门户账号信息无效') from None
+    if (not isinstance(fields, dict) or fields.keys() != {'account', 'roleCode', 'roleName'}
+            or not all(valid_identity_text(value) for value in fields.values())):
+        raise PermissionError('门户账号信息无效')
+    return fields
+
+def operation_owner(identity, body):
+    if identity:
+        return identity['account']
+    owner = body.get('owner') if isinstance(body, dict) else None
+    if not valid_identity_text(owner):
+        raise ValueError('请填写操作人（最多 100 字）')
+    return owner
 
 def import_preview(body, draft, preview, validate, conflict_message):
     if body.get('revision') != draft['revision']:
@@ -40,20 +67,25 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
             host=urlsplit('http://'+self.headers.get('Host','')).hostname
             allowed={'localhost','127.0.0.1','::1'}|{urlsplit(origin).hostname for origin in origins}
             if host not in allowed:raise PermissionError('Host 不受信任')
-        def actor(self):
+        def request_identity(self, required):
             if proxy_secret:
-                if not secrets.compare_digest(self.headers.get('X-Config-Proxy-Key',''),proxy_secret):raise PermissionError('缺少可信代理身份')
-                actor=self.headers.get('X-Config-User','').strip()
-                if not actor or len(actor)>200:raise PermissionError('缺少操作人身份')
-                return actor
-            return '本机:'+getpass.getuser()
+                keys = self.headers.get_all('X-Config-Proxy-Key', [])
+                if len(keys) != 1 or not keys[0].isascii() or not secrets.compare_digest(keys[0], proxy_secret):
+                    raise PermissionError('缺少可信代理身份')
+            identity = frame_identity(self.headers)
+            if proxy_secret and required and not identity:
+                raise PermissionError('尚未收到门户账号')
+            return identity
         def do_GET(self):
             try:
                 path=self.route()
                 self.check_host()
                 if path=='/healthz':return self.send(200,{'ok':True,'app':'vehicle-config','public_prefix':prefix})
-                self.actor()
-                if path=='/api/session':return self.send(200,{'csrf':token,'readonly':readonly})
+                identity = self.request_identity(required=path.startswith('/api/') and path != '/api/session')
+                if path=='/api/session':
+                    return self.send(200, {'csrf':token, 'readonly':readonly, 'mode':'gateway' if proxy_secret else 'console',
+                                           'user':identity.get('account'), **identity,
+                                           'canWrite':not readonly and (not proxy_secret or bool(identity))})
                 if path=='/api/state':return self.send(200,{**store.get(),'csrf':token,'readonly':readonly,'required':PUBLISH_REQUIRED,'identity_fields':IDENTITY_FIELDS})
                 if path=='/api/runtime':
                     return self.send(200,runtime_info(store.root,rules.source_path,path_sources or {}))
@@ -78,9 +110,9 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     self.send_header('Content-Length','0')
                     self.end_headers()
                     return
-                files={'/':'index.html','/app.js':'app.js','/rules.js':'rules.js','/campaign.js':'campaign.js','/style.css':'style.css'}
+                files={'/':'index.html','/app.js':'app.js','/rules.js':'rules.js','/campaign.js':'campaign.js','/frame-account.js':'frame-account.js','/style.css':'style.css'}
                 if path not in files:return self.send(404,{'error':'未找到'})
-                ext={'/':'text/html; charset=utf-8','/app.js':'text/javascript; charset=utf-8','/rules.js':'text/javascript; charset=utf-8','/campaign.js':'text/javascript; charset=utf-8','/style.css':'text/css; charset=utf-8'}
+                ext={'/':'text/html; charset=utf-8','/app.js':'text/javascript; charset=utf-8','/rules.js':'text/javascript; charset=utf-8','/campaign.js':'text/javascript; charset=utf-8','/frame-account.js':'text/javascript; charset=utf-8','/style.css':'text/css; charset=utf-8'}
                 self.send(200,(ROOT/'web'/files[path]).read_bytes(),ext[path])
             except PermissionError as e:self.send(403,{'error':str(e)})
             except (ValueError,KeyError) as e:self.send(400,{'error':str(e)})
@@ -89,7 +121,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
         def do_POST(self):
             try:
                 self.check_host()
-                actor=self.actor()
+                frame_user = self.request_identity(required=True)
                 origin=self.headers.get('Origin')
                 allowed=set(origins)|{'http://'+self.headers.get('Host','')}
                 if origin and origin not in allowed:raise PermissionError('来源不受信任')
@@ -112,13 +144,13 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                         _,content=WorkbookBatch([body]).decode({'name':'历史数据.xlsx','content':body.get('content')})
                         if path.endswith('/import-preview'):
                             return self.send(200,campaigns.preview_import(body['revision'],content))
-                        result=campaigns.import_legacy(body['revision'],content,actor,
+                        result=campaigns.import_legacy(body['revision'],content,operation_owner(frame_user, body),
                                                        confirm_replace=body.get('confirmReplace') is True)
                         return self.send(200,result)
                     if path=='/api/campaign/undo-import':
-                        return self.send(200,campaigns.undo_import(body['revision'],actor))
+                        return self.send(200,campaigns.undo_import(body['revision'],operation_owner(frame_user, body)))
                     if path in ('/api/campaign/save','/api/campaign/publish'):
-                        return self.send(200,campaigns.save(body['revision'],body['edits'],actor,publish=path.endswith('/publish')))
+                        return self.send(200,campaigns.save(body['revision'],body['edits'],operation_owner(frame_user, body),publish=path.endswith('/publish')))
                     if path=='/api/campaign/preview':
                         return self.send(200,campaigns.preview(body['revision'],body['edits']))
                     if path=='/api/campaign/export':
@@ -131,10 +163,10 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     action=path.rsplit('/',1)[1]
                     if action=='validate':return self.send(200,{'errors':validate_rules(body['data'])})
                     if action=='export':return self.send(200,rules_excel(body['data']),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-                    if action=='save':return self.send(200,rules.save(body['data'],body['revision'],actor))
+                    if action=='save':return self.send(200,rules.save(body['data'],body['revision'],operation_owner(frame_user, body)))
                     if action=='preview':return self.send(200,rules.preview(body['data'],body['revision']))
-                    if action=='publish':return self.send(200,rules.publish(body['data'],body['revision'],body['source_hash'],actor))
-                    if action=='reload':return self.send(200,rules.reload(body['revision'],body['source_hash'],actor,body.get('pending_token')))
+                    if action=='publish':return self.send(200,rules.publish(body['data'],body['revision'],body['source_hash'],operation_owner(frame_user, body)))
+                    if action=='reload':return self.send(200,rules.reload(body['revision'],body['source_hash'],operation_owner(frame_user, body),body.get('pending_token')))
                     if action=='import':
                         state=rules.get()['draft']
                         return self.send(200,import_preview(body,state,preview_rules_import,validate_rules,'规则草稿已被其他人修改，请重新载入草稿后导入'))
@@ -155,7 +187,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     return self.send(200,import_preview(body,state,preview_import,validate_catalog,'车型配置草稿已被其他人修改，请重新载入草稿后导入'))
                 if path=='/api/export':return self.send(200,excel(body['data']),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 if path=='/api/preview':return self.send(200,store.preview(body['data'],body.get('revision')))
-                if path in ['/api/save','/api/publish']:return self.send(200,store.save(body['data'],body['revision'],actor,path.endswith('publish')))
+                if path in ['/api/save','/api/publish']:return self.send(200,store.save(body['data'],body['revision'],operation_owner(frame_user, body),path.endswith('publish')))
                 self.send(404,{'error':'未找到'})
             except Conflict as e:self.send(409,{'error':str(e)})
             except PermissionError as e:self.send(403,{'error':str(e)})

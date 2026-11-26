@@ -1,5 +1,6 @@
 import copy, json, tempfile, unittest, threading, urllib.request, urllib.error
 from pathlib import Path
+from urllib.parse import quote
 from unittest.mock import patch
 import server
 from catalog import Store, empty, validate, merge, Conflict
@@ -167,14 +168,55 @@ class CatalogTests(unittest.TestCase):
                 req=urllib.request.Request(base+'/api/save',data=json.dumps({'data':fixture(),'revision':0}).encode(),headers={'Origin':origin,'X-CSRF-Token':token})
                 with self.assertRaises(urllib.error.HTTPError) as ctx:urllib.request.urlopen(req)
                 self.assertEqual(ctx.exception.code,403)
-            req=urllib.request.Request(base+'/api/save',data=json.dumps({'data':fixture(),'revision':0}).encode(),headers={'Origin':'http://localhost:8080','X-CSRF-Token':state['csrf']});self.assertEqual(json.load(urllib.request.urlopen(req))['draft']['revision'],1)
+            def save_local(owner):
+                return urllib.request.urlopen(urllib.request.Request(base+'/api/save',
+                    data=json.dumps({'data':fixture(),'revision':0,'owner':owner}).encode(),
+                    headers={'Origin':'http://localhost:8080','X-CSRF-Token':state['csrf']}))
+            for owner in (None, '', 'a'*101, '操\n作'):
+                with self.assertRaises(urllib.error.HTTPError) as failed:
+                    save_local(owner)
+                self.assertEqual(failed.exception.code, 400)
+                failed.exception.close()
+            with save_local('本地编辑') as response:
+                self.assertEqual(json.load(response)['draft']['revision'],1)
+            self.assertEqual(self.store.history_page()['history'][0]['actor'], '本地编辑')
             self.assertEqual(urllib.request.urlopen(base+'/vehicle-config/app.js').status,200)
         finally:server.shutdown();server.server_close();thread.join()
     def test_proxy_identity(self):
         server=make_server(self.store,port=0,proxy_secret='test-secret');thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start();base='http://127.0.0.1:'+str(server.server_port)
         try:
             self.assertEqual(urllib.request.urlopen(base+'/healthz').status,200)
-            with self.assertRaises(urllib.error.HTTPError):urllib.request.urlopen(base+'/api/state')
-            req=urllib.request.Request(base+'/api/state',headers={'X-Config-Proxy-Key':'test-secret','X-Config-User':'DOMAIN/user'});self.assertEqual(urllib.request.urlopen(req).status,200)
+            identity = {'account':'测试员工', 'roleCode':'0', 'roleName':'计划员'}
+            def encoded(fields):
+                return quote(json.dumps(fields, ensure_ascii=False))
+            def get(path, headers):
+                return urllib.request.urlopen(urllib.request.Request(base+path,headers=headers))
+            transport = {'X-Config-Proxy-Key':'test-secret','X-Config-User':'DOMAIN/user'}
+            headers = {**transport, 'Sop-Frame-Identity':encoded(identity)}
+            with get('/api/session', transport) as response:
+                pending = json.load(response)
+            self.assertEqual((pending['mode'], pending['user'], pending['canWrite']), ('gateway', None, False))
+            with get('/vehicle-config/', transport) as response:
+                self.assertEqual(response.status, 200)
+            invalid_identity = [{}, {**identity, 'account':' '}, {**identity, 'roleCode':0},
+                                {**identity, 'account':'a'*101}, {**identity, 'roleName':'bad\nvalue'}]
+            rejected = [{'Sop-Frame-Identity':encoded(identity)}, transport,
+                        {**transport, 'Sop-Frame-Identity':'%FF'}]
+            rejected.extend({**transport, 'Sop-Frame-Identity':encoded(fields)} for fields in invalid_identity)
+            for invalid in rejected:
+                with self.assertRaises(urllib.error.HTTPError) as failed:
+                    get('/api/state', invalid)
+                self.assertEqual(failed.exception.code, 403)
+                failed.exception.close()
+            with get('/api/session', headers) as response:
+                session = json.load(response)
+            self.assertTrue(session['canWrite'])
+            self.assertEqual((session['user'], session['roleCode'], session['roleName']), ('测试员工','0','计划员'))
+            req = urllib.request.Request(base+'/api/save',
+                data=json.dumps({'data':fixture(),'revision':0,'owner':'旧账号'}).encode(),
+                headers={**headers,'X-CSRF-Token':session['csrf']})
+            with urllib.request.urlopen(req) as response:
+                self.assertEqual(json.load(response)['draft']['revision'], 1)
+            self.assertEqual(self.store.history_page()['history'][0]['actor'], '测试员工')
         finally:server.shutdown();server.server_close();thread.join()
 if __name__=='__main__':unittest.main()

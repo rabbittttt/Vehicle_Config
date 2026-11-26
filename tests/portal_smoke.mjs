@@ -19,10 +19,12 @@ await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));
 const port=String(probe.address().port);
 await new Promise(resolve=>probe.close(resolve));
 app.target='http://127.0.0.1:'+port;
+app.start.env={...app.start.env,VEHICLE_CONFIG_PROXY_SECRET:'portal-test-secret'};
+app.headersForRequest=()=>({'X-Config-Proxy-Key':'portal-test-secret','X-Config-User':'gateway-test'});
 app.start.args.push('--port',port,'--data-dir',directory,'--shared-config',script);
 const apps={'vehicle-config':app},stop=await startAppServices(apps,{root,logRoot:path.join(directory,'logs')});
 if(stop.failures.length){stop();throw Error(stop.failures.join('\n'));}
-const server=createServer({root:portal,applications:apps});
+const server=createServer({root:portal,applications:apps,localPreview:true});
 try{await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const result=await promisify(execFile)(app.start.command,['-B',path.join(root,'tests/portal_browser.py'),`http://127.0.0.1:${server.address().port}`],{cwd:root,env:{...process.env,PYTHONIOENCODING:'utf-8'}});console.log(result.stdout);}finally{await new Promise(resolve=>server.close(resolve));stop();}
 
 // A failed test retains its own directory. Only clean this run's freshly allocated path.

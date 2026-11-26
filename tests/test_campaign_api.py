@@ -37,11 +37,11 @@ class CampaignApiTests(unittest.TestCase):
         edits = [{'sheet':'车型汇总','row':2,'col':1,'value':'测试车型'},
                  {'sheet':'小订by天','model':'测试车型','date':'2026-11-25','value':0},
                  {'sheet':'小订by天','model':'测试车型','date':'2026-11-26','value':12}]
-        with self.post('save', {'revision':0,'edits':edits}) as response:
+        with self.post('save', {'revision':0,'edits':edits,'owner':'测试编辑'}) as response:
             draft = json.load(response)
         with urlopen(self.base + 'campaign/published') as response:
             self.assertEqual(json.load(response)['revision'], 0)
-        with self.post('publish', {'revision':draft['revision'],'edits':[]}) as response:
+        with self.post('publish', {'revision':draft['revision'],'edits':[],'owner':'测试发布'}) as response:
             self.assertEqual(json.load(response)['publishedRevision'], 1)
         with urlopen(self.base + 'campaign/published?revision=1') as response:
             self.assertEqual(json.load(response)['sheets'][0]['rows'][1][0], '测试车型')
@@ -62,9 +62,9 @@ class CampaignApiTests(unittest.TestCase):
                   (3, 1, '车型甲'), (3, 2, '甲二期')]
         edits = [{'sheet': SUMMARY, 'row': row, 'col': col, 'value': value}
                  for row, col, value in values]
-        with self.post('publish', {'revision': 0, 'edits': edits}) as response:
+        with self.post('publish', {'revision': 0, 'edits': edits, 'owner':'测试发布'}) as response:
             revision = json.load(response)['revision']
-        with self.post('save', {'revision': revision, 'edits': [
+        with self.post('save', {'revision': revision, 'owner':'测试编辑', 'edits': [
                 {'sheet': SUMMARY, 'row': 2, 'col': 3, 'value': '新档位'}]}) as response:
             self.assertTrue(json.load(response)['hasUnpublishedChanges'])
         for source, tier in [('draft', '新档位'), ('published', '标准')]:
@@ -87,15 +87,15 @@ class CampaignApiTests(unittest.TestCase):
                 return json.load(response)
 
         self.assertEqual(history(), {'history': [], 'total': 0, 'page': 1})
-        with self.post('save', {'revision': 0, 'edits': [
+        with self.post('save', {'revision': 0, 'owner':'测试编辑', 'edits': [
                 {'sheet': SUMMARY, 'row': 2, 'col': 1, 'value': '车型甲'}]}) as response:
             draft_revision = json.load(response)['revision']
         self.assertEqual(history()['total'], 0)
-        with self.post('publish', {'revision': draft_revision, 'edits': []}) as response:
+        with self.post('publish', {'revision': draft_revision, 'edits': [], 'owner':'测试发布'}) as response:
             published_revision = json.load(response)['publishedRevision']
         entry, = history()['history']
         self.assertEqual((entry['id'], entry['kind']), (published_revision, '发布'))
-        self.assertTrue(entry['actor'])
+        self.assertEqual(entry['actor'], '测试发布')
         self.assertIsInstance(datetime.fromisoformat(entry['time']), datetime)
         self.assertEqual(history('?q=does-not-match')['total'], 0)
 

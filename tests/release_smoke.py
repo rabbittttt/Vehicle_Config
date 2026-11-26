@@ -31,7 +31,7 @@ with tempfile.TemporaryDirectory() as tmp:
             assert info['release']['version']==manifest['version']
             assert Path(info['data_dir'])==Path(tmp).resolve()
         state=json.load(urllib.request.urlopen(base+'/api/state'))
-        req=urllib.request.Request(base+'/api/publish',data=json.dumps({'revision':state['draft']['revision'],'data':fixture()}).encode(),headers={'X-CSRF-Token':state['csrf']})
+        req=urllib.request.Request(base+'/api/publish',data=json.dumps({'revision':state['draft']['revision'],'data':fixture(),'owner':'发布验收'}).encode(),headers={'X-CSRF-Token':state['csrf']})
         assert json.load(urllib.request.urlopen(req))['published']['revision']==1
         # Use a separate listening port so a bind failure cannot pass the storage-lock check.
         second_cmd=cmd.copy()

@@ -89,7 +89,9 @@ SOP 从发布的共享脚本读取 `MERGE_GROUPS`。订单报表展示的数据�
 
 应用 ID `vehicle-config`，公共前缀 `/vehicle-config/`。工作台剥离前缀代理至独立回环服务；所有浏览器 URL 使用相对路径。健康接口 `/healthz` 轻量只读，返回 ok、app、public_prefix。前后端同版封装为工作台通用 app-release.json + payload 发布包，构建拒绝覆盖已存在目录，文件带 SHA-256；正式运行使用独立 Python 运行时。门户部署模板提供端口、公共来源、共享根和独立服务参数，发布工具只更新本应用。
 
-独立运行默认记录 `本机:系统用户名`。工作台 Docker 版通过公司认证网关校验访问资格，门户将可信账号和密钥写入 `X-Config-User`、`X-Config-Proxy-Key` 转发到车型配置。启动器从包外 `planhub-runtime/config.json` 的 `vehicleSecret` 注入 `VEHICLE_CONFIG_PROXY_SECRET`，并传入 `--require-proxy-identity`。密钥错误或账号缺失的业务请求返回 403。`--read-only` 控制整个服务的写入。
+车型配置与 SOP 使用相同的操作人来源。工作台通过 `postMessage` 向车型配置页面传入外层系统的 `account`、`roleCode` 和 `roleName`。页面将三项随业务请求放入 `Sop-Frame-Identity`，服务使用其中的 `account` 记录操作人。工作台本机预览使用 `local-debug`。独立打开车型配置时，维护人自行填写署名，浏览器会记住上次填写的值。独立调用写入接口时，通过 JSON 顶层字段 `owner` 提交署名。
+
+工作台 Docker 版由公司认证网关校验访问资格。启动器从包外 `planhub-runtime/config.json` 的 `vehicleSecret` 注入 `VEHICLE_CONFIG_PROXY_SECRET`，并传入 `--require-proxy-identity`。配置服务校验 `X-Config-Proxy-Key`，在代理模式下拒绝缺少门户账号的业务读写。`--read-only` 控制整个服务的写入。
 
 部署验收应覆盖未获部门访问资格的请求、伪造身份、操作人记录、保存后重启和 Excel 导入导出。公共地址须与 `--public-origin` 一致，健康接口 `/healthz` 单独用于检查服务可用性。
 

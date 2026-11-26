@@ -70,9 +70,42 @@ def check(browser, url):
     page.close()
 
 
+def check_account_change(browser, url):
+    page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+    page.route('**/account-test', lambda route: route.fulfill(content_type='text/html',
+               body='<iframe style="position:fixed;inset:0;width:100%;height:100%;border:0" src="/#/app/vehicle-config"></iframe>'))
+    page.goto(url + '/account-test')
+    portal = page.frame_locator('iframe')
+    app = portal.frame_locator('iframe[data-app="vehicle-config"]')
+    expect(app.locator('h1')).to_have_text('车型配置')
+
+    def switch_account(name):
+        with page.expect_response(lambda r: r.url.endswith('/vehicle-config/api/session') and r.status == 200) as reply:
+            page.evaluate("""account => document.querySelector('iframe').contentWindow.postMessage(
+                {account, roleCode: 2, roleName: '维护人'}, location.origin)""", name)
+        assert reply.value.json()['user'] == name
+        expect(app.locator('body')).to_have_attribute('aria-busy', 'false')
+
+    switch_account('业务甲')
+    app.locator('[data-campaign-action=add-stage]').click()
+    app.get_by_label('代际名', exact=True).fill('上个账号的草稿')
+    app.locator('#confirm').click()
+    expect(app.locator('#save')).to_be_enabled()
+    switch_account('业务乙')
+    expect(app.locator('#save')).to_be_disabled()
+    expect(app.locator('#content')).not_to_contain_text('上个账号的草稿')
+    app.locator('#publish').click()
+    app.locator('#confirm').click()
+    expect(app.locator('#dialog')).to_be_hidden()
+    app.locator('[data-tab=history]').click()
+    expect(app.locator('#content tbody tr').first.locator('td').nth(2)).to_have_text('业务乙')
+    page.close()
+
+
 if __name__ == '__main__':
     with sync_playwright() as pw:
         browser = pw.chromium.launch(channel='msedge')
         check(browser, sys.argv[1])
+        check_account_change(browser, sys.argv[1])
         browser.close()
     print('Portal iframe: schedule save/reload, A–N ownership, rules, reporting and narrow navigation passed.')

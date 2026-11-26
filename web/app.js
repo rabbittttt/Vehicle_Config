@@ -1,9 +1,6 @@
 'use strict';
-if (window.frameElement?.matches('#frame-container > iframe[data-app="vehicle-config"]')) {
-  document.documentElement.classList.add('planhub-embedded');
-}
-
 const $ = s => document.querySelector(s);
+const frameAccount = window.vehicleConfigFrameAccount;
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const sections = {
   schedule: ['vehicleIdentity', 'launchSchedule'],
@@ -16,7 +13,9 @@ const viewLabels = {
   ...orderRules.titles, vehicleIdentity:'车型资料', launchSchedule:'发布日程',
   dailyOrders:'每日小订', stageProgress:'阶段进度', businessTotals:'经营汇总', campaign_history:'日程与填报发布',
 };
-let tab='schedule', view=sections.schedule[0], csrf='', readonly=false, busy=false, confirmAction=null;
+let tab='schedule', view=sections.schedule[0], csrf='', readonly=true, busy=false, confirmAction=null;
+let sessionUser = '';
+let readonlyStatus = '维护中 · 只读';
 let page=1, model='', year='';
 let scheduleToolsAvailable=false;
 const pageSize=40;
@@ -48,10 +47,29 @@ function notice(text='',error=false) {
   $('#notice').title=error ? '' : text;
   if (text && !error) noticeTimer=setTimeout(()=>setText($('#notice'),''),4000);
 }
+function serviceFetch(path,body) {
+  const headers = body===undefined ? {} : {'Content-Type':'application/json','X-CSRF-Token':csrf};
+  if (window.parent !== window) {
+    const identity = frameAccount?.current;
+    if (!identity) throw Error('等待门户账号。');
+    headers['Sop-Frame-Identity'] = encodeURIComponent(JSON.stringify(identity));
+  }
+  return fetch('api/'+path,{method:body===undefined?'GET':'POST',headers,body:body===undefined?undefined:JSON.stringify(body)});
+}
 async function api(path,body) {
-  const response=await fetch('api/'+path,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:body===undefined?undefined:JSON.stringify(body)});
+  const response=await serviceFetch(path,body);
   const result=await response.json();
   if(!response.ok) throw Object.assign(new Error(result.error||'请求失败'),{status:response.status});
+  return result;
+}
+async function writeApi(path, body) {
+  if (readonly || !csrf) throw Error('当前无法写入');
+  if (sessionUser) return api(path, body);
+  const owner = ($('#dialog[open] #write-owner') || $('#owner')).value.trim();
+  if (!owner) throw Error('请填写维护人');
+  const result = await api(path, {...body, owner});
+  $('#owner').value = owner;
+  try { localStorage.setItem('vehicle-config-owner', owner); } catch { /* The save has succeeded. */ }
   return result;
 }
 // Disable all live inputs for the entire request, including dialogs. Never let a save response replace newer edits.
@@ -73,7 +91,7 @@ function flags() {
   $('#redo').disabled=readonly || history || !editor.canRedo();
   const other=isRuleView()?campaignEditor:orderRules;
   const status=[history?'':editor.status(),other.isDirty()?other.status():'',history && campaignEditor.isDirty()?campaignEditor.status():''].filter(Boolean).join(' · ');
-  const label=busy && showProgress?progressLabel:readonly?'维护中 · 只读':status;
+  const label=busy && showProgress?progressLabel:readonly?readonlyStatus:status;
   setText($('#status'),label);
   $('#status').title=label;
   setText($('#reload'),history?'刷新记录':'重新载入草稿');
@@ -342,9 +360,17 @@ function modal(title,html,action,label='确定') {
     (controls.find(control=>control.required&&!control.value)||controls[0])?.focus();
   }
 }
+function writeModal(title,html,action,label) {
+  if (action) {
+    const owner = sessionUser || $('#owner').value.trim();
+    html += '<label>本次维护人<input id="write-owner" maxlength="100" value="' + esc(owner) + '" ' + (sessionUser?'readonly':'required') + '></label>';
+  }
+  modal(title,html,action,label);
+  if (action && !sessionUser && !$('#write-owner').value) $('#write-owner').focus();
+}
 function formSelect(field,values,current,mandatory=false) {return `<select name="${field}" ${mandatory?'required':''}>${option('','请选择',current)+values.map(([id,text])=>option(id,text,current)).join('')}</select>`;}
 async function download(path,body,filename) {
-  const response=await fetch('api/'+path,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:body===undefined?undefined:JSON.stringify(body)});
+  const response=await serviceFetch(path,body);
   if(!response.ok)throw Error((await response.json()).error);
   const url=URL.createObjectURL(await response.blob()),a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
@@ -414,7 +440,10 @@ function updateSearch() {
 }
 $('#search').oninput=e=>{if(!e.isComposing)updateSearch();};
 $('#search').addEventListener('compositionend',updateSearch);
-$('#save').onclick=()=>run(activeEditor().save,'正在保存草稿…');
+$('#save').onclick=()=>{
+  if (!sessionUser && !$('#owner').value.trim()) writeModal('保存草稿','',activeEditor().save,'保存草稿');
+  else run(activeEditor().save,'正在保存草稿…');
+};
 $('#error-detail').onclick=()=>modal('操作未完成',`<p class="error">${esc($('#error-notice').textContent)}</p>`);
 $('#publish').onclick=()=>run(activeEditor().previewPublish,'正在核对发布差异…');
 $('#reload').onclick=()=>!csrf?run(start):view==='campaign_history'?renderHistory():activeEditor().reload();
@@ -446,20 +475,45 @@ window.addEventListener('keydown',event=>{
   const action=key==='z'?(event.shiftKey?'redo':'undo'):key==='y'?'redo':'';
   if(action&&!$('#'+action).disabled){event.preventDefault();activeEditor()[action]();}
 });
-window.addEventListener('beforeunload',e=>{if(orderRules.isDirty()||campaignEditor.isDirty()||hasFormInput()){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{
+  if(frameAccount && !frameAccount.current)return;
+  if(orderRules.isDirty()||campaignEditor.isDirty()||hasFormInput()){e.preventDefault();e.returnValue='';}
+});
 async function start() {
+  if (window.parent !== window && !frameAccount) throw Error('请重启车型配置服务后重新载入，核对门户账号。');
+  if (frameAccount) await frameAccount.ready;
   let session;
   try {
     session=await api('session');
     scheduleToolsAvailable=true;
   } catch(error) {
-    if(error.status!==404)throw error;
-    // The development service reads static assets from disk before its Python process restarts.
+    if (error.status!==404) throw error;
+    if (frameAccount) throw Error('请重启车型配置服务后重新载入，核对门户账号。');
     session=await api('state');
   }
+  if (!session.csrf) throw Error('无法确认操作人会话，请刷新后重试。');
+  if (session.mode===undefined && session.canWrite===undefined) {
+    if (frameAccount) throw Error('请重启车型配置服务后重新载入，核对门户账号。');
+    readonly=true;
+    readonlyStatus='只读 · 重启车型配置服务后可署名写入';
+  } else {
+    if (!['gateway','console'].includes(session.mode) || typeof session.canWrite!=='boolean')
+      throw Error('无法确认操作人会话，请刷新后重试。');
+    if (frameAccount && (!frameAccount.current || session.user !== frameAccount.current.account))
+      throw Error('门户账号与服务端会话不一致。');
+    sessionUser=typeof session.user==='string'?session.user.trim():'';
+    if (session.mode==='gateway' && !sessionUser) throw Error('缺少门户账号。');
+    const owner=$('#owner');
+    owner.readOnly=Boolean(sessionUser);
+    if (sessionUser) owner.value=sessionUser;
+    else {
+      try { owner.value=localStorage.getItem('vehicle-config-owner') || ''; } catch { owner.value=''; }
+    }
+    $('#owner-label').hidden=false;
+    readonly=session.readonly || !session.canWrite;
+  }
   csrf=session.csrf;
-  readonly=session.readonly;
   render();
   await campaignEditor.load();
 }
-run(start,'正在读取车型与日程…');
+run(start,frameAccount?'等待门户账号…':'正在读取车型与日程…');

@@ -84,6 +84,12 @@ def ready(page):
     expect(page.locator('body')).to_have_attribute('aria-busy', 'false')
 
 
+def fill_owner(page):
+    page.locator('#data-tools').click()
+    page.get_by_label('维护人', exact=True).fill('浏览器验收')
+    page.locator('#data-tools').click()
+
+
 def switch_view(page, tab, view):
     page.locator(f'[data-tab="{tab}"]').click()
     page.locator(f'[data-view="{view}"]').click()
@@ -108,6 +114,7 @@ def check_conditional_prices(browser):
             page = browser.new_page()
             page.goto(url)
             ready(page)
+            fill_owner(page)
             switch_view(page, 'options', 'option_prices')
             content = page.locator('#content')
             page.locator('#search').fill('条件甲')
@@ -179,6 +186,7 @@ def main():
         page.goto(url + 'rules.html')
         expect(page).to_have_url(url)
         ready(page)
+        fill_owner(page)
         heading = header.locator('.heading')
         title = heading.get_by_role('heading', level=1)
         expect(title).to_have_text('车型配置')

@@ -3,7 +3,7 @@ import tempfile
 
 from playwright.sync_api import expect, sync_playwright
 
-from browser_rules_check import add_vehicle, isolated_server, ready, switch_view
+from browser_rules_check import add_vehicle, fill_owner, isolated_server, ready, switch_view
 from campaign_store import CampaignStore
 
 
@@ -116,6 +116,7 @@ def test_global_tools(browser):
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         page.goto(url)
         ready(page)
+        fill_owner(page)
         tools = page.locator("#data-tools")
         panel = page.locator("#data-tools-panel")
         reload_rules = panel.locator("#reload-rules")

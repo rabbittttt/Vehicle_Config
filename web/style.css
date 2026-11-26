@@ -360,6 +360,8 @@ header nav {
 }
 #data-tools-panel button { text-align:start; white-space:nowrap; border:0; border-radius:6px; }
 #data-tools-panel button:focus-visible { outline-offset:-2px; }
+#owner-label { padding:6px 8px; }
+#owner { width:100%; min-width:8em; }
 main { padding-top: var(--dashboard-gap); }
 
 .heading h1, header nav :is(button, a), .view-tabs button {

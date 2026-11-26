@@ -46,7 +46,7 @@ const campaignEditor = (() => {
     });
   }
   async function save() {
-    accept(await api('campaign/save',payload()));
+    accept(await writeApi('campaign/save',payload()));
     notice('小订与首销草稿已保存');
   }
   function previewPublish() {
@@ -54,8 +54,8 @@ const campaignEditor = (() => {
     for (const item of edits) counts.set(item.sheet,(counts.get(item.sheet)||0)+1);
     const list = [...counts].map(([name,count]) => `<dt>${esc(name)}</dt><dd>${count} 处编辑</dd>`).join('');
     const description = '<p>同时发布本次草稿中的车型资料、发布日程和填报数据。</p>' + (list ? `<dl>${list}</dl>` : '');
-    modal('发布车型日程与填报数据', description, async () => {
-      accept(await api('campaign/publish',payload()));
+    writeModal('发布车型日程与填报数据', description, async () => {
+      accept(await writeApi('campaign/publish',payload()));
       notice(current.projectionPending ? current.projectionError || '数据已发布，下游同步待重试' : '小订与首销数据已发布', Boolean(current.projectionPending));
     },'确认发布');
   }
@@ -489,10 +489,10 @@ const campaignEditor = (() => {
     const description=result.identical?'旧表与当前草稿相同。':result.requiresConfirmation
       ? '确认后，整份小订与首销草稿将替换为旧表内容。核对后可另行发布。'
       : '旧表将导入为小订与首销草稿。';
-    modal('旧表导入预览',`<div class="file-list"><span>${esc(file.name)}</span></div><p>${description}</p>${comparison}
+    writeModal('旧表导入预览',`<div class="file-list"><span>${esc(file.name)}</span></div><p>${description}</p>${comparison}
       <div class="campaign-import-stages">${stageList('新增车型阶段',changes.addedStages)}${stageList('移出车型阶段',changes.removedStages)}</div>`,
       result.identical ? null : async()=>{
-        const imported=await api('campaign/import',{revision:result.revision,content,confirmReplace:true});
+        const imported=await writeApi('campaign/import',{revision:result.revision,content,confirmReplace:true});
         accept(imported); notice('旧表已导入小订与首销草稿');
       }, result.requiresConfirmation?'替换草稿':'导入草稿');
     if(result.identical)$('#cancel').textContent='关闭';
@@ -500,8 +500,8 @@ const campaignEditor = (() => {
   function undoImport() {
     if (readonly || busy || !canUndoImport()) return;
     const revision=saved.revision;
-    modal('撤销旧表导入','<p>恢复导入前的小订与首销草稿。</p>',async()=>{
-      accept(await api('campaign/undo-import',{revision}));
+    writeModal('撤销旧表导入','<p>恢复导入前的小订与首销草稿。</p>',async()=>{
+      accept(await writeApi('campaign/undo-import',{revision}));
       notice('已恢复导入前的草稿');
     },'恢复草稿');
   }

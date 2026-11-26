@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>车型配置管理</title><link rel="stylesheet" href="style.css"></head><body>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>车型配置管理</title><script src="frame-account.js"></script><link rel="stylesheet" href="style.css"></head><body>
 <header>
   <div class="heading">
     <div class="heading-identity"><h1 class="product-title"><svg class="title-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 21v-7m0-4V3m8 18v-9m0-4V3m8 18v-3m0-4V3"/><path d="M1 14h6m2-6h6m2 10h6"/></svg>车型配置</h1></div>
@@ -28,6 +28,7 @@
   <div class="data-tools">
     <button type="button" id="data-tools" aria-controls="data-tools-panel" aria-expanded="false">数据工具<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
     <div id="data-tools-panel" role="group" aria-labelledby="data-tools" hidden>
+      <label id="owner-label" hidden>维护人<input id="owner" maxlength="100" autocomplete="off"></label>
       <button type="button" id="reload-rules" disabled>从脚本重新载入</button>
       <button type="button" id="campaign-import" disabled>导入小订首销旧表</button>
       <button type="button" id="campaign-undo-import" hidden>撤销旧表导入</button>

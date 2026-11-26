@@ -328,9 +328,9 @@ const orderRules = (() => {
       if (isDirty()) overwritten.push('本地未保存的规则编辑');
       const warning = overwritten.length ? `<p class="error">${overwritten.join('、')}会一并替换。</p>` : '';
       const recovery = pending ? '<p>上次中断的发布将存入脚本变更记录。</p>' : '';
-      modal('从脚本重新载入', `<p>用脚本中的五类规则替换规则草稿 r${current.draft.revision}，并更新规则的已发布版本。</p>
+      writeModal('从脚本重新载入', `<p>用脚本中的五类规则替换规则草稿 r${current.draft.revision}，并更新规则的已发布版本。</p>
         <dl><dt>替换范围</dt><dd>${esc(tables)}</dd><dt>来源脚本</dt><dd>${esc(current.source.path)}</dd></dl>${warning}${recovery}`, async () => {
-        accept(await api('rules/reload', {revision: current.draft.revision, source_hash: current.source.hash, pending_token: pending}));
+        accept(await writeApi('rules/reload', {revision: current.draft.revision, source_hash: current.source.hash, pending_token: pending}));
         notice('已从脚本重新载入');
       }, '替换规则并载入');
     }, '正在核对脚本规则…');
@@ -382,7 +382,7 @@ const orderRules = (() => {
   }
 
   async function save() {
-    accept(await api('rules/save', {data: draft, revision: state.draft.revision}));
+    accept(await writeApi('rules/save', {data: draft, revision: state.draft.revision}));
     notice('脚本规则草稿已保存');
   }
 
@@ -392,9 +392,9 @@ const orderRules = (() => {
     const result = await api('rules/preview', {data: snapshot, revision});
     const failure = result.errors.length ? `<p class="error">${esc(result.errors.join('\n'))}</p>` : '';
     const scriptDiff = result.script_diff ? `<pre class="script-diff">${esc(result.script_diff)}</pre>` : '';
-    modal('发布并更新脚本', `<div>${esc(state.source.path)}</div>${failure}${diffHTML(result.changes)}${scriptDiff}`,
+    writeModal('发布并更新脚本', `<div>${esc(state.source.path)}</div>${failure}${diffHTML(result.changes)}${scriptDiff}`,
       result.errors.length || !result.changes.length ? null : async () => {
-        accept(await api('rules/publish', {data: snapshot, revision, source_hash: result.source_hash}));
+        accept(await writeApi('rules/publish', {data: snapshot, revision, source_hash: result.source_hash}));
         notice('脚本已更新 · 业务报表未重新生成');
       }, '确认发布');
   }
