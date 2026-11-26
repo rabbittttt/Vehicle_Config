@@ -353,6 +353,7 @@ main { padding-top: var(--dashboard-gap); }
   flex: 1;
   min-width: 0;
   align-items: center;
+  justify-content: safe flex-end;
   gap: 12px;
   padding: 5px 3px;
   overflow-x: auto;
