@@ -639,3 +639,16 @@ footer:has(#error-notice:not(:empty)) .undo-actions { grid-area: 1 / 3; }
     grid-template-columns: minmax(0, 1fr) auto auto;
   }
 }
+.campaign-table th:first-child,.campaign-table td:first-child { position:sticky;left:0;z-index:1;background:var(--surface); }
+.campaign-table th:first-child { background:var(--table-head); }
+.campaign-table td { font-variant-numeric:tabular-nums; }
+.campaign-form output { display:block;min-height:38px;padding:8px 0;color:var(--muted); }
+.campaign-export { display:grid;gap:16px; }
+.campaign-export fieldset { border:0;padding:0;margin:0;min-width:0; }
+.campaign-export legend,.campaign-export summary { font-weight:600;margin-bottom:6px; }
+.campaign-export summary { cursor:pointer; }
+@media (max-width:680px) {
+  #actions:has(#campaign-progress) { margin-inline-start:0; }
+  #actions:has(#campaign-progress) .inline-label { flex-wrap:wrap; }
+  .campaign-table td:first-child { max-width:40vw;white-space:normal; }
+}

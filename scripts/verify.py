@@ -23,7 +23,7 @@ def main():
     run(sys.executable,'-B','-m','unittest','discover','-s','tests','-q')
     run(sys.executable,'-B','tests/browser_imported_year.py')
     if args.full:
-        for name in ['browser_check','browser_bulk_check','browser_rules_check','browser_workflow_ux','browser_header_check','browser_motion_check']:
+        for name in ['browser_check','browser_bulk_check','browser_rules_check','browser_campaign','browser_workflow_ux','browser_header_check','browser_motion_check']:
             run(sys.executable,'-B','tests/'+name+'.py')
         run('node','tests/portal_smoke.mjs')
     if args.release:

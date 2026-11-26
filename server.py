@@ -6,6 +6,8 @@ from excel_io import excel, read_excel, preview_import
 from catalog import Store, Conflict, PUBLISH_REQUIRED, IDENTITY_FIELDS, identity, validate as validate_catalog
 from shared_rules import RuleStore, validate as validate_rules
 from rules_excel import rules_excel, preview_rules_import
+from campaign_store import CampaignStore
+from xlsx_input import WorkbookBatch
 ROOT=Path(__file__).resolve().parent
 
 def import_preview(body, draft, preview, validate, conflict_message):
@@ -22,6 +24,7 @@ def import_preview(body, draft, preview, validate, conflict_message):
 def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origins=(),readonly=False,proxy_secret=None,rules=None,path_sources=None):
     token=secrets.token_urlsafe(32)
     rules=rules or RuleStore(store.root,None)
+    campaigns=CampaignStore(store.root)
     class Handler(BaseHTTPRequestHandler):
         def send(self,status,obj,kind='application/json; charset=utf-8'):
             raw=obj if isinstance(obj,bytes) else json.dumps(obj,ensure_ascii=False).encode()
@@ -54,6 +57,10 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 if path=='/api/runtime':
                     return self.send(200,runtime_info(store.root,rules.source_path,path_sources or {}))
                 if path=='/api/rules/state':return self.send(200,rules.get())
+                if path=='/api/campaign/state':return self.send(200,campaigns.get())
+                if path=='/api/campaign/published':
+                    requested=parse_qs(urlsplit(self.path).query).get('revision')
+                    return self.send(200,campaigns.published(int(requested[0]) if requested else None))
                 if path in ('/api/history','/api/rules/history'):
                     params=parse_qs(urlsplit(self.path).query)
                     page=int(params.get('page',['1'])[0])
@@ -70,9 +77,9 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     self.send_header('Content-Length','0')
                     self.end_headers()
                     return
-                files={'/':'index.html','/app.js':'app.js','/rules.js':'rules.js','/style.css':'style.css'}
+                files={'/':'index.html','/app.js':'app.js','/rules.js':'rules.js','/campaign.js':'campaign.js','/style.css':'style.css'}
                 if path not in files:return self.send(404,{'error':'未找到'})
-                ext={'/':'text/html; charset=utf-8','/app.js':'text/javascript; charset=utf-8','/rules.js':'text/javascript; charset=utf-8','/style.css':'text/css; charset=utf-8'}
+                ext={'/':'text/html; charset=utf-8','/app.js':'text/javascript; charset=utf-8','/rules.js':'text/javascript; charset=utf-8','/campaign.js':'text/javascript; charset=utf-8','/style.css':'text/css; charset=utf-8'}
                 self.send(200,(ROOT/'web'/files[path]).read_bytes(),ext[path])
             except PermissionError as e:self.send(403,{'error':str(e)})
             except (ValueError,KeyError) as e:self.send(400,{'error':str(e)})
@@ -87,10 +94,10 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 if origin and origin not in allowed:raise PermissionError('来源不受信任')
                 if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''),token):raise PermissionError('请求校验失败，请刷新页面')
                 path=self.route()
-                if readonly and path not in ['/api/export','/api/rules/export']:raise PermissionError('服务维护中，暂不可写入')
+                if readonly and path not in ['/api/export','/api/rules/export','/api/campaign/export']:raise PermissionError('服务维护中，暂不可写入')
                 size=int(self.headers.get('Content-Length',0))
                 # A preview can include both a full editor snapshot and encoded workbooks.
-                limit_mb = 16 if path in ('/api/import-batch', '/api/rules/import') else 8
+                limit_mb = 16 if path in ('/api/import-batch', '/api/rules/import','/api/campaign/import','/api/campaign/import-preview') else 8
                 if size <= 0 or size > limit_mb * 1_000_000:
                     raise ValueError(f'请求正文不能为空或超过 {limit_mb} MB')
                 raw=self.rfile.read(size);path=self.route()
@@ -98,6 +105,26 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     state=store.get()['draft']
                     return self.send(200,{**preview_import(state['data'],[{'name':'导入文件.xlsx','raw':raw}]),'revision':state['revision']})
                 body=json.loads(raw)
+                if path.startswith('/api/campaign/'):
+                    if not isinstance(body,dict):raise ValueError('小订与首销请求格式无效')
+                    if path in ('/api/campaign/import','/api/campaign/import-preview'):
+                        _,content=WorkbookBatch([body]).decode({'name':'历史数据.xlsx','content':body.get('content')})
+                        if path.endswith('/import-preview'):
+                            return self.send(200,campaigns.preview_import(body['revision'],content))
+                        result=campaigns.import_legacy(body['revision'],content,actor,
+                                                       confirm_replace=body.get('confirmReplace') is True)
+                        return self.send(200,result)
+                    if path=='/api/campaign/undo-import':
+                        return self.send(200,campaigns.undo_import(body['revision'],actor))
+                    if path in ('/api/campaign/save','/api/campaign/publish'):
+                        return self.send(200,campaigns.save(body['revision'],body['edits'],actor,publish=path.endswith('/publish')))
+                    if path=='/api/campaign/preview':
+                        return self.send(200,campaigns.preview(body['revision'],body['edits']))
+                    if path=='/api/campaign/export':
+                        selection={key:body[key] for key in ('sheets','models','dateFrom','dateTo') if key in body}
+                        result=campaigns.export(selection,source=body.get('source','published'))
+                        return self.send(200,result,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                    return self.send(404,{'error':'未找到'})
                 if path.startswith('/api/rules/'):
                     if not isinstance(body,dict):raise ValueError('规则请求格式无效')
                     action=path.rsplit('/',1)[1]
@@ -152,7 +179,7 @@ def runtime_info(directory,source,sources):
                 release={k:candidate.get(k) for k in ('version','gitCommit','sourceDirty','sourceRevision')}
         except (ValueError,OSError):pass
     return {'release':release,'data_dir':str(root),'catalog':str(root/'catalog.sqlite3'),
-            'rules_db':str(root/'rules'/'rules.sqlite3'),'shared_config':str(script) if script else '',
+            'rules_db':str(root/'rules'/'rules.sqlite3'),'campaign_db':str(root/'campaigns'/'campaigns.sqlite3'),'shared_config':str(script) if script else '',
             'script_exists':bool(script and script.is_file()),'sources':sources,'excel':'浏览器下载目录'}
 
 def main():

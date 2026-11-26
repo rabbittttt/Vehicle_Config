@@ -187,7 +187,7 @@ def main():
         title = heading.get_by_role('heading', level=1)
         expect(title).to_have_text('车型配置')
         primary_nav = header.locator('nav [data-tab]')
-        expect(primary_nav).to_have_text(['车型档案', '版本与选配', '名称映射', '汇总规则', '变更记录'])
+        expect(primary_nav).to_have_text(['车型档案', '小订与首销', '版本与选配', '名称映射', '汇总规则', '变更记录'])
         expect(header.get_by_role('link', name='订单配置规则')).to_have_count(0)
         title_box = title.bounding_box()
         title_mid_y = title_box['y'] + title_box['height'] / 2
@@ -219,7 +219,7 @@ def main():
         switch_view(page, 'aliases', 'gen_names')
         expect(page).to_have_url(url)
         expect(page.locator('h1')).to_have_text('车型配置')
-        expect(primary_nav).to_have_text(['车型档案', '版本与选配', '名称映射', '汇总规则', '变更记录'])
+        expect(primary_nav).to_have_text(['车型档案', '小订与首销', '版本与选配', '名称映射', '汇总规则', '变更记录'])
         for selector in ['#model', '#year', '#status-filter']:
             expect(header.locator(selector)).to_be_hidden()
         header.locator('#search').fill('不存在的旧名')
