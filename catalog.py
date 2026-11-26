@@ -187,13 +187,13 @@ class Store:
     def preview(self,data,revision=None):
         with self.lock:
             draft=self.state(1)
-            if revision is not None and revision!=draft['revision']:raise Conflict('草稿已被其他人修改，请重新载入')
+            if revision is not None and revision!=draft['revision']:raise Conflict('车型配置草稿已被其他人修改，请重新载入草稿')
             errors=self.change_errors(data,draft,True)
             return {'errors':errors,'changes':[] if errors else diff(self.state(2)['data'],data)}
     def save(self,data,revision,actor,publish=False):
         with self.lock:
             draft=self.state(1);published=self.state(2)
-            if revision!=draft['revision']:raise Conflict('草稿已被其他人修改，请导出当前编辑后重新载入')
+            if revision!=draft['revision']:raise Conflict('车型配置草稿已被其他人修改，请导出当前编辑后重新载入草稿')
             errors=self.change_errors(data,draft,publish)
             if errors:raise ValueError('\n'.join(errors))
             changes=diff(published['data'] if publish else draft['data'],data)

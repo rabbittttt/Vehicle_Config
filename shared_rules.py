@@ -320,7 +320,7 @@ class RuleStore:
                 self._finish_publish(transaction)
             elif current==transaction['old_hash']:
                 with self.db:self.db.execute('DELETE FROM journal WHERE id=1')
-            else:self.recovery_error='上次发布未完成，源文件已另行修改；核对备份后显式重新载入'
+            else:self.recovery_error='上次发布未完成，源文件已另行修改。核对备份后可在「数据工具」中从脚本重新载入'
         except Exception as exc:self.recovery_error='上次发布恢复失败：'+str(exc)
     def get(self):
         with self.lock:
@@ -333,13 +333,13 @@ class RuleStore:
                                             'pending_token':digest(dump(pending).encode()) if pending else None}}
     def history_page(self,page=1,query=''):
         with self.lock:return read_history_page(self.db,page,query)
-    def _revision(self,revision):
-        if revision!=self._state(1)['revision']:raise Conflict('规则草稿已被其他人修改，请重新载入')
+    def _revision(self,revision,message='规则草稿已被其他人修改，请重新载入草稿'):
+        if revision!=self._state(1)['revision']:raise Conflict(message)
     def _validate(self,data):
         errors=validate(data)
         if errors:raise ValueError('\n'.join(errors))
     def _ready(self):
-        if self._pending():raise Conflict(self.recovery_error or '上次发布未完成，请重启恢复或显式重新载入')
+        if self._pending():raise Conflict(self.recovery_error or '上次发布未完成，请重启恢复，或核对备份后使用「数据工具 → 从脚本重新载入」')
     def _event(self,kind,actor,data,changes):self.db.execute('INSERT INTO events(kind,actor,time,data,changes) VALUES(?,?,?,?,?)',(kind,actor,now(),dump(data),dump(changes)))
     def save(self,data,revision,actor):
         with self.lock:
@@ -354,7 +354,7 @@ class RuleStore:
             self._revision(revision);source=self._source();errors=validate(data)
             if self._pending():errors.append(self.recovery_error or '上次发布未完成')
             if not source['available']:errors.append(source['error'])
-            elif source['hash']!=self._meta('source_hash'):errors.append('源文件已被其他程序修改，请先重新载入')
+            elif source['hash']!=self._meta('source_hash'):errors.append('源文件已被其他程序修改，请使用「数据工具 → 从脚本重新载入」核对规则')
             script_diff=''
             if not errors:
                 try:
@@ -376,7 +376,7 @@ class RuleStore:
         with self.lock:
             self._ready();self._validate(data);source=self._source()
             if not source['available']:raise ValueError(source['error'])
-            if source['hash']!=source_hash or source_hash!=self._meta('source_hash'):raise Conflict('源文件已变化，请重新预览或重新载入')
+            if source['hash']!=source_hash or source_hash!=self._meta('source_hash'):raise Conflict('源文件已变化，请重新预览或使用「数据工具 → 从脚本重新载入」')
             published=self._state(2)['data']
             raw=render_source(source['parsed'],data,published);changes=diff_rules(published,data)
             if not changes:raise ValueError('没有需要发布的规则变更')
@@ -401,7 +401,7 @@ class RuleStore:
             if source['hash']!=source_hash:raise Conflict('源文件再次变化，请重新检查')
             data=source['parsed']['data']
             with self.db:
-                self.db.execute('BEGIN IMMEDIATE');self._revision(revision)
+                self.db.execute('BEGIN IMMEDIATE');self._revision(revision,'规则草稿在确认期间已被其他人修改，请重新核对本次脚本载入')
                 pending=self._pending()
                 if pending_token!=(digest(dump(pending).encode()) if pending else None):
                     raise Conflict('未完成的发布记录已变化，请重新检查并确认载入')

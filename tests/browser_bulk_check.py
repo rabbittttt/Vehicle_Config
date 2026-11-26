@@ -130,7 +130,7 @@ def main():
                 version_file = workbook('版本', [['车型', '名称'], ['导入车型', '新增版本']], '版本清单.xlsx')
                 before = copy.deepcopy(store.get())
                 page.locator('#file').set_input_files([version_file, model_file])
-                expect(page.locator('#dialog-title')).to_have_text('导入预览'); ready()
+                expect(page.locator('#dialog-title')).to_have_text('车型配置导入预览'); ready()
                 expect(page.locator('#dialog-body')).to_contain_text('车型清单.xlsx')
                 expect(page.locator('#dialog-body')).to_contain_text('版本清单.xlsx')
                 assert store.get() == before
@@ -147,11 +147,11 @@ def main():
                 saved_before = store.get()
                 edited_before = current()
                 page.locator('#file').set_input_files(dirty_update)
-                expect(page.locator('#dialog-title')).to_have_text('导入预览'); ready()
+                expect(page.locator('#dialog-title')).to_have_text('车型配置导入预览'); ready()
                 page.locator('#cancel').click()
                 assert current() == edited_before and store.get() == saved_before
                 page.locator('#file').set_input_files(dirty_update)
-                expect(page.locator('#dialog-title')).to_have_text('导入预览')
+                expect(page.locator('#dialog-title')).to_have_text('车型配置导入预览')
                 confirm(); ready()
                 assert current()['models'][0]['tier'] == '批量档位'
                 assert next(row for row in current()['matrix'] if row['id'] == 'mx1')['state'] == '不可选'
@@ -165,7 +165,7 @@ def main():
                 bad_file = workbook('版本', [['车型', '名称'], ['不存在的车型', '无效版本']], '错误清单.xlsx')
                 before = copy.deepcopy(store.get())
                 page.locator('#file').set_input_files(bad_file)
-                expect(page.locator('#dialog-title')).to_have_text('导入预览'); ready()
+                expect(page.locator('#dialog-title')).to_have_text('车型配置导入预览'); ready()
                 expect(page.locator('#dialog-body')).to_contain_text('第 2 行')
                 expect(page.locator('#dialog-body')).to_contain_text('版本')
                 expect(page.locator('#confirm')).to_be_hidden()
@@ -175,7 +175,7 @@ def main():
                 # Another writer saving after preview must block apply without replacement.
                 update_file = workbook('车型档案', [['编号', '产品档位'], ['m1', '导入档位']], '更新清单.xlsx')
                 page.locator('#file').set_input_files(update_file)
-                expect(page.locator('#dialog-title')).to_have_text('导入预览'); ready()
+                expect(page.locator('#dialog-title')).to_have_text('车型配置导入预览'); ready()
                 editor_before = current()
                 remote = store.get()['draft']
                 remote['data']['models'][0]['tier'] = '另一用户档位'

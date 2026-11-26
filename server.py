@@ -109,7 +109,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     if action=='reload':return self.send(200,rules.reload(body['revision'],body['source_hash'],actor,body.get('pending_token')))
                     if action=='import':
                         state=rules.get()['draft']
-                        return self.send(200,import_preview(body,state,preview_rules_import,validate_rules,'规则草稿已被其他人修改，请重新载入后导入'))
+                        return self.send(200,import_preview(body,state,preview_rules_import,validate_rules,'规则草稿已被其他人修改，请重新载入草稿后导入'))
                     return self.send(404,{'error':'未找到'})
                 if path=='/api/check-name':
                     rows=body['others']
@@ -124,7 +124,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 if path=='/api/import-batch':
                     if not isinstance(body,dict):raise ValueError('导入请求格式无效')
                     state=store.get()['draft']
-                    return self.send(200,import_preview(body,state,preview_import,validate_catalog,'草稿已被其他人修改，请重新载入后导入'))
+                    return self.send(200,import_preview(body,state,preview_import,validate_catalog,'车型配置草稿已被其他人修改，请重新载入草稿后导入'))
                 if path=='/api/export':return self.send(200,excel(body['data']),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 if path=='/api/preview':return self.send(200,store.preview(body['data'],body.get('revision')))
                 if path in ['/api/save','/api/publish']:return self.send(200,store.save(body['data'],body['revision'],actor,path.endswith('publish')))
@@ -133,7 +133,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
             except PermissionError as e:self.send(403,{'error':str(e)})
             except (ValueError,KeyError,TypeError,zipfile.BadZipFile) as e:self.send(400,{'error':str(e)})
             except Exception as e:
-                print(type(e).__name__,str(e),file=sys.stderr);self.send(500,{'error':'保存或读取失败，请重新载入核对状态并检查服务日志'})
+                print(type(e).__name__,str(e),file=sys.stderr);self.send(500,{'error':'保存或读取失败，请检查服务日志并核对当前数据状态'})
     class Server(ThreadingHTTPServer):
         def server_close(self):
             super().server_close()

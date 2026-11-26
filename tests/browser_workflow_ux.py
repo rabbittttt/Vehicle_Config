@@ -4,7 +4,7 @@ import tempfile
 from playwright.sync_api import expect, sync_playwright
 
 from browser_bulk_check import seed
-from browser_rules_check import isolated_server, ready, switch_view
+from browser_rules_check import add_vehicle, isolated_server, ready, switch_view
 
 
 def test_editor(browser):
@@ -27,6 +27,10 @@ def test_editor(browser):
         store.save(data, 0, "验收", publish=True)
         page.reload()
         ready(page)
+        expect(page.locator("#published")).to_be_visible()
+        expect(page.locator("#template")).to_have_accessible_name("下载车型配置模板（Excel）")
+        expect(page.locator("#import")).to_have_accessible_name("批量导入车型配置（Excel）")
+        expect(page.locator("#export")).to_have_accessible_name("导出车型配置（Excel）")
         expect(page.locator("#apply-status")).to_be_hidden()
         expect(page.locator("#select-all")).to_be_visible()
         first = page.locator('[data-select="m1"]')
@@ -97,8 +101,13 @@ def test_editor(browser):
         expect(page.locator("#content")).to_contain_text("第二辆车的版本")
 
         switch_view(page, "aliases", "gen_names")
+        expect(page.locator("#published")).to_be_hidden()
+        expect(page.locator("#template")).to_have_accessible_name("下载脚本规则模板（Excel）")
+        expect(page.locator("#import")).to_have_accessible_name("批量导入脚本规则（Excel）")
+        expect(page.locator("#export")).to_have_accessible_name("导出脚本规则（Excel）")
         expect(page.locator("#publish")).to_be_disabled()
-        page.locator('[data-rule-action="sync"]').click()
+        page.locator("#data-tools").click()
+        page.locator("#reload-rules").click()
         ready(page)
         expect(page.locator("#dialog")).to_be_hidden()
         expect(page.locator("#notice")).to_contain_text("已与脚本一致")
@@ -151,6 +160,83 @@ def test_editor(browser):
         page.close()
 
 
+def test_global_tools(browser):
+    with tempfile.TemporaryDirectory() as directory, isolated_server(directory) as (url, store, rules, source):
+        original = rules.get()["draft"]
+        source.write_text(source.read_text(encoding="utf-8").replace("80度", "90度"), encoding="utf-8")
+        script = source.read_bytes()
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.goto(url)
+        ready(page)
+        tools = page.locator("#data-tools")
+        panel = page.locator("#data-tools-panel")
+        reload_rules = panel.locator("#reload-rules")
+        # Start with a catalog-only tab and an unsaved, filtered row. No rule tab has initialized yet.
+        add_vehicle(page)
+        page.locator("#search").fill("未保存车型甲")
+        tools.click()
+        expect(reload_rules).to_have_text("从脚本重新载入")
+        reload_rules.click()
+        dialog = page.locator("#dialog")
+        expect(dialog).to_be_visible()
+        for label in ("shared_config.py", "代际显示名称", "代际合并", "电池包规则", "选配名称合并", "选配金"):
+            expect(dialog).to_contain_text(label)
+        page.locator("#cancel").click()
+        expect(dialog).to_be_hidden()
+        expect(tools).to_be_focused()
+        assert rules.get()["draft"] == original
+
+        tools.click()
+        reload_rules.click()
+        page.get_by_role("button", name="替换规则并载入").click()
+        expect(dialog).to_be_hidden()
+        ready(page)
+        expect(page.locator("[data-tab=models]")).to_have_attribute("aria-current", "page")
+        expect(page.locator("#search")).to_have_value("未保存车型甲")
+        expect(page.locator("#content")).to_contain_text("未保存车型甲")
+        expect(page.locator("#save")).to_be_enabled()
+        expect(page.locator("#undo")).to_be_enabled()
+        assert not store.get()["draft"]["data"]["models"]
+        assert rules.get()["draft"]["data"]["battery_rules"][0]["capacity"] == "90度"
+        assert script == source.read_bytes()
+
+        # An in-browser rule edit also needs confirmation when the script itself is unchanged.
+        switch_view(page, "aliases", "gen_names")
+        page.locator('[data-rule-action="edit"]').click()
+        page.locator('[name="target"]').fill("尚未保存的规则")
+        page.locator("#confirm").click()
+        ready(page)
+        page.locator("[data-tab=models]").click()
+        tools.click()
+        reload_rules.click()
+        expect(dialog).to_be_visible()
+        page.locator("#cancel").click()
+        switch_view(page, "aliases", "gen_names")
+        expect(page.locator("#content")).to_contain_text("尚未保存的规则")
+        expect(page.locator("#save")).to_be_enabled()
+
+        for tab in ("models", "matrix", "aliases", "groups", "history"):
+            page.locator(f"[data-tab={tab}]").click()
+            tools.focus()
+            tools.press("Enter")
+            expect(tools).to_have_attribute("aria-expanded", "true")
+            expect(reload_rules).to_be_visible()
+            expect(panel.get_by_role("button", name="运行路径")).to_be_visible()
+            page.keyboard.press("Tab")
+            assert panel.evaluate("el => el.contains(document.activeElement)")
+            page.keyboard.press("Escape")
+            expect(panel).to_be_hidden()
+            expect(tools).to_be_focused()
+
+        page.set_viewport_size({"width": 390, "height": 844})
+        tools.click()
+        expect(reload_rules).to_be_in_viewport(ratio=1)
+        expect(panel.get_by_role("button", name="运行路径")).to_be_in_viewport(ratio=1)
+        page.locator("h1").click()
+        expect(panel).to_be_hidden()
+        page.close()
+
+
 def test_readonly(browser):
     with tempfile.TemporaryDirectory() as directory, isolated_server(directory, readonly=True) as (url, store, _, _):
         store.save(seed(), 0, "验收", publish=True)
@@ -158,6 +244,11 @@ def test_readonly(browser):
         page.goto(url)
         ready(page)
         expect(page.locator("#status")).to_contain_text("只读")
+        page.locator("#data-tools").click()
+        expect(page.locator("#reload-rules")).to_be_hidden()
+        page.get_by_role("button", name="运行路径").click()
+        expect(page.locator("#dialog")).to_contain_text("shared_config.py")
+        page.locator("#cancel").click()
         expect(page.locator("#bulkbar")).to_be_hidden()
         expect(page.locator("[data-edit], [data-select], [data-action]")).to_have_count(0)
         switch_view(page, "matrix", "option_prices")
@@ -171,6 +262,7 @@ if __name__ == "__main__":
     with sync_playwright() as pw:
         browser = pw.chromium.launch(channel="msedge")
         test_editor(browser)
+        test_global_tools(browser)
         test_readonly(browser)
         browser.close()
-    print("Workflow UX passed: empty states, bulk selection, matrix focus and scroll, discard protection, model scope, rules and readonly.")
+    print("Workflow UX passed: editor workflows, global rule reload scope, keyboard and mobile access, and readonly tools.")

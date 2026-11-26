@@ -67,6 +67,8 @@ function flags() {
   $('#publish').disabled = readonly || !ready || !editor.canPublish();
   setText($('#publish'), rules ? '发布并更新脚本' : '发布配置');
   $('#import').disabled = readonly || !ready;
+  $('#reload-rules').hidden = readonly;
+  $('#reload-rules').disabled = readonly || !data;
   $('#export').disabled = $('#template').disabled = !ready;
   $('#undo').disabled = readonly || !editor.canUndo();
   $('#redo').disabled = readonly || !editor.canRedo();
@@ -124,7 +126,6 @@ function accept(s) {
   undoStack=[];redoStack=[];selected.clear();
   if(s.csrf)csrf=s.csrf;if('readonly' in s)readonly=s.readonly;
   const publishedBadge=$('#published');
-  publishedBadge.hidden=!published.revision;
   publishedBadge.textContent=published.revision?`已发布配置 v${published.revision}`:'';
   renderKeepingScroll();
 }
@@ -143,6 +144,7 @@ function scopedRows(table,search=true) {
 }
 function filters() {
   const rules = isRuleView();
+  $('#published').hidden = rules || !published.revision;
   const modelScope = !rules && view !== 'history';
   $('#model').closest('label').hidden = !modelScope;
   $('#year').closest('label').hidden = !modelScope;
@@ -224,6 +226,26 @@ function revealActiveTab(row) {
   else if (item.right > bounds.right) row.scrollLeft += item.right - bounds.right;
 }
 const nav = $('header nav');
+const toolsButton = $('#data-tools');
+const toolsPanel = $('#data-tools-panel');
+function showDataTools(open) {
+  toolsPanel.hidden = !open;
+  toolsButton.setAttribute('aria-expanded', String(open));
+}
+toolsButton.onclick = () => showDataTools(toolsPanel.hidden);
+toolsButton.parentElement.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !toolsPanel.hidden) {
+    event.preventDefault();
+    showDataTools(false);
+    toolsButton.focus();
+  }
+});
+toolsButton.parentElement.addEventListener('focusout', event => {
+  if (!toolsButton.parentElement.contains(event.relatedTarget)) showDataTools(false);
+});
+document.addEventListener('click', event => {
+  if (!toolsPanel.hidden && !toolsButton.parentElement.contains(event.target)) showDataTools(false);
+});
 const mobileTab = $('#mobile-tab');
 for (const button of nav.querySelectorAll('[data-tab]')) {
   mobileTab.add(new Option(button.textContent.trim(), button.dataset.tab));
@@ -237,6 +259,19 @@ filterToggle.onclick = () => {
   filterToggle.setAttribute('aria-expanded', String(filterToggle.getAttribute('aria-expanded') !== 'true'));
 };
 const viewTabs = $('#view-tabs');
+function updateExcelActions() {
+  const scope = isRuleView() ? '脚本规则' : '车型配置';
+  for (const [id, caption, description] of [
+    ['template', scope + '模板', '下载' + scope + '模板（Excel）'],
+    ['import', '批量导入' + scope, '批量导入' + scope + '（Excel）'],
+    ['export', '导出' + scope, '导出' + scope + '（Excel）'],
+  ]) {
+    const button = $('#' + id);
+    setText(button.querySelector('span'), caption);
+    button.title = description;
+    button.setAttribute('aria-label', description);
+  }
+}
 const tabSizes = new ResizeObserver(entries => entries.forEach(entry => revealActiveTab(entry.target)));
 tabSizes.observe(nav);
 tabSizes.observe(viewTabs);
@@ -250,6 +285,7 @@ function render() {
     revealActiveTab(nav);
   }
   if (viewTabs.dataset.active !== view) {
+    updateExcelActions();
     for (const button of viewTabs.children) {
       const active = button.dataset.view === view;
       button.classList.toggle('active', active);
@@ -266,7 +302,7 @@ function render() {
     return;
   }
   const needsModel=view!=='models'&&!data.models.length;
-  $('#actions').innerHTML=view==='history'?'<button data-runtime>运行路径</button>':readonly||needsModel?'':view==='matrix'?actionButton('add:versions','新增版本')+actionButton('add:options','新增配置'):(['versions','options'].includes(view)?actionButton('batch-add:'+view,'批量新增'):'')+actionButton('add:'+view,'新增'+names[view]);
+  $('#actions').innerHTML=view==='history'||readonly||needsModel?'':view==='matrix'?actionButton('add:versions','新增版本')+actionButton('add:options','新增配置'):(['versions','options'].includes(view)?actionButton('batch-add:'+view,'批量新增'):'')+actionButton('add:'+view,'新增'+names[view]);
   if(view==='matrix')renderMatrix();else if(view==='history')renderHistory();else renderTable();
   flags();
 }
@@ -428,6 +464,7 @@ let initialForm=null, discardPrompt=null, lastOpener='', returnFocus='';
 document.addEventListener('click',event=>{
   const button=event.target.closest('button');
   if(!button||button.closest('dialog'))return;
+  if(toolsPanel.contains(button)){lastOpener='#data-tools';return;}
   const attrs=button.getAttributeNames().filter(name=>name.startsWith('data-')&&name!=='data-request-disabled');
   lastOpener=button.id?'#'+CSS.escape(button.id):attrs.map(name=>`[${name}="${CSS.escape(button.getAttribute(name))}"]`).join('');
 },true);
@@ -549,7 +586,7 @@ function differences(changes) {
   const counts=new Set(changes.map(c=>c.table+'|'+c.id)).size;
   return changes.length?`<div class="selection-summary">${counts} 条记录 · ${changes.length} 处变更</div><div class="scroll"><table class="diff"><thead><tr><th>对象 / 字段</th><th>修改前</th><th>修改后</th></tr></thead><tbody>${changes.map(c=>`<tr><td>${esc(names[c.table])}<small>${esc(display(c.table,c.id)||c.id)}</small>${esc(labels[c.field]||c.field)}</td><td>${esc(pretty(c.before))}</td><td>${esc(pretty(c.after))}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">没有变更</div>';
 }
-async function saveDraft() {const snapshot=structuredClone(data);accept(await api('save',{data:snapshot,revision}));notice('草稿已保存');}
+async function saveDraft() {const snapshot=structuredClone(data);accept(await api('save',{data:snapshot,revision}));notice('车型配置草稿已保存');}
 async function previewPublish() {
   const snapshot=structuredClone(data),baseRevision=revision,result=await api('preview',{data:snapshot,revision:baseRevision});
   modal('发布配置',`<p class="error">${esc(result.errors.join('\n'))}</p>${differences(result.changes)}`,result.errors.length||!result.changes.length?null:async()=>{accept(await api('publish',{data:snapshot,revision:baseRevision}));notice('配置已发布');},'确认发布');
@@ -561,8 +598,8 @@ async function download(path,body,filename) {
 }
 function openExport() {
   const downloadCurrent=()=>download('export',{data},'车型配置-当前编辑.xlsx');
-  if (!published.revision) return run(downloadCurrent,'正在导出 Excel…');
-  modal('导出 Excel',`<div class="export-options"><label><input type="radio" name="export-source" value="editor" checked>当前编辑内容${dirty?' · 含未保存修改':''}</label><label><input type="radio" name="export-source" value="published">已发布配置 · v${published.revision}</label></div>`,()=> $('[name="export-source"]:checked').value==='published'
+  if (!published.revision) return run(downloadCurrent,'正在导出车型配置…');
+  modal('导出车型配置',`<div class="export-options"><label><input type="radio" name="export-source" value="editor" checked>当前编辑内容${dirty?' · 含未保存修改':''}</label><label><input type="radio" name="export-source" value="published">已发布配置 · v${published.revision}</label></div>`,()=> $('[name="export-source"]:checked').value==='published'
     ? download('export',{data:published.data},`车型配置-已发布-v${published.revision}.xlsx`)
     : downloadCurrent(),'下载 Excel');
 }
@@ -578,12 +615,11 @@ async function importFiles(files) {
   const result=await api('import-batch',{files:payload,revision,...(dirty ? {editor:data} : {})});
   const summary=result.summary||{},issues=result.issues||[];
   const issueHTML=issues.length?`<div class="scroll"><table class="diff"><thead><tr><th>文件 / 工作表</th><th>位置</th><th>问题</th></tr></thead><tbody>${issues.map(i=>`<tr><td>${esc(i.file)}<small>${esc(i.sheet)}</small></td><td>${i.row?'第 '+esc(i.row)+' 行':''} ${esc(i.field||'')}</td><td class="error">${esc(i.message)}</td></tr>`).join('')}</tbody></table></div>`:`<p class="error">${esc((result.errors||[]).join('\n'))}</p>`;
-  modal('导入预览',`<div class="file-list">${files.map(f=>`<span>${esc(f.name)}</span>`).join('')}</div><div class="import-summary"><span>新增 <b>${summary.added??0}</b></span><span>更新 <b>${summary.updated??0}</b></span><span>未变更 <b>${summary.unchanged??0}</b></span><span>问题 <b>${(result.errors||[]).length||issues.length}</b></span></div>${issueHTML}${differences(result.changes||[])}`,result.errors?.length||issues.length||!result.changes?.length?null:async()=>{
-    const fresh=await api('state');if(fresh.draft.revision!==result.revision||revision!==result.revision)throw Error('草稿已被其他人修改，请重新载入后再次导入');
-    mutate(()=>{data=result.data;});notice('导入内容已应用，尚未保存');
+  modal('车型配置导入预览',`<div class="file-list">${files.map(f=>`<span>${esc(f.name)}</span>`).join('')}</div><div class="import-summary"><span>新增 <b>${summary.added??0}</b></span><span>更新 <b>${summary.updated??0}</b></span><span>未变更 <b>${summary.unchanged??0}</b></span><span>问题 <b>${(result.errors||[]).length||issues.length}</b></span></div>${issueHTML}${differences(result.changes||[])}`,result.errors?.length||issues.length||!result.changes?.length?null:async()=>{
+    const fresh=await api('state');if(fresh.draft.revision!==result.revision||revision!==result.revision)throw Error('车型配置草稿已被其他人修改，请重新载入草稿后再次导入');
+    mutate(()=>{data=result.data;});notice('车型配置已导入编辑区，尚未保存');
   },'应用到编辑区');
 }
-function requestImport() {$('#file').click();}
 $('#confirm').onclick=()=>{
   if(discardPrompt){discardPrompt=null;$('#dialog').close();return;}
   const form=$('#dialog-body form');if(form&&!form.reportValidity())return;
@@ -594,6 +630,11 @@ $('#close').onclick=$('#cancel').onclick=closeOrKeepEditing;
 $('#dialog').addEventListener('cancel',e=>{e.preventDefault();closeOrKeepEditing();});
 document.addEventListener('click',e=>{
   if(busy)return;const b=e.target.closest('button');if(!b)return;
+  if(toolsPanel.contains(b)){
+    showDataTools(false);
+    toolsButton.focus({preventScroll:true});
+  }
+  if(b.id==='reload-rules' || b.hasAttribute('data-reload-rules'))return orderRules.syncFromScript();
   if(b.hasAttribute('data-runtime'))return run(async()=>{
     const info=await api('runtime');
     const rows=[['数据目录',info.data_dir,info.sources.data_dir],['车型数据库',info.catalog],
@@ -614,7 +655,7 @@ document.addEventListener('click',e=>{
     const h=await api('history/'+b.dataset.history);
     modal('变更记录 #'+b.dataset.history,differences(h.changes),readonly?null:()=>{
       mutate(()=>{for(const t of Object.keys(data)){const ids=new Set(h.data[t].map(r=>r.id));h.data[t].push(...data[t].filter(r=>!ids.has(r.id)).map(r=>({...r,...(['models','versions','options'].includes(t)?{status:'停用'}:{})})));}data=h.data;});notice('历史记录已恢复到编辑区，尚未保存');
-    },'恢复到草稿');
+    },'恢复到编辑区');
   });
 });
 $('#content').onchange=e=>{
@@ -675,11 +716,11 @@ $('#search').addEventListener('compositionend',updateSearch);
 const catalogEditor={
   ready:()=>Boolean(data), isDirty:()=>dirty, canPublish:()=>pendingPublish,
   canUndo:()=>undoStack.length>0, canRedo:()=>redoStack.length>0,
-  status:()=>!data?(busy?'正在载入…':'尚未载入'):dirty?'有未保存的修改':`草稿 r${revision} · 已保存`,
-  save:saveDraft, previewPublish,
+  status:()=>!data?(busy?'正在载入…':'尚未载入'):dirty?'车型配置有未保存修改':`车型配置草稿 r${revision} · 已保存`,
+  save:saveDraft, previewPublish, importFiles,
   reload(){
     const load=async()=>{accept(await api('state'));notice();};
-    if(dirty)modal('放弃未保存修改？','<div class="selection-summary">重新载入服务器草稿</div>',load,'重新载入');else run(load);
+    if(dirty)modal('放弃未保存的车型配置修改？','<div class="selection-summary">重新载入已保存的车型配置草稿</div>',load,'重新载入草稿');else run(load);
   },
   undo(){
     if(busy||readonly||!undoStack.length)return;
@@ -697,13 +738,19 @@ $('#publish').onclick=()=>run(activeEditor().previewPublish,'正在核对发布�
 $('#reload').onclick=()=>activeEditor().reload();
 $('#undo').onclick=()=>activeEditor().undo();
 $('#redo').onclick=()=>activeEditor().redo();
-$('#export').onclick=()=>isRuleView()?run(orderRules.openExport):openExport();
+$('#export').onclick=()=>isRuleView()?run(orderRules.openExport,'正在导出脚本规则…'):openExport();
 $('#template').onclick=()=>run(isRuleView()?orderRules.template:()=>download('template',undefined,'车型配置-导入模板.xlsx'));
-$('#import').onclick=requestImport;
+let fileEditor;
+$('#import').onclick=()=>{
+  fileEditor=activeEditor();
+  $('#file').click();
+};
+$('#file').oncancel=()=>{fileEditor=null;};
 $('#file').onchange=e=>{
+  const editor=fileEditor || activeEditor();
+  fileEditor=null;
   const files=[...e.target.files];e.target.value='';if(!files.length)return;
-  const rules=isRuleView(), importer=rules?orderRules.importFiles:importFiles;
-  run(()=>importer(files),'正在预览导入…');
+  run(()=>editor.importFiles(files),'正在预览导入…');
 };
 window.addEventListener('keydown',event=>{
   if(event.defaultPrevented||event.altKey||event.isComposing||!(event.ctrlKey||event.metaKey))return;

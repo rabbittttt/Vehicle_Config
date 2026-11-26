@@ -36,6 +36,6 @@ with sync_playwright() as p:
     with page.expect_download() as event:page.get_by_role('button',name='下载 Excel',exact=True).click()
     download=event.value;download.save_as(str(out/'roundtrip.xlsx'))
     page.locator('#file').set_input_files(str(out/'roundtrip.xlsx'));page.get_by_text('没有变更',exact=True).wait_for();page.locator('#close').click()
-    page.locator('[data-tab="history"]').click();page.locator('[data-history="2"]').click();page.get_by_role('button',name='恢复到草稿').click();expect(page.locator('#notice')).to_have_text('历史记录已恢复到编辑区，尚未保存');expect(page.locator('#save')).to_be_enabled()
+    page.locator('[data-tab="history"]').click();page.locator('[data-history="2"]').click();page.get_by_role('button',name='恢复到编辑区').click();expect(page.locator('#notice')).to_have_text('历史记录已恢复到编辑区，尚未保存');expect(page.locator('#save')).to_be_enabled()
     assert not errors,errors
     browser.close();print('Browser checks passed: matrix, publish, copy, reload, XLSX import/export, history restore, desktop/mobile. Test data only.')

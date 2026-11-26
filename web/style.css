@@ -335,12 +335,26 @@ header .top-actions { grid-area:1 / 2; justify-self:end; align-items:center; gap
 }
 header nav {
   grid-area: 2 / 1 / 3 / -1;
+  margin-inline-end: 104px;
   min-width: 0;
   height: var(--navigation-height);
   align-items: center;
   margin-block: 0;
   padding-block: 0;
 }
+.data-tools { grid-area:2 / 2; justify-self:end; position:relative; z-index:11; }
+#data-tools { display:flex; align-items:center; gap:6px; min-height:36px; padding:6px 10px; }
+#data-tools svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.6; }
+#data-tools[aria-expanded="true"] { color:var(--accent-text); background:var(--selected); }
+#data-tools[aria-expanded="true"] svg { transform:rotate(180deg); }
+#data-tools-panel {
+  position:absolute; inset-inline-end:0; top:calc(100% + 4px);
+  display:grid; padding:4px; min-width:158px;
+  border:1px solid var(--border); border-radius:10px; background:var(--surface);
+  box-shadow:0 6px 18px var(--shadow);
+}
+#data-tools-panel button { text-align:start; white-space:nowrap; border:0; border-radius:6px; }
+#data-tools-panel button:focus-visible { outline-offset:-2px; }
 main { padding-top: var(--dashboard-gap); }
 
 .heading h1, header nav :is(button, a), .view-tabs button {
@@ -378,7 +392,10 @@ main { padding-top: var(--dashboard-gap); }
 #mobile-tab, .mobile-filter-toggle { display: none; }
 
 @media (max-width: 700px) {
-  header { column-gap: 8px; }
+  header { grid-template-columns:minmax(0,1fr) auto auto; column-gap:8px; }
+  header .top-actions { grid-column:2 / -1; }
+  .data-tools { grid-area:2 / 3; }
+  #data-tools { min-height:44px; }
   header .heading { display: contents; }
   .heading-identity {
     grid-area: 1 / 1;
@@ -389,7 +406,7 @@ main { padding-top: var(--dashboard-gap); }
     gap: 2px;
   }
   .top-actions :is(button,a) { width: 44px; min-height: 44px; }
-  header nav { grid-area: 2 / 1; overflow: visible; }
+  header nav { grid-area: 2 / 1; margin-inline-end:0; overflow:visible; }
   header nav [data-tab] { display: none; }
   #mobile-tab, .mobile-filter-toggle {
     display: block;

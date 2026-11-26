@@ -30,7 +30,7 @@ const orderRules = (() => {
   const canPublish = () => Boolean(pendingPublish && state?.source.available && !state.source.external_modified && !state.sync.pending_token);
   const canUndo = () => undoStack.length > 0;
   const canRedo = () => redoStack.length > 0;
-  const status = () => !ready() ? '脚本规则未载入' : isDirty() ? '有未保存的规则修改' : `规则草稿 r${state.draft.revision} · 已保存`;
+  const status = () => !ready() ? '脚本规则未载入' : isDirty() ? '脚本规则有未保存修改' : `脚本规则草稿 r${state.draft.revision} · 已保存`;
   const list = (table, field) => ['members', 'version', 'sku', 'versions', 'match_versions'].includes(field) ||
     (table === 'battery_rules' && field === 'generation');
   const text = value => Array.isArray(value) ? value.join(' / ') : typeof value === 'boolean' ? (value ? '是' : '否') : value;
@@ -45,7 +45,8 @@ const orderRules = (() => {
     modified = false;
     undoStack = [];
     redoStack = [];
-    render();
+    if (isRuleView()) renderKeepingScroll();
+    else flags();
   }
 
   async function load() {
@@ -58,7 +59,7 @@ const orderRules = (() => {
       notice();
     };
     if (isDirty()) {
-      modal('放弃未保存的规则修改？', '<div class="selection-summary">重新载入服务器草稿</div>', refresh, '重新载入');
+      modal('放弃未保存的规则修改？', '<div class="selection-summary">重新载入已保存的脚本规则草稿</div>', refresh, '重新载入草稿');
     } else {
       run(refresh);
     }
@@ -104,9 +105,11 @@ const orderRules = (() => {
   }
 
   function sourceAlert() {
-    const warning = state.sync?.error || (!state.source.available ? state.source.error || '脚本不可用' :
-      state.source.external_modified ? '源文件已被其他程序修改，请先重新载入' : '');
-    return warning ? `<div class="rule-source-status error" role="status">${esc(warning)}</div>` : '';
+    const warning = state.sync.error || (!state.source.available ? state.source.error || '脚本不可用' :
+      state.source.external_modified ? '脚本已被其他程序修改' : '');
+    if (!warning) return '';
+    const reload = state.source.available && !readonly ? ' <button class="link" data-reload-rules>从脚本重新载入</button>' : '';
+    return `<div class="rule-source-status error" role="status">${esc(warning)}${reload}</div>`;
   }
 
   function renderView(table, query) {
@@ -125,8 +128,7 @@ const orderRules = (() => {
     }
 
     const mapping = ['gen_names', 'option_names'].includes(table);
-    $('#actions').innerHTML = readonly ? '' : ruleButton('sync', '从脚本重新载入', {disabled: !state.source.available}) +
-      (mapping ? ruleButton('batch', '批量粘贴') : '') +
+    $('#actions').innerHTML = readonly ? '' : (mapping ? ruleButton('batch', '批量粘贴') : '') +
       ruleButton('add', '新增规则');
 
     const rows = draft[table]
@@ -223,21 +225,31 @@ const orderRules = (() => {
   }
 
   function syncFromScript() {
+    if (readonly || busy || !data) return;
     return run(async () => {
       const current = await api('rules/state');
       if (!current.source.available) throw Error(current.source.error || '脚本不可用');
+      if (isDirty() && state.draft.revision !== current.draft.revision) {
+        throw Error('规则草稿已被其他人修改。请在规则表导出当前编辑，再重新载入草稿核对。');
+      }
       const pending = current.sync.pending_token;
       if(!pending && !isDirty() && current.sync.status==='synced'){
-        accept(current);
+        if (!state || state.draft.revision !== current.draft.revision || state.sync.status !== 'synced') accept(current);
         notice('规则草稿已与脚本一致');
         return;
       }
-      const warning = pending ? '<p>上次发布中断。确认后，该次修改将存入脚本变更记录，当前草稿将替换为脚本内容。</p>' : '<p>当前规则草稿及未保存的编辑将被脚本内容替换。</p>';
-      modal('从脚本重新载入', `<div>${esc(current.source.path)}</div>${warning}`, async () => {
-        accept(await api('rules/reload', {revision: state.draft.revision, source_hash: current.source.hash, pending_token: pending}));
+      const tables = Object.keys(fields).map(key => titles[key]).join('、');
+      const overwritten = [];
+      if (JSON.stringify(current.draft.data) !== JSON.stringify(current.published.data)) overwritten.push('已保存但尚未发布的规则');
+      if (isDirty()) overwritten.push('本地未保存的规则编辑');
+      const warning = overwritten.length ? `<p class="error">${overwritten.join('、')}会一并替换。</p>` : '';
+      const recovery = pending ? '<p>上次中断的发布将存入脚本变更记录。</p>' : '';
+      modal('从脚本重新载入', `<p>用脚本中的五类规则替换规则草稿 r${current.draft.revision}，并更新规则的已发布版本。</p>
+        <dl><dt>替换范围</dt><dd>${esc(tables)}</dd><dt>来源脚本</dt><dd>${esc(current.source.path)}</dd></dl>${warning}${recovery}`, async () => {
+        accept(await api('rules/reload', {revision: current.draft.revision, source_hash: current.source.hash, pending_token: pending}));
         notice('已从脚本重新载入');
-      }, pending ? '保留中断记录并载入' : '重新载入');
-    });
+      }, '替换规则并载入');
+    }, '正在核对脚本规则…');
   }
 
   function handleClick(button, table) {
@@ -253,7 +265,6 @@ const orderRules = (() => {
       });
     }
     if (readonly) return;
-    if (action === 'sync') return syncFromScript();
     if (action === 'batch') return batch(table);
     if (action === 'add') return edit(table);
     if (action === 'edit' || action === 'copy') return edit(table, id, action === 'copy');
@@ -288,7 +299,7 @@ const orderRules = (() => {
 
   async function save() {
     accept(await api('rules/save', {data: draft, revision: state.draft.revision}));
-    notice('规则草稿已保存');
+    notice('脚本规则草稿已保存');
   }
 
   async function previewPublish() {
@@ -304,8 +315,8 @@ const orderRules = (() => {
       }, '确认发布');
   }
 
-  const openExport = () => download('rules/export', {data: draft}, '订单规则.xlsx');
-  const template = () => download('rules/template', undefined, '订单规则-模板.xlsx');
+  const openExport = () => download('rules/export', {data: draft}, '脚本规则-当前编辑.xlsx');
+  const template = () => download('rules/template', undefined, '脚本规则-导入模板.xlsx');
 
   async function importFiles(files) {
     const payload = await encodeWorkbooks(files);
@@ -314,20 +325,20 @@ const orderRules = (() => {
     const problemList = issues.length ? `<div class="scroll"><table class="diff"><thead><tr><th>文件 / 工作表</th><th>位置</th><th>问题</th></tr></thead><tbody>${issues.map(issue => `
       <tr><td>${esc(issue.file)}<small>${esc(issue.sheet)}</small></td><td>${issue.row ? '第 ' + esc(issue.row) + ' 行' : ''} ${esc(issue.field)}</td><td class="error">${esc(issue.message)}</td></tr>`
     ).join('')}</tbody></table></div>` : '';
-    modal('导入预览', `<div class="file-list">${files.map(file => `<span>${esc(file.name)}</span>`).join('')}</div>
+    modal('脚本规则导入预览', `<div class="file-list">${files.map(file => `<span>${esc(file.name)}</span>`).join('')}</div>
       <div class="import-summary"><span>新增 <b>${summary.added}</b></span><span>更新 <b>${summary.updated}</b></span><span>未变更 <b>${summary.unchanged}</b></span><span>问题 <b>${issues.length}</b></span></div>
       ${problemList}${diffHTML(changes)}`, errors.length || !changes.length ? null : async () => {
         const fresh = await api('rules/state');
         if (fresh.draft.revision !== result.revision || state.draft.revision !== result.revision) {
-          throw Error('规则草稿已被其他人修改，请重新载入后再次导入');
+          throw Error('规则草稿已被其他人修改，请重新载入草稿后再次导入');
         }
         change(result.data);
-        notice('导入内容已应用，尚未保存');
+        notice('脚本规则已导入编辑区，尚未保存');
       }, '应用到编辑区');
   }
 
   return {
     titles, ready, isDirty, canPublish, canUndo, canRedo, status, load, render: renderView,
-    handleClick, save, previewPublish, reload, undo, redo, openExport, template, importFiles,
+    handleClick, save, previewPublish, reload, syncFromScript, undo, redo, openExport, template, importFiles,
   };
 })();
