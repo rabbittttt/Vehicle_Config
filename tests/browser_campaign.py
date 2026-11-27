@@ -27,6 +27,19 @@ def view(page, name):
     ready(page)
 
 
+def check_draft_status_everywhere(page, expected):
+    status = page.locator('footer #status')
+    tab(page, 'history')
+    for name in ('campaign_history', 'rule_history'):
+        view(page, name)
+        expect(status).to_be_visible()
+        expect(status).to_have_text(expected)
+    for name in ('generation', 'options', 'reporting', 'schedule'):
+        tab(page, name)
+        expect(status).to_be_visible()
+        expect(status).to_have_text(expected)
+
+
 def action(page, kind):
     return page.locator(f'[data-campaign-action="{kind}"]')
 
@@ -229,13 +242,14 @@ def check_reporting(page):
     check_quantity_progress(page)
     page.locator('#save').click()
     ready(page)
+    status = page.locator('footer:has(#notice:visible:has-text("已保存")) #status')
+    expect(status).to_be_visible()
+    expect(status).to_have_text('配置草稿 · 待发布')
     page.reload()
     ready(page)
     expect(page.locator('#owner')).to_have_value('本机验收')
-    draft_status = page.locator('#status').inner_text()
-    assert draft_status.startswith('车型日程与填报草稿 r') and draft_status.endswith(' · 待发布')
+    check_draft_status_everywhere(page, '配置草稿 · 待发布')
     tab(page, 'reporting')
-    expect(page.locator('#status')).to_have_text(draft_status)
     view(page, 'businessTotals')
     action(page, 'totals').click()
     expect(page.get_by_label('大定量', exact=True)).to_have_value('83')
@@ -245,6 +259,7 @@ def check_reporting(page):
     expect(page.locator('#dialog-body')).not_to_contain_text('代际规则、电池与选配')
     expect(page.locator('#confirm')).to_have_text('确认发布')
     confirm(page)
+    expect(page.locator('#status')).to_have_text('配置草稿 · 无待发布变更')
     page.locator('#export').click()
     ready(page)
     expect(page.locator('[name=sheets]')).to_have_count(8)

@@ -15,6 +15,7 @@ const campaignEditor = (() => {
 
   const ready = () => Boolean(current?.available);
   const isDirty = () => edits.length > 0;
+  const hasPendingProjection = () => Boolean(saved?.projectionPending);
   const canUndoImport = () => Boolean(saved?.canUndoImport && !isDirty());
   const sheet = name => current?.sheets.find(item => item.name === name);
   const reportingSheets = () => current.sheets.filter(info=>Object.values(reportMetrics).includes(info.name));
@@ -932,13 +933,7 @@ const campaignEditor = (() => {
       notice('已恢复导入前的草稿');
     },'恢复草稿');
   }
-  function status() {
-    if (!ready()) return current?.reason || draftName+'尚未载入';
-    if (isDirty()) return draftName+'有未保存修改';
-    if (current.projectionPending) return '已发布 · 下游同步待重试';
-    return `${draftName} r${saved.revision} · ${saved.hasUnpublishedChanges?'待发布':'已保存'}`;
-  }
   return {ready,isDirty,reportMetrics,modelNames,reportStages,canUndoImport,selectLegacy,undoImport,hasPendingPublish,
     canUndo:()=>undo.length>0,canRedo:()=>redo.length>0,undo:()=>step(true),redo:()=>step(false),
-    render:renderView,load,reload,status,handle,save,preparePublish,openExport,importFiles,importModule};
+    render:renderView,load,reload,hasPendingProjection,handle,save,preparePublish,openExport,importFiles,importModule};
 })();

@@ -92,22 +92,32 @@ function flags() {
   $('#campaign-undo-import').hidden=readonly || !campaignEditor.canUndoImport();
   $('#undo').disabled=readonly || history || !editor.canUndo();
   $('#redo').disabled=readonly || history || !editor.canRedo();
-  const other=isRuleView()?campaignEditor:orderRules;
-  const status=[history?'':editor.status(),other.isDirty()?other.status():'',history && campaignEditor.isDirty()?campaignEditor.status():''].filter(Boolean).join(' · ');
-  const label=busy && showProgress?progressLabel:readonly?readonlyStatus:status;
-  setText($('#status'),label);
-  $('#status').title=label;
+  updateDraftStatus();
   setText($('#reload'),history?'刷新记录':'重新载入草稿');
   document.body.setAttribute('aria-busy',String(busy));
   if(busy) document.querySelectorAll('button,input,select,textarea').forEach(e=>{e.dataset.requestDisabled=String(e.disabled);e.disabled=true;});
 }
 let showProgress=false, progressLabel='正在载入…';
+function updateDraftStatus() {
+  let state;
+  if (showProgress) state=progressLabel;
+  else if (!csrf) state=busy?'正在载入…':'未载入';
+  else if (readonly) state=readonlyStatus;
+  else if (publishGroups.some(({editor})=>editor.isDirty())) state='有未保存修改';
+  else if (publishGroups.some(({editor})=>!editor.ready())) state='草稿未完整载入';
+  else if (publishGroups.some(({editor})=>editor.hasPendingPublish())) state='待发布';
+  else state='无待发布变更';
+  if (!showProgress && campaignEditor.hasPendingProjection()) state+=' · 报表数据待同步';
+  const label='配置草稿 · '+state;
+  setText($('#status'),label);
+  $('#status').title=label;
+}
 async function run(fn, label='正在处理…') {
   if(busy)return;
   busy=true;
   progressLabel=label;
   const focused=document.activeElement;
-  const progress=setTimeout(()=>{showProgress=true;setText($('#status'),label);},180);
+  const progress=setTimeout(()=>{showProgress=true;updateDraftStatus();},180);
   flags();
   try {await fn();} catch(e) {if($('#dialog').open)$('#dialog-error').textContent=e.message; else notice(e.message,true);}
   finally {
@@ -576,4 +586,4 @@ async function start() {
     if (failures.length) throw Error(failures.join('。'));
   }
 }
-run(start,frameAccount?'等待门户账号…':'正在读取车型与日程…');
+run(start,frameAccount?'等待门户账号…':'正在载入…');

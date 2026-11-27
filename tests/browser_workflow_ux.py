@@ -3,6 +3,7 @@ import tempfile
 
 from playwright.sync_api import expect, sync_playwright
 
+from browser_campaign import check_draft_status_everywhere
 from browser_rules_check import add_vehicle, fill_owner, isolated_server, ready, switch_view
 from campaign_store import CampaignStore
 
@@ -31,6 +32,7 @@ def test_editor(browser):
         page.goto(url)
         ready(page)
         expect(page.locator("#publish")).to_be_disabled()
+        expect(page.locator("#status")).to_have_text("配置草稿 · 无待发布变更")
         add = page.locator('[data-campaign-action="add-stage"]')
         add.click()
         name = page.get_by_label("代际名", exact=True)
@@ -56,6 +58,7 @@ def test_editor(browser):
         expect(page.locator("#content")).not_to_contain_text("未保存车型甲")
         page.keyboard.press("Control+Shift+z")
         expect(page.locator("#content")).to_contain_text("未保存车型甲")
+        check_draft_status_everywhere(page, "配置草稿 · 有未保存修改")
         expect(page.locator("#export")).to_have_accessible_name("导出车型与日程（Excel）")
         expect(page.locator("#template")).to_be_enabled()
         expect(page.locator("#import")).to_be_visible()
@@ -89,7 +92,7 @@ def test_editor(browser):
         page.locator("#close").click()
         expect(page.locator("#dialog")).to_be_hidden()
         expect(page.locator("#save")).to_be_disabled()
-        expect(page.locator("#status")).to_contain_text("车型日程与填报草稿有未保存修改")
+        expect(page.locator("#status")).to_have_text("配置草稿 · 有未保存修改")
 
         switch_view(page, "options", "battery_rules")
         page.set_viewport_size({"width": 420, "height": 780})
@@ -258,9 +261,10 @@ def test_readonly(browser):
 def test_publication_retry(browser, *, lose_campaign_response=False):
     with tempfile.TemporaryDirectory() as directory, isolated_server(directory) as (url, store, rules, source):
         campaign = CampaignStore(store.root)
-        draft = rules.get()["draft"]
-        draft["data"]["gen_names"][0]["target"] = "待发布代际"
-        rules.save(draft["data"], draft["revision"], "测试维护人")
+        if lose_campaign_response:
+            draft = rules.get()["draft"]
+            draft["data"]["gen_names"][0]["target"] = "待发布代际"
+            rules.save(draft["data"], draft["revision"], "测试维护人")
 
         page = browser.new_page()
         publications = []
@@ -284,8 +288,24 @@ def test_publication_retry(browser, *, lose_campaign_response=False):
         page.goto(url)
         ready(page)
         fill_owner(page)
+        if lose_campaign_response:
+            # The home page must include a saved rule draft before opening any rule view.
+            expect(page.locator("#status")).to_be_visible()
+            expect(page.locator("#status")).to_have_text("配置草稿 · 待发布")
+        else:
+            switch_view(page, "generation", "gen_names")
+            page.locator('[data-rule-action="edit"]').click()
+            page.locator('[name="target"]').fill("待发布代际")
+            page.locator("#confirm").click()
+            ready(page)
+            check_draft_status_everywhere(page, "配置草稿 · 有未保存修改")
+            switch_view(page, "generation", "gen_names")
+            page.locator("#save").click()
+            ready(page)
+            check_draft_status_everywhere(page, "配置草稿 · 待发布")
         add_vehicle(page)
         switch_view(page, "history", "campaign_history")
+        expect(page.locator("#status")).to_have_text("配置草稿 · 有未保存修改")
         publish = page.get_by_role("button", name="发布", exact=True)
         confirm = page.get_by_role("button", name="确认发布", exact=True)
         dialog = page.locator("#dialog")
@@ -331,6 +351,7 @@ def test_publication_retry(browser, *, lose_campaign_response=False):
         confirm.click()
         expect(dialog).to_be_hidden()
         expect(publish).to_be_disabled()
+        check_draft_status_everywhere(page, "配置草稿 · 无待发布变更")
         assert publications == first_attempt + ["rules/publish"]
         assert campaign.published()["revision"] == 1
         assert rules.get()["published"]["data"]["gen_names"][0]["target"] == "待发布代际"

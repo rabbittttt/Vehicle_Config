@@ -31,7 +31,6 @@ const orderRules = (() => {
   const hasPendingPublish = () => pendingPublish;
   const canUndo = () => undoStack.length > 0;
   const canRedo = () => redoStack.length > 0;
-  const status = () => !ready() ? '脚本规则未载入' : isDirty() ? '脚本规则有未保存修改' : `脚本规则草稿 r${state.draft.revision} · 已保存`;
   const list = (table, field) => ['members', 'version', 'sku', 'versions', 'match_versions'].includes(field) ||
     (table === 'battery_rules' && field === 'generation');
   function text(value) {
@@ -504,7 +503,7 @@ const orderRules = (() => {
   }
 
   return {
-    titles, modelNames, yearNames, ready, isDirty, hasPendingPublish, canUndo, canRedo, status, load, render: renderView,
+    titles, modelNames, yearNames, ready, isDirty, hasPendingPublish, canUndo, canRedo, load, render: renderView,
     handleClick, save, preparePublish, reload, syncFromScript, undo, redo, openExport, template, importFiles,
   };
 })();
