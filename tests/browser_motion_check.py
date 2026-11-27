@@ -1,4 +1,4 @@
-"""Measure daily entry, search and dialogs with a paginated order list and verify the rendering contracts."""
+"""Measure report-matrix search, batch updates and dialogs on desktop and mobile."""
 import json
 import statistics
 import tempfile
@@ -19,16 +19,16 @@ def seed_orders(store):
     for index in range(MODELS):
         model = f'测量车型 {index:02d}'
         edits.append(dict(sheet='车型汇总', row=index + 2, col=1, value=model))
+        edits.append(dict(sheet='车型汇总', row=index + 2, col=9, value='2026-11-01'))
         for day in range(1, DAYS + 1):
             edits.append(dict(sheet='小订by天', model=model, date=f'2026-11-{day:02d}', value=day + index))
     CampaignStore(store.root).save(0, edits, '合成数据')
 
 
 # Measure from input through the visible result and next frame, including deferred rendering.
-SAMPLE = """async ({model, days, total}) => {
+SAMPLE = """async ({model, total}) => {
     const tick = () => new Promise(requestAnimationFrame);
     const search = document.querySelector('#search');
-    const count = document.querySelector('#count');
     const idle = [], intervals = [], searches = [];
     search.focus();
     let last = await tick();
@@ -41,13 +41,13 @@ SAMPLE = """async ({model, days, total}) => {
         const filtered = i % 2 === 0, start = performance.now();
         search.value = filtered ? model : '';
         search.dispatchEvent(new Event('input', {bubbles:true}));
-        const expected = (filtered ? days : total) + ' 条记录';
+        const expected = filtered ? 1 : total;
         let rendered = false;
         for (let n = 0; n < 12; n++) {
             const now = await tick();
             intervals.push(now - last);
             last = now;
-            if (count.textContent === expected) {
+            if (document.querySelectorAll('.report-matrix tbody tr[data-model]').length === expected) {
                 rendered = true;
                 break;
             }
@@ -64,7 +64,8 @@ SAMPLE = """async ({model, days, total}) => {
 
 def batch_timing(page):
     page.locator('#search').fill(FIRST_MODEL)
-    expect(page.locator('#count')).to_have_text(f'{DAYS} 条记录')
+    expect(page.locator('.report-matrix tbody tr[data-model]')).to_have_count(1)
+    page.locator('#report-window').select_option('20')
     page.locator('[data-campaign-action="batch"]').click()
     page.get_by_label('车型与阶段').select_option(label=FIRST_MODEL)
     values = [f'2026-11-{day:02d}\t{700 + day}' for day in range(1, DAYS + 1)]
@@ -75,7 +76,7 @@ def batch_timing(page):
         const started = performance.now();
         window.batchTiming = new Promise(resolve => {
             function waitForResult() {
-                const quantity = document.querySelector('#content tbody tr td:nth-child(3)');
+                const quantity = document.querySelector('[data-campaign-action=report-cell][data-key=D28]');
                 if (!document.querySelector('#dialog').open && quantity?.textContent === expected) {
                     requestAnimationFrame(() => resolve(performance.now() - started));
                 } else if (performance.now() - started > 10000) {
@@ -91,7 +92,7 @@ def batch_timing(page):
     elapsed = page.evaluate('window.batchTiming')
     assert elapsed is not None, 'Batch result did not appear'
     expect(page.locator('#dialog')).to_be_hidden()
-    expect(page.locator('#content tbody tr').first.locator('td').nth(2)).to_have_text(str(700 + DAYS))
+    expect(page.locator('[data-campaign-action=report-cell][data-key=D28]')).to_have_text(str(700 + DAYS))
     return round(elapsed, 2)
 
 
@@ -117,10 +118,21 @@ def main():
             else:
                 page.get_by_label('配置管理模块').select_option('reporting')
                 page.get_by_role('button', name='筛选', exact=True).click()
-            expect(page.locator('#count')).to_have_text(f'{MODELS * DAYS} 条记录')
-            expect(page.locator('#content tbody tr')).to_have_count(40)
+            expect(page.locator('.report-matrix tbody tr[data-model]')).to_have_count(MODELS)
+            expect(page.locator('#report-axis')).to_have_value('day')
             page.evaluate('document.fonts.ready')
-            sample = page.evaluate(SAMPLE, dict(model=FIRST_MODEL, days=DAYS, total=MODELS * DAYS))
+            if width <= 700:
+                matrix = page.locator('.report-matrix')
+                scroll = matrix.evaluate("""el => {
+                    const heading = el.querySelector('tbody th');
+                    const start = heading.getBoundingClientRect().left;
+                    el.scrollLeft = el.scrollWidth;
+                    const result = {moved:el.scrollLeft, shift:Math.abs(start-heading.getBoundingClientRect().left)};
+                    el.scrollLeft = 0;
+                    return result;
+                }""")
+                assert scroll['moved'] > 0 and scroll['shift'] <= 1, scroll
+            sample = page.evaluate(SAMPLE, dict(model=FIRST_MODEL, total=MODELS))
             assert sample['focused'], 'Rerender interrupted typing'
             assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')
             assert not errors, errors
@@ -135,7 +147,7 @@ def main():
             modal = page.evaluate("""async () => {
                 const frames=[], dialog=document.querySelector('dialog');
                 const tick=()=>new Promise(requestAnimationFrame);
-                const trigger=document.querySelector('[data-campaign-action="daily"]');
+                const trigger=document.querySelector('[data-campaign-action="report-add"]');
                 let last=await tick();
                 for(let n=0;n<72;n++){
                     const frame=await tick();
@@ -157,7 +169,7 @@ def main():
             results[-1].update(batchRows=DAYS, batchPreviewMs=batch_timing(page))
             page.locator('#undo').click()
             ready(page)
-            expect(page.locator('#content tbody tr').first.locator('td').nth(2)).to_have_text(str(DAYS))
+            expect(page.locator('[data-campaign-action=report-cell][data-key=D28]')).to_have_text(str(DAYS))
             assert not errors, errors
             page.screenshot(path=str(output / f'daily-{width}-{theme}.png'))
             page.close()

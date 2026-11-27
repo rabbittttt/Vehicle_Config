@@ -6,12 +6,12 @@ const sections = {
   schedule: ['vehicleIdentity', 'launchSchedule'],
   generation: ['gen_names', 'merge_groups'],
   options: ['battery_rules', 'option_names', 'option_prices'],
-  reporting: ['dailyOrders', 'stageProgress', 'businessTotals'],
+  reporting: ['dailyOrders', 'businessTotals'],
   history: ['campaign_history', 'rule_history'],
 };
 const viewLabels = {
   ...orderRules.titles, vehicleIdentity:'车型资料', launchSchedule:'发布日程',
-  dailyOrders:'每日小订', stageProgress:'阶段进度', businessTotals:'结果核对', campaign_history:'日程与填报发布',
+  dailyOrders:'日常填报', businessTotals:'结果核对', campaign_history:'日程与填报发布',
 };
 let tab='schedule', view=sections.schedule[0], csrf='', readonly=true, busy=false, confirmAction=null;
 let sessionUser = '';
@@ -136,7 +136,7 @@ function filters() {
     updateOptions($('#model'),option('','全部车型','')+names.map(n=>option(n,n,'')).join(''),model);
     updateOptions($('#year'),option('','全部年款','')+years.map(y=>option(y,y+'款','')).join(''),year);
   }
-  const hints={vehicleIdentity:'代际、产品档位或能源',launchSchedule:'代际、发布类型或日期',dailyOrders:'车型或日期',stageProgress:'车型或阶段',businessTotals:'车型或汇总数值'};
+  const hints={vehicleIdentity:'代际、产品档位或能源',launchSchedule:'代际、发布类型或日期',dailyOrders:'车型、阶段或小订日期',businessTotals:'车型或汇总数值'};
   $('#search').placeholder=hints[view] || (tab==='history'?'记录、操作人或时间':'搜索当前规则');
   const count=[schedule && model,schedule && year,searchValue()].filter(Boolean).length;
   $('#clear-filters').hidden=!count;

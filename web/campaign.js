@@ -5,7 +5,7 @@ const campaignEditor = (() => {
   const dailyName = '小订by天';
   let saved, current;
   let edits = [], undo = [], redo = [];
-  let progressName = '小订进度', lastModel = '';
+  let progressName = dailyName, lastModel = '';
 
   const ready = () => Boolean(current?.available);
   const isDirty = () => edits.length > 0;
@@ -65,11 +65,18 @@ const campaignEditor = (() => {
   const displayValue = value => value === null || value === undefined || value === '' ? '—' : String(value);
   const lower = text => String(text ?? '').toLocaleLowerCase();
   const matched = (values,query) => !query || values.some(value => lower(value).includes(lower(query)));
-  const numericText = value => typeof value === 'number' ? value.toLocaleString('zh-CN',{maximumFractionDigits:6}) : displayValue(value);
+  const numbers = new Intl.NumberFormat('zh-CN',{maximumFractionDigits:6});
+  const numericText = value => typeof value === 'number' ? numbers.format(value) : displayValue(value);
   const percentage = value => typeof value === 'number' ? Number((value*100).toFixed(6))+'%' : displayValue(value);
   const used = value => value !== '' && value !== null && value !== undefined;
   function table(headings,body) {
     return `<div class="scroll"><table class="campaign-table"><thead><tr>${headings.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+  function renderModelTable(headings,body,modelCount,extraClass='') {
+    const head=`<th scope="col">车型<span class="report-count">（${modelCount}）</span></th>`+
+      headings.map(h=>`<th scope="col">${esc(h)}</th>`).join('');
+    $('#content').innerHTML=`<div class="report-matrix scroll ${extraClass}"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    wireReportStages();
   }
   function pageRows(rows) {
     const interval = paginator(rows.length);
@@ -81,11 +88,12 @@ const campaignEditor = (() => {
   }
   const modelNames = () => [...new Set(stages().map(row=>row[0]))];
   const modelYears = () => [...new Set(stages().flatMap(row=>[modelYear(row[0]),modelYear(row[1])]).filter(Boolean))].sort().reverse();
-  function choices() {
-    return stages().map(r => ({model:r[0], secondary:r[1] || '', label:r[1] ? r[0]+' · '+r[1] : r[0]}));
-  }
-  function stageSelect() {
-    const variants = choices();
+  function stageSelect(target) {
+    if (target) {
+      const key = JSON.stringify([target.model,target.secondary]);
+      return `<input type="hidden" name="stage" value="${esc(key)}"><label class="wide">车型与阶段<output>${esc(stageLabel(target.model,target.secondary))}</output></label>`;
+    }
+    const variants = reportStages().filter(stage=>stage.hasSummary);
     const pairs = variants.map(v => [JSON.stringify([v.model,v.secondary]),v.label]);
     const initial = pairs.some(([key])=>key===lastModel) ? lastModel : pairs.length===1 ? pairs[0][0] : '';
     return `<label class="wide">车型与阶段${formSelect('stage', pairs, initial, true)}</label>`;
@@ -153,13 +161,23 @@ const campaignEditor = (() => {
   function renderTotals(query) {
     $('#actions').innerHTML = !readonly && !stages().length ? action('new-stage','新增发布日程') : '';
     const labels=sheet(summaryName).rows[0];
-    const body=pageRows(summaryRows(query,[0,1,...totalColumns])).map(({r,row})=>{
+    const models=new Map();
+    for(const {r,row} of summaryRows(query,[0,1,...totalColumns])) {
+      const model=r[0], secondary=r[1] || '';
+      if(!models.has(model))models.set(model,[]);
+      models.get(model).push({model,secondary,r,row});
+    }
+    const [first,last]=paginator(models.size);
+    $('#count').textContent='';
+    const body=[...models.values()].slice(first,last).map(variants=>{
+      const stage=activeVariant(variants,query);
+      const {r,row}=stage;
       const difference=grossDifference(r[16],r[19],r[18]);
       const cells=totalColumns.map(index=>`<td>${esc(numericText(r[index]))}${index===18 && difference ? `<small class="campaign-discrepancy">${esc(difference)}</small>` : ''}</td>`).join('');
-      return `<tr>${identityCell(r)}${cells}${rowAction('totals',row,'核对')}</tr>`;
+      return `<tr data-model="${esc(stage.model)}">${reportIdentity(variants,stage)}${cells}<td class="report-actions">${action('totals','核对',`class="link" data-row="${row}"`)}</td></tr>`;
     }).join('');
-    const headings=['车型与阶段',...totalColumns.map(index=>labels[index]),'操作'];
-    $('#content').innerHTML=body ? `<div class="campaign-totals">${table(headings,body)}</div>` : empty(query?'没有匹配的车型':'暂无可核对的车型');
+    if(body)renderModelTable([...totalColumns.map(index=>labels[index]),'操作'],body,models.size,'campaign-totals');
+    else $('#content').innerHTML=empty(query?'没有匹配的车型':'暂无可核对的车型');
   }
   function reviewTotals(info,row,subject) {
     rowForm(info,row,totalColumns,subject+' · 结果核对',totalsGroups);
@@ -206,37 +224,97 @@ const campaignEditor = (() => {
     form.addEventListener('input',update);
     update();
   }
-  const dailyEntriesBySheet = new WeakMap();
-  function dailyEntries() {
-    const info = sheet(dailyName);
-    const cached = dailyEntriesBySheet.get(info);
-    if (cached) return cached;
-    const headers = new Set(info.headerRows || [1]);
-    const result = [];
-    let header = [];
-    info.rows.forEach((row,i)=>{
-      if (headers.has(i+1)) { header = row; return; }
-      if (!row[0] || /^(合计|总计)$/.test(row[0])) return;
-      const secondary = row[header.indexOf('二级代际名')];
-      const model = secondary ? row[0]+' · '+secondary : row[0];
-      const modelSearch = lower(model);
-      row.forEach((value,index) => {
-        const stamp = dateText(header[index]);
-        if (index && used(value) && /^\d{4}-\d{2}-\d{2}$/.test(stamp)) result.push({date:stamp,model,modelSearch,value,row:i+1,col:index+1});
-      });
-    });
-    result.sort((a,b)=>b.date.localeCompare(a.date) || a.row-b.row);
-    dailyEntriesBySheet.set(info,result);
-    return result;
+  const reportWidth = 10;
+  const reportVariants = new Map();
+  let reportAxis, reportOffset, indexedWorkbook, indexedReports;
+  let dateSearchTerm = '', dateSearchOffset = 0;
+  function dateKey(value) {
+    const stamp = dateText(value);
+    return /^\d{4}-\d{2}-\d{2}$/.test(stamp) && Number.isFinite(Date.parse(stamp)) ? stamp : '';
   }
-  function renderDaily(query) {
-    const available = stages().length;
-    $('#actions').innerHTML = readonly ? '' : available ? action('batch','批量粘贴')+action('daily','填小订') : action('new-stage','新增发布日程');
-    const entries = dailyEntries();
-    const term = lower(query);
-    const rows = term ? entries.filter(r=>r.date.includes(term) || r.modelSearch.includes(term)) : entries;
-    const body = pageRows(rows).map(r=>`<tr><td>${esc(r.date)}</td><td>${esc(r.model)}</td><td>${esc(numericText(r.value))}</td>${readonly?'':`<td class="operation">${action('edit-daily','编辑',`class="link" data-row="${r.row}" data-col="${r.col}"`)}</td>`}</tr>`).join('');
-    $('#content').innerHTML = body ? table(['日期','车型与阶段','小订量',...(readonly?[]:['操作'])],body) : empty(query?'没有匹配的记录':'暂无每日小订');
+  function dayNumber(stamp) {
+    return Date.parse(stamp) / 86400000;
+  }
+  function reportIndex() {
+    if (indexedWorkbook === current) return indexedReports;
+    const models = new Map(), dates = new Set(), dayOffsets = new Set([0]);
+    const metricDays = new Map(), observedDays = new Map(), dateStages = new Map();
+    let hasDaily = false, hasAligned = false, hasHistorical = false;
+    function findStage(model, secondary) {
+      if (!models.has(model)) models.set(model, new Map());
+      const variants = models.get(model);
+      if (!variants.has(secondary)) variants.set(secondary, {
+        model, secondary, label:stageLabel(model,secondary), start:'', records:new Map(), observed:new Set(), lastDate:'',
+      });
+      return variants.get(secondary);
+    }
+    for (const row of stages()) {
+      const stage = findStage(row[0], row[1] || '');
+      // Duplicate summary identities do not unambiguously specify an anchor.
+      stage.start = stage.hasSummary ? '' : dateKey(row[8]);
+      stage.hasSummary = true;
+    }
+    for (const info of current.sheets.slice(1)) {
+      const daily = info.name === dailyName;
+      const headers = info.headerRows || [1];
+      // Later progress blocks contain rates, not the reported quantities.
+      for (const [i, head] of (daily ? headers : headers.slice(0,1)).entries()) {
+        const labels = info.rows[head-1];
+        const secondaryColumn = labels.indexOf('二级代际名');
+        const columns = new Map();
+        labels.forEach((label, index) => {
+          const axis = daily ? dateKey(label) : /^D[1-9]\d*$/.test(label) ? label : '';
+          if (axis) columns.set(axis,index+1);
+        });
+        if (daily) for (const date of columns.keys()) dates.add(date);
+        else metricDays.set(info.name,[...columns.keys()].map(key=>Number(key.slice(1))).sort((a,b)=>a-b));
+        const end = (headers[i+1] || info.rows.length+1)-1;
+        for (let r = head; r < end; r++) {
+          const row = info.rows[r], model = row[0];
+          if (!model || model === '合计' || model === '总计') continue;
+          const stage = findStage(model, row[secondaryColumn] || '');
+          if (!stage.records.has(info.name)) stage.records.set(info.name, []);
+          stage.records.get(info.name).push({row:r+1, values:row, columns});
+          for (const [key,col] of columns) {
+            if (!used(row[col-1])) continue;
+            stage.observed.add(info.name);
+            if (!daily) {
+              observedDays.set(info.name,Math.min(observedDays.get(info.name) || Infinity,Number(key.slice(1))));
+              if (info.name === '小订进度') hasHistorical = true;
+              continue;
+            }
+            hasDaily = true;
+            if (!dateStages.has(key)) dateStages.set(key,new Set());
+            dateStages.get(key).add(stage);
+            if (key > stage.lastDate) stage.lastDate = key;
+            if (!stage.start || key < stage.start) continue;
+            hasAligned = true;
+            const dayIndex = dayNumber(key) - dayNumber(stage.start);
+            dayOffsets.add(Math.floor(dayIndex/reportWidth)*reportWidth);
+          }
+        }
+      }
+    }
+    const stageList = Array.from(models.values()).flatMap(variants=>Array.from(variants.values()));
+    indexedWorkbook = current;
+    indexedReports = {models,stageList,dates:[...dates].sort(),dayOffsets:[...dayOffsets].sort((a,b)=>a-b),
+      metricDays,observedDays,dateStages,defaultAxis:hasDaily && !hasAligned ? 'date' : 'day',hasHistorical};
+    return indexedReports;
+  }
+  function reportStages() {
+    return reportIndex().stageList;
+  }
+  function dailyEntries(target) {
+    const stage = reportIndex().models.get(target.model)?.get(target.secondary);
+    const entries = [];
+    for (const record of stage?.records.get(dailyName) || []) {
+      if (target.row && record.row!==Number(target.row)) continue;
+      for (const [date,col] of record.columns) {
+        const value = record.values[col-1];
+        if (used(value)) entries.push({date,col,row:record.row,value});
+      }
+    }
+    return entries.sort((a,b)=>b.date.localeCompare(a.date) || a.row-b.row);
   }
   function progressBlock(name=progressName) {
     const s = sheet(name);
@@ -286,21 +364,153 @@ const campaignEditor = (() => {
       hint.hidden=!text;
     };
   }
-  function renderProgress(query) {
-    const p = progressBlock();
-    const select = (id,label,entries) => `<label class="inline-label">${label}<select aria-label="${label}" id="${id}">${entries}</select></label>`;
-    const options = current.sheets.slice(2).map(s=>option(s.name,s.name,progressName)).join('');
-    $('#actions').innerHTML = select('campaign-progress','指标',options)+
-      (readonly?'':stages().length ? action('batch','批量粘贴')+action('progress','填进度') : action('new-stage','新增发布日程'));
-    $('#campaign-progress').onchange = e=>{progressName=e.target.value;page=1;render();};
-    const secondaryCol = p.labels.indexOf('二级代际名');
-    const entries = p.s.rows.map((r,i)=>({r,i})).slice(p.start+1,p.end).filter(({r})=>r[0] && matched([r[0],r[secondaryCol]],query));
-    const body = pageRows(entries).map(({r,i})=>{
-      const filled = p.days.filter(c=>used(r[c]));
-      const last = filled.at(-1);
-      return `<tr><td>${esc(r[0])}${r[secondaryCol]?`<small>${esc(r[secondaryCol])}</small>`:''}</td><td>${last===undefined?'—':esc(p.labels[last])}</td><td>${esc(numericText(r[last]))}</td><td>${filled.length}</td><td>${action('progress-row','明细',`class="link" data-row="${i+1}"`)}</td></tr>`;
-    }).join('');
-    $('#content').innerHTML = body ? table(['车型与阶段','最近日序','最近数值','已填天数','操作'],body) : empty(query?'没有匹配的进度':'暂无'+progressName);
+  function activeVariant(variants,query='') {
+    const matching = variants.filter(stage=>matched([stage.model,stage.secondary],query));
+    const visible = matching.length ? matching : variants;
+    return visible.find(stage=>stage.secondary === reportVariants.get(stage.model)) ||
+      visible.find(stage=>stage.observed?.has(progressName)) || visible[0];
+  }
+  function reportIdentity(variants,stage) {
+    const shortName = item => {
+      const name = item.secondary;
+      if (!name) return '未分阶段';
+      return name.startsWith(item.model) ? name.slice(item.model.length).trim() || '本代际' : name;
+    };
+    let secondary = '';
+    if (variants.length > 1) {
+      const options = variants.map(item=>`<option value="${esc(item.secondary)}" title="${esc(item.secondary)}" ${item.secondary===stage.secondary?'selected':''}>${esc(shortName(item))}</option>`).join('');
+      secondary = `<select data-report-stage aria-label="${esc(stage.model+' · 二级代际')}" title="${esc(stage.secondary)}">${options}</select>`;
+    } else if (stage.secondary && stage.secondary !== stage.model) secondary = `<small title="${esc(stage.secondary)}">${esc(shortName(stage))}</small>`;
+    return `<th scope="row"><span class="report-name">${esc(stage.model)}</span>${secondary}</th>`;
+  }
+  function wireReportStages() {
+    for (const select of $('#content').querySelectorAll('[data-report-stage]')) {
+      select.onchange = () => {
+        const model = select.closest('tr').dataset.model;
+        reportVariants.set(model,select.value);
+        renderKeepingScroll();
+        $(`#content tr[data-model="${CSS.escape(model)}"] [data-report-stage]`)?.focus({preventScroll:true});
+      };
+    }
+  }
+  function searchDates(index,query) {
+    if (progressName !== dailyName || !/^\d{4}(-\d{2}){0,2}$/.test(query)) return null;
+    if (query.length===4 && index.stageList.some(stage=>(stage.hasSummary || stage.records.has(dailyName)) &&
+      matched([stage.model,stage.secondary],query))) return null;
+    return index.dates.filter(date=>date.startsWith(query) && index.dateStages.has(date));
+  }
+  function reportWindows(index,axis,filteredDates) {
+    const calendar = axis === 'date';
+    let dates = filteredDates ?? index.dates;
+    if (calendar && !dates.length && !filteredDates) {
+      const today = new Date();
+      dates = [new Date(today.getTime()-today.getTimezoneOffset()*60000).toISOString().slice(0,10)];
+    }
+    let offsets;
+    if (calendar) offsets = Array.from({length:Math.ceil(dates.length/reportWidth)},(_,i)=>i*reportWidth);
+    else if (progressName === dailyName) offsets = index.dayOffsets;
+    else {
+      const days = index.metricDays.get(progressName) || [];
+      offsets = [...new Set([0,...days.map(day=>Math.floor((day-1)/reportWidth)*reportWidth)])];
+    }
+    const firstObservation = index.observedDays.get(progressName) || 1;
+    const initial = calendar ? (filteredDates ? 0 : offsets.at(-1)) : Math.floor((firstObservation-1)/reportWidth)*reportWidth;
+    const requested = filteredDates ? dateSearchOffset : reportOffset;
+    const offset = offsets.includes(requested) ? requested : initial;
+    const keys = calendar ? dates.slice(offset,offset+reportWidth) : Array.from({length:reportWidth},(_,i)=>'D'+(offset+i+1));
+    const range = i=> calendar ? dates[i]+' – '+dates[Math.min(i+reportWidth-1,dates.length-1)] : `D${i+1} – D${i+reportWidth}`;
+    return {offsets,offset,keys,range};
+  }
+  function reportCell(stage,records,key,axis) {
+    let target = key;
+    if (progressName === dailyName && axis === 'day') {
+      const time = (dayNumber(stage.start) + Number(key.slice(1)) - 1) * 86400000;
+      target = new Date(time).toISOString().split('T')[0];
+      if (!dateKey(target)) return '<td>—</td>';
+    }
+    const matches = records.filter(record=>record.columns.has(target));
+    // Disjoint blocks and repeated historical rows retain their physical coordinates.
+    const buttons = (matches.length ? matches : [null]).map(record=>{
+      const col = record?.columns.get(target);
+      const value = record?.values[col-1];
+      const text = esc(numericText(value));
+      const cls = 'report-value'+(used(value) ? '' : ' missing');
+      if (readonly || (!record && (!stage.hasSummary || records.length > 1))) return `<span class="${cls}">${text}</span>`;
+      const attributes = `data-model="${esc(stage.model)}" data-secondary="${esc(stage.secondary)}" data-axis="${esc(target)}" data-key="${esc(key)}"`;
+      const location = record ? `data-row="${record.row}" data-col="${col}"` : '';
+      const label = [stage.label, key, target !== key ? target : '', matches.length > 1 ? '第 '+record.row+' 行' : '',
+        used(value) ? numericText(value) : '未填'].filter(Boolean).join(' · ');
+      return action('report-cell',text,`class="${cls}" ${attributes} ${location} aria-label="${esc(label)}" title="${esc(label)}"`);
+    });
+    return `<td>${buttons.join(' ')}</td>`;
+  }
+  function reportRow(variants,stage,keys,axis) {
+    const records = stage.records.get(progressName) || [];
+    const attrs = `class="link" data-model="${esc(stage.model)}" data-secondary="${esc(stage.secondary)}"`;
+    let cells;
+    if (progressName === dailyName && axis === 'day' && !stage.start) {
+      cells = `<td colspan="${keys.length}"><button type="button" class="link" data-report-calendar="${esc(stage.lastDate)}" aria-label="${esc(stage.label+' · 按日期查看')}">按日期查看</button></td>`;
+    } else cells = keys.map(key=>reportCell(stage,records,key,axis)).join('');
+    const controls = [];
+    if (!readonly && stage.hasSummary && records.length <= 1) controls.push(action('report-add','填报',attrs));
+    if (progressName !== dailyName) records.forEach((record,i)=>controls.push(action('report-detail',records.length>1?'明细 '+(i+1):'明细',`${attrs} data-row="${record.row}"`)));
+    else if (records.length) controls.push(action('report-detail','明细',attrs));
+    return `<tr data-model="${esc(stage.model)}">${reportIdentity(variants,stage)}${cells}<td class="report-actions">${controls.join(' ')}</td></tr>`;
+  }
+  function renderReport(query) {
+    const index = reportIndex();
+    const legacy = '小订进度';
+    if (progressName === legacy && !index.hasHistorical) progressName = dailyName;
+    const daily = progressName === dailyName;
+    const filteredDates = searchDates(index,query);
+    const term = filteredDates ? query : '';
+    if (term!==dateSearchTerm) { dateSearchTerm=term; dateSearchOffset=0; }
+    const axis = filteredDates ? 'date' : daily ? reportAxis || index.defaultAxis : 'day';
+    const {offsets,offset,keys,range} = reportWindows(index,axis,filteredDates);
+    const select = (id,label,options,disabled=false)=>`<label class="inline-label">${label}<select id="${id}" aria-label="${label}" ${disabled?'disabled':''}>${options}</select></label>`;
+    const metrics = [option(dailyName,'每日小订',progressName),...current.sheets.slice(2)
+      .filter(info=>info.name !== legacy).map(info=>option(info.name,info.name,progressName))];
+    if (index.hasHistorical) metrics.push('<optgroup label="历史参考">'+option(legacy,'小订进度（历史）',progressName)+'</optgroup>');
+    const toolbar = [select('campaign-progress','指标',metrics.join(''))];
+    if (daily) toolbar.push(select('report-axis','横轴',option('day','按日序',axis)+option('date','按日期',axis),Boolean(filteredDates)));
+    if (offsets.length > 1) {
+      const arrow = (dir,label,disabled,icon)=>`<button type="button" data-report-page="${dir}" aria-label="${label}" title="${label}" ${disabled?'disabled':''}>${icon}</button>`;
+      toolbar.push(arrow('prev','上一组',offset===offsets[0],'‹'),
+        select('report-window','范围',offsets.map(i=>option(String(i),range(i),String(offset))).join('')),
+        arrow('next','下一组',offset===offsets.at(-1),'›'));
+    }
+    if (!readonly) toolbar.push(index.stageList.some(stage=>stage.hasSummary) ? action('batch','批量粘贴') : action('new-stage','新增发布日程'));
+    $('#actions').innerHTML = toolbar.join('');
+    const refresh = selector=>{ renderKeepingScroll(); $(selector)?.focus({preventScroll:true}); };
+    $('#campaign-progress').onchange = e=>{progressName=e.target.value;reportOffset=undefined;page=1;refresh('#campaign-progress');};
+    if (daily && !filteredDates) $('#report-axis').onchange = e=>{reportAxis=e.target.value;reportOffset=undefined;refresh('#report-axis');};
+    if (offsets.length > 1) {
+      const setOffset = next=>{
+        if (filteredDates) dateSearchOffset=next;
+        else reportOffset=next;
+        refresh('#report-window');
+      };
+      $('#report-window').onchange = e=>setOffset(Number(e.target.value));
+      for (const button of $('#actions').querySelectorAll('[data-report-page]')) button.onclick = ()=>{
+        const step = button.dataset.reportPage==='prev' ? -1 : 1;
+        setOffset(offsets[offsets.indexOf(offset)+step]);
+      };
+    }
+    const dateMatches = filteredDates && new Set(keys.flatMap(key=>[...index.dateStages.get(key)]));
+    const groups = Array.from(index.models.values(),variants=>[...variants.values()].filter(stage=>
+      (stage.hasSummary || stage.records.has(progressName)) &&
+      (dateMatches ? dateMatches.has(stage) : matched([stage.model,stage.secondary],query)))).filter(variants=>variants.length);
+    const window = paginator(groups.length);
+    $('#count').textContent = '';
+    const rows = groups.slice(...window).map(variants=>reportRow(variants,activeVariant(variants,query),keys,axis)).join('');
+    if (!rows) { $('#content').innerHTML = empty(filteredDates ? '该日期范围暂无小订记录' : query ? '没有匹配的车型' : '暂无车型'); return; }
+    renderModelTable([...keys,'操作'],rows,groups.length);
+    for (const button of $('#content').querySelectorAll('[data-report-calendar]')) button.onclick = ()=>{
+      reportAxis='date';
+      const at = index.dates.indexOf(button.dataset.reportCalendar);
+      reportOffset = at<0 ? undefined : Math.floor(at/reportWidth)*reportWidth;
+      refresh('#report-axis');
+    };
   }
   function renderView(view,query) {
     if (!ready()) {
@@ -309,8 +519,7 @@ const campaignEditor = (() => {
       $('#content').innerHTML = empty(current?.reason || '正在读取小订与首销…');
       return;
     }
-    if (view==='dailyOrders') renderDaily(query);
-    else if (view==='stageProgress') renderProgress(query);
+    if (view==='dailyOrders') renderReport(query);
     else if (view==='businessTotals') renderTotals(query);
     else if (view==='launchSchedule') renderSchedule(query);
     else renderIdentity(query);
@@ -384,57 +593,28 @@ const campaignEditor = (() => {
     const form = $('#dialog-body form');
     if (form) form.onsubmit = e=>{e.preventDefault();if (!readonly) $('#confirm').click();};
   }
-  function dailyForm(item) {
-    const now = new Date();
-    const today = [now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-');
-    modal(item?'编辑每日小订':'填小订',`<form class="form campaign-form">
-      ${item?`<label class="wide">车型与阶段<output>${esc(item.model)}</output></label>`:stageSelect()}
-      <label>日期<input name="date" type="date" value="${item?esc(item.date):today}" ${item?'readonly':''} required></label>
-      <label>小订量<input name="amount" type="number" min="0" step="1" value="${esc(item?.value)}" required></label></form>`,async values=>{
-      const value = Number(values.get('amount'));
-      if (item) return apply([{sheet:dailyName,row:item.row,col:item.col,value}]);
-      lastModel=values.get('stage');
-      const [model,secondary]=JSON.parse(lastModel);
-      await apply([{sheet:dailyName,model,secondary,date:values.get('date'),value}]);
-    },'应用');
-    if(!item) {
-      const form=$('#dialog-body form');
-      const info=sheet(dailyName);
-      const knownAmount=()=>{
-        if(!form.elements.stage.value)return;
-        const [model,secondary]=JSON.parse(form.elements.stage.value);
-        let header=[], found;
-        const heads=new Set(info.headerRows);
-        info.rows.some((row,index)=>{
-          if(heads.has(index+1)){header=row;return false;}
-          if(row[0]!==model || (row[header.indexOf('二级代际名')]||'')!==secondary)return false;
-          const col=header.indexOf(form.elements.date.value);
-          if(col<0 || !used(row[col]))return false;
-          found=row[col];
-          return true;
-        });
-        form.elements.amount.value=found ?? '';
-      };
-      form.elements.stage.onchange=form.elements.date.onchange=knownAmount;
-      knownAmount();
-    }
-    bindSubmit();
-  }
-  function entryForm(batch) {
-    const daily = view==='dailyOrders';
+  function entryForm(batch, target=null) {
+    const daily = progressName===dailyName;
+    const info = sheet(progressName);
     const title = daily?'每日小订':progressName;
+    const amountName = daily?'小订量':'数量';
+    const axis = target?.axis;
+    const axisField = daily?'date':'day';
+    const axisInput = daily ? '<label>日期<input type="date" name="date"' : '<label>日序<input type="number" name="day" min="1" step="1"';
     const inputs = batch ? `<label class="wide">${daily?'日期':'日序'}、数量（两列，每行一条）<textarea name="rows" rows="7" placeholder="${daily?'2026-01-01':'D1'}&#9;120" required></textarea></label>` :
-      '<label>日序<input type="number" name="day" min="1" step="1" required></label><label>数量<input name="amount" type="number" min="0" step="1" required></label>';
-    modal((batch?'批量粘贴':'填进度')+' · '+title,`<form class="form">${stageSelect()}${inputs}</form>`,async values=>{
+      `${axisInput} ${axis?'readonly':''} required></label><label>${amountName}<input name="amount" type="number" min="0" step="1"></label>`;
+    const block = daily ? null : progressBlock();
+    let records = [], sourceCell = null;
+    modal((batch?'批量粘贴':'填报')+' · '+title,`<form class="form campaign-form">${stageSelect(target)}${inputs}</form>`,async values=>{
       lastModel=values.get('stage');
       const [model,secondary]=JSON.parse(lastModel);
-      const rows=batch?String(values.get('rows')).trim().split(/\r?\n/).map(line=>line.trim().split('\t')):[[values.get('day'),values.get('amount')]];
-      if (rows.length>1000 || rows.some(r=>r.length!==2 || !r[1].trim())) throw Error('一次可粘贴 1–1000 行，每行须有两列');
+      const rows=batch?String(values.get('rows')).trim().split(/\r?\n/).map(line=>line.trim().split('\t')):[[values.get(axisField),values.get('amount')]];
+      if (rows.length>1000 || rows.some(r=>r.length!==2 || (batch && !r[1].trim()))) throw Error('一次可粘贴 1–1000 行，每行须有两列');
       const seen=new Set();
       const mapped=rows.map(([rawKey,rawValue],index)=>{
         const key=rawKey.trim();
-        const value=Number(rawValue.trim());
-        if (!Number.isSafeInteger(value) || value<0) throw Error(`第 ${index+1} 行须填写非负整数数量`);
+        const value=rawValue.trim()==='' ? null : Number(rawValue.trim());
+        if (value!==null && (!Number.isSafeInteger(value) || value<0)) throw Error(`第 ${index+1} 行须填写非负整数数量`);
         let patch;
         if (daily) {
           if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) throw Error(`第 ${index+1} 行日期须为 YYYY-MM-DD`);
@@ -447,13 +627,17 @@ const campaignEditor = (() => {
         const id=patch.date || patch.day;
         if(seen.has(id))throw Error(`第 ${index+1} 行的日期或日序重复`);
         seen.add(id);
+        if (!batch && sourceCell) {
+          if ((sourceCell.value ?? null)===value) return null;
+          return {sheet:info.name,row:sourceCell.row,col:sourceCell.col,value};
+        }
         return patch;
       });
-      await apply(mapped);
+      await apply(mapped.filter(Boolean));
     },'应用');
     const form=$('#dialog-body form');
     let compare=null, refreshDifference=()=>{};
-    if(!daily && progressName==='大定进度') {
+    if(progressName==='大定进度') {
       const input=batch?form.elements.rows:form.elements.amount;
       const show=dayDifferenceHint(input);
       refreshDifference=()=>{
@@ -479,35 +663,78 @@ const campaignEditor = (() => {
       input.addEventListener('input',refreshDifference);
       selectComparison();
     }
-    if(!batch) {
-      const block=progressBlock();
-      const findIndex=()=>{
-        if(!form.elements.stage.value)return -1;
-        const [model,secondary]=JSON.parse(form.elements.stage.value);
-        const secondaryCol=block.labels.indexOf('二级代际名');
-        return block.s.rows.findIndex((r,i)=>i>block.start && i<block.end && r[0]===model && (r[secondaryCol]||'')===secondary);
-      };
-      const syncAmount=()=>{
-        const index=findIndex(),col=block.labels.indexOf('D'+form.elements.day.value);
-        const value=block.s.rows[index]?.[col];
-        form.elements.amount.value=value ?? '';
+    if (!batch) {
+      const control=form.elements[axisField], amount=form.elements.amount;
+      function syncAmount() {
+        const label=daily?control.value:'D'+control.value;
+        const found=[];
+        for (const record of records) {
+          const col=record.columns.get(label);
+          if(col && (!target?.col || col===Number(target.col))) found.push({row:record.row,col,value:record.values[col-1]});
+        }
+        sourceCell=found.length===1?found[0]:null;
+        amount.value=sourceCell?.value ?? '';
+        amount.required=!used(sourceCell?.value);
         refreshDifference();
-      };
-      form.elements.stage.onchange=()=>{
-        const row=block.s.rows[findIndex()] || [],latest=block.days.filter(i=>used(row[i])).at(-1);
-        form.elements.day.value=latest===undefined?1:Number(block.labels[latest].slice(1))+1;
+      }
+      function syncStage() {
+        const selection=form.elements.stage.value;
+        records=[];
+        if (selection) {
+          const [model,secondary]=JSON.parse(selection);
+          const stage=reportIndex().models.get(model)?.get(secondary);
+          records=stage?.records.get(info.name) || [];
+          if(target?.row) records=records.filter(record=>record.row===Number(target.row));
+        }
+        if(axis) control.value=daily?axis:axis.slice(1);
+        else if(daily) {
+          const now=new Date();
+          control.value=[now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-');
+        } else {
+          const record=records.length===1?records[0].values:[];
+          const last=block.days.filter(i=>used(record[i])).at(-1);
+          control.value=last===undefined?1:Number(block.labels[last].slice(1))+1;
+        }
         syncAmount();
-      };
-      form.elements.day.onchange=syncAmount;
-      form.elements.stage.onchange();
+      }
+      control.addEventListener('input',syncAmount);
+      form.elements.stage.addEventListener('change',syncStage);
+      syncStage();
+      if (axis) { amount.focus();amount.select(); }
     }
+    bindSubmit();
+  }
+  function dailyDetail(target) {
+    const entries=dailyEntries(target);
+    const title=stageLabel(target.model,target.secondary)+' · 每日小订';
+    if (!entries.length) return modal(title,empty('暂无每日小订记录'));
+    const fields=entries.map(({date,row,value},i)=>{
+      const repeated=entries[i-1]?.date===date || entries[i+1]?.date===date;
+      const source=repeated?'第 '+row+' 行':'';
+      const dateCell=esc(date)+(repeated?`<small>${source}</small>`:'');
+      const input=`<input type="number" name="n${i}" aria-label="${esc([date,source,'小订量'].filter(Boolean).join(' '))}" min="0" step="1" value="${esc(value)}">`;
+      return `<tr><td>${dateCell}</td><td>${readonly?esc(numericText(value)):input}</td></tr>`;
+    }).join('');
+    modal(title,`<form class="campaign-form">${table(['日期','小订量'],fields)}</form>`,readonly?null:async values=>{
+      const changes=[];
+      entries.forEach(({row,col,value},i)=>{
+        const raw=values.get('n'+i);
+        const next=raw.trim()===''?null:Number(raw);
+        if (next!==null && (!Number.isSafeInteger(next) || next<0)) throw Error('小订量须为非负整数');
+        if (next!==value) changes.push({sheet:dailyName,row,col,value:next});
+      });
+      await apply(changes);
+    },'应用');
     bindSubmit();
   }
   function handle(button) {
     const kind=button.dataset.campaignAction;
     if(!ready())return;
-    const row=Number(button.dataset.row),col=Number(button.dataset.col);
-    if(kind==='progress-row'){
+    const target=button.dataset;
+    const row=Number(target.row);
+    if(kind==='report-detail'){
+      if(progressName===dailyName)return dailyDetail(target);
+      if(!row)return modal(stageLabel(target.model,target.secondary)+' · '+progressName,empty('暂无进度记录'));
       const p=progressBlock();
       const record=p.s.rows[row-1];
       const secondary=record[p.labels.indexOf('二级代际名')] || '';
@@ -546,9 +773,8 @@ const campaignEditor = (() => {
       if(view==='vehicleIdentity')return rowForm(s,s.rows.length+1,identityColumns,'新增车型');
       return rowForm(s,s.rows.length+1,[...identityColumns,...scheduleColumns],'新增发布日程',[['车型资料',identityColumns],...scheduleGroups]);
     }
-    if(kind==='batch'||kind==='progress') return entryForm(kind==='batch');
-    if(kind==='daily')return dailyForm();
-    if(kind==='edit-daily')return dailyForm(dailyEntries().find(item=>item.row===row&&item.col===col));
+    if(kind==='batch') return entryForm(true);
+    if(kind==='report-cell'||kind==='report-add')return entryForm(false,target);
   }
   async function openExport() {
     if(!ready())return;

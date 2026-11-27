@@ -44,7 +44,8 @@ def test_editor(browser):
         expect(page.locator("#template")).to_be_hidden()
         expect(page.locator("#import")).to_be_hidden()
         switch_view(page, "reporting", "dailyOrders")
-        expect(page.locator("#actions")).to_contain_text("填小订")
+        expect(page.locator('[data-campaign-action=batch]')).to_be_visible()
+        expect(page.locator('.report-matrix tr[data-model="未保存车型甲"] [data-campaign-action=report-add]')).to_be_visible()
         expect(page.locator("#export")).to_have_accessible_name("导出小订与首销（Excel）")
         excel_captions = page.locator("#template span, #import span, #export span")
 

@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from openpyxl import load_workbook
 from playwright.sync_api import expect, sync_playwright
 
-from browser_rules_check import isolated_server, ready
+from browser_rules_check import fill_owner, isolated_server, ready
 from campaign_store import CampaignStore
 from stage_workbook import SUMMARY_FIELDS, apply_edits, empty_workbook, export_workbook
 
@@ -29,6 +29,14 @@ def view(page, name):
 
 def action(page, kind):
     return page.locator(f'[data-campaign-action="{kind}"]')
+
+
+def report_row(page, model):
+    return page.locator(f'.report-matrix tbody tr[data-model="{model}"]')
+
+
+def report_cell(row, key):
+    return row.locator(f'[data-campaign-action=report-cell][data-key="{key}"]')
 
 
 def legacy_file(model):
@@ -147,20 +155,19 @@ def check_result_review(page):
 
 
 def check_quantity_progress(page):
-    view(page, 'stageProgress')
-    metric = page.get_by_label('指标', exact=True)
+    metric = page.locator('#campaign-progress')
     expect(page.get_by_label('分组', exact=True)).to_have_count(0)
     metric.select_option('小转大进度')
     page.get_by_role('button', name='批量粘贴').click()
     page.locator('[name=rows]').fill('D1\t8\nD2\t0')
     confirm(page)
     metric.select_option('直接大定进度')
-    page.get_by_role('button', name='填进度', exact=True).click()
+    action(page, 'report-add').click()
     page.get_by_label('日序').fill('1')
     page.get_by_label('数量', exact=True).fill('0')
     confirm(page)
     metric.select_option('大定进度')
-    page.get_by_role('button', name='填进度', exact=True).click()
+    action(page, 'report-add').click()
     expect(page.get_by_label('百分比')).to_have_count(0)
     day = page.get_by_label('日序')
     amount = page.get_by_label('数量', exact=True)
@@ -174,7 +181,7 @@ def check_quantity_progress(page):
     amount.fill('12')
     expect(difference).to_be_hidden()
     confirm(page)
-    action(page, 'progress-row').click()
+    action(page, 'report-detail').click()
     expect(page.locator('#dialog')).not_to_contain_text('占比')
     expect(page.get_by_label('D2', exact=True)).to_have_value('12')
     page.locator('#cancel').click()
@@ -183,21 +190,23 @@ def check_quantity_progress(page):
 def check_reporting(page):
     tab(page, 'reporting')
     expect(page.locator('[data-view=dailyOrders]')).to_have_attribute('aria-pressed', 'true')
+    expect(page.locator('[data-view=dailyOrders]')).to_have_text('日常填报')
+    expect(page.locator('[data-view=stageProgress]')).to_have_count(0)
     check_result_review(page)
     view(page, 'dailyOrders')
     page.get_by_role('button', name='批量粘贴').click()
     page.locator('[name=rows]').fill('2026-11-01\t0\n2026-11-02\t15')
     confirm(page)
-    rows = page.locator('#content tbody tr')
-    expect(rows).to_have_count(2)
-    expect(rows.last.locator('td').nth(2)).to_have_text('0')
-    rows.first.get_by_role('button', name='编辑').click()
+    expect(page.locator('.report-matrix tbody tr')).to_have_count(1)
+    row = report_row(page, '历史车型')
+    expect(report_cell(row, 'D1')).to_have_text('0')
+    report_cell(row, 'D2').click()
     page.get_by_label('小订量').fill('16')
     confirm(page)
     page.locator('#undo').click()
-    expect(rows.first.locator('td').nth(2)).to_have_text('15')
+    expect(report_cell(row, 'D2')).to_have_text('15')
     page.locator('#redo').click()
-    expect(rows.first.locator('td').nth(2)).to_have_text('16')
+    expect(report_cell(row, 'D2')).to_have_text('16')
     check_quantity_progress(page)
     page.locator('#save').click()
     ready(page)
@@ -317,8 +326,124 @@ def check(browser):
         page.close()
 
 
+def seed_stage_matrix(campaign):
+    # The same displayed D1 belongs to a different calendar date in each secondary generation.
+    edits = []
+    for row, (model, secondary, start, gross) in enumerate([
+        ('矩阵车型', '标准', '2026-11-01', 41), ('矩阵车型', '焕新', '2026-11-05', 82),
+        ('待定车型', '', '', None),
+    ], start=2):
+        for col, value in [(1, model), (2, secondary), (9, start), (19, gross)]:
+            if value not in ('', None):
+                edits.append(dict(sheet='车型汇总', row=row, col=col, value=value))
+    for model, secondary, date, value in [
+        ('矩阵车型', '标准', '2026-11-01', 0), ('矩阵车型', '焕新', '2026-11-05', 25),
+        ('待定车型', '', '2026-11-02', 17),
+    ]:
+        edits.append(dict(sheet='小订by天', model=model, secondary=secondary, date=date, value=value))
+    edits.append(dict(sheet='小订进度', model='矩阵车型', secondary='标准', section=1, day=1, value=63))
+    edits.append(dict(sheet='小订进度', model='仅有历史进度', secondary='', section=1, day=3, value=57))
+    snapshot = campaign.save(0, edits, '测试')
+    daily = next(sheet for sheet in snapshot['sheets'] if sheet['name'] == '小订by天')
+    # Old spreadsheets can have two physical rows for the same model, stage and date.
+    header = daily['rows'][daily['headerRows'][-1] - 1]
+    row_number = len(daily['rows']) + 1
+    duplicate = [dict(sheet='小订by天', row=row_number, col=header.index(name) + 1, value=value)
+                 for name, value in [('代际名', '待定车型'), ('2026-11-02', 31)]]
+    campaign.save(snapshot['revision'], duplicate, '测试')
+
+
+def check_stage_matrix(browser):
+    with TemporaryDirectory() as directory, isolated_server(directory) as (url, store, *_):
+        campaign = CampaignStore(store.root)
+        seed_stage_matrix(campaign)
+        page = browser.new_page()
+        page.goto(url)
+        ready(page)
+        fill_owner(page)
+        tab(page, 'reporting')
+        rows = page.locator('.report-matrix tbody tr[data-model]')
+        expect(rows).to_have_count(2)
+        row = report_row(page, '矩阵车型')
+        stage = row.locator('select[data-report-stage]')
+        stage.select_option('标准')
+        metric = page.locator('#campaign-progress')
+        expect(metric).to_have_value('小订by天')
+        expect(page.locator('#report-axis')).to_have_value('day')
+        expect(report_cell(row, 'D1')).to_have_text('0')
+        expect(report_cell(row, 'D2')).to_have_text('—')
+        search = page.locator('#search')
+        search.fill('2026-11-05')
+        expect(rows).to_have_count(1)
+        match = report_cell(row, '2026-11-05')
+        expect(match).to_have_text('25')
+        expect(match).to_have_attribute('data-secondary', '焕新')
+        search.fill('2026-11-01')
+        expect(report_cell(row, '2026-11-01')).to_have_text('0')
+        search.fill('2026-11')
+        expect(rows).to_have_count(2)
+        expect(report_cell(report_row(page, '待定车型'), '2026-11-02')).to_have_text(['17', '31'])
+        search.fill('')
+        expect(page.locator('#report-axis')).to_have_value('day')
+        expect(report_cell(row, 'D1')).to_have_text('0')
+        historical = report_row(page, '仅有历史进度')
+        expect(historical).to_have_count(0)
+        metric.select_option('小订进度')
+        expect(report_cell(row, 'D1')).to_have_text('63')
+        expect(report_cell(historical, 'D3')).to_have_text('57')
+        expect(historical.locator('[data-campaign-action=report-add]')).to_have_count(0)
+        metric.select_option('小订by天')
+        stage.select_option('焕新')
+        expect(rows).to_have_count(2)
+        expect(report_cell(row, 'D1')).to_have_text('25')
+        expect(report_cell(row, 'D1')).to_have_attribute('data-axis', '2026-11-05')
+        report_cell(row, 'D1').click()
+        expect(page.get_by_label('日期', exact=True)).to_have_value('2026-11-05')
+        page.get_by_label('小订量').fill('27')
+        confirm(page)
+        view(page, 'businessTotals')
+        totals = page.locator('#content tbody tr[data-model="矩阵车型"]')
+        expect(totals).to_have_count(1)
+        expect(totals.locator('select[data-report-stage]')).to_have_value('焕新')
+        totals.locator('[data-campaign-action=totals]').click()
+        expect(page.get_by_label('大定量', exact=True)).to_have_value('82')
+        page.locator('#cancel').click()
+        view(page, 'dailyOrders')
+        stage.select_option('标准')
+        expect(report_cell(row, 'D1')).to_have_text('0')
+        missing_date = report_row(page, '待定车型')
+        missing_date.locator('[data-report-calendar]').click()
+        expect(page.locator('#report-axis')).to_have_value('date')
+        entries = report_cell(missing_date, '2026-11-02')
+        expect(entries).to_have_text(['17', '31'])
+        entries.last.click()
+        expect(page.get_by_label('小订量')).to_have_value('31')
+        page.get_by_label('小订量').fill('19')
+        confirm(page)
+        page.locator('#save').click()
+        ready(page)
+        expect(page.locator('#save')).to_be_disabled()
+        sheets = {sheet['name']: sheet['rows'] for sheet in campaign.get()['sheets']}
+        observed = {}
+        for record in sheets['小订by天']:
+            if record[0] == '代际名':
+                header = record
+            else:
+                fields = dict(zip(header, record))
+                observed.setdefault((record[0], fields.get('二级代际名') or ''), []).append(fields)
+        assert [r['2026-11-05'] for r in observed['矩阵车型', '焕新']] == [27]
+        assert [r['2026-11-01'] for r in observed['矩阵车型', '标准']] == [0]
+        assert [r['2026-11-02'] for r in observed['待定车型', '']] == [17, 19]
+        assert len(observed) == 3
+        metric.select_option('小订进度')
+        stage.select_option('标准')
+        expect(report_cell(row, 'D1')).to_have_text('63')
+        page.close()
+
+
 def check_readonly(browser):
-    with TemporaryDirectory() as directory, isolated_server(directory, readonly=True) as (url, *_):
+    with TemporaryDirectory() as directory, isolated_server(directory, readonly=True) as (url, store, *_):
+        CampaignStore(store.root).import_legacy(0, legacy_file('只读车型'), '测试')
         page = browser.new_page()
         page.goto(url)
         ready(page)
@@ -326,6 +451,17 @@ def check_readonly(browser):
         page.locator('#data-tools').click()
         expect(page.locator('#campaign-import')).to_be_hidden()
         expect(page.locator('#campaign-undo-import')).to_be_hidden()
+        page.locator('#data-tools').click()
+        tab(page, 'reporting')
+        page.locator('#campaign-progress').select_option('小转大进度')
+        row = report_row(page, '只读车型')
+        expect(row.get_by_text('6', exact=True)).to_be_visible()
+        expect(action(page, 'report-cell')).to_have_count(0)
+        expect(action(page, 'report-add')).to_have_count(0)
+        expect(action(page, 'batch')).to_have_count(0)
+        action(page, 'report-detail').click()
+        expect(page.locator('#dialog')).to_be_visible()
+        expect(page.locator('#dialog input[type=number]')).to_have_count(0)
         page.close()
 
 
@@ -353,6 +489,7 @@ if __name__ == '__main__':
     with sync_playwright() as pw:
         browser = pw.chromium.launch(channel='msedge')
         check(browser)
+        check_stage_matrix(browser)
         check_readonly(browser)
         check_running_previous_backend(browser)
         browser.close()
