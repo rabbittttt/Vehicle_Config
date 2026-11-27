@@ -11,6 +11,7 @@ const campaignEditor = (() => {
   const isDirty = () => edits.length > 0;
   const canUndoImport = () => Boolean(saved?.canUndoImport && !isDirty());
   const sheet = name => current?.sheets.find(item => item.name === name);
+  const reportingSheets = () => current.sheets.filter(info=>info.name!==summaryName && info.name!=='小订进度');
   const payload = () => ({revision:saved.revision, edits});
 
   function accept(result) {
@@ -110,7 +111,7 @@ const campaignEditor = (() => {
   ];
   const totalColumns = [15,16,18,19,21,25,27];
   // Zero-based summary columns: ratio, numerator, denominator.
-  const reviewRates = [[17,16,15],[20,19,18],[22,21,15],[26,25,18],[28,27,25],[29,27,18]];
+  const reviewRates = [[17,16,15],[20,19,18],[22,21,15],[26,25,15],[28,27,25],[29,27,18]];
   function summaryRows(query, columns) {
     const info = sheet(summaryName);
     return info.rows.map((r,i)=>({r,row:i+1})).slice(1)
@@ -238,7 +239,7 @@ const campaignEditor = (() => {
     if (indexedWorkbook === current) return indexedReports;
     const models = new Map(), dates = new Set(), metricDays = new Map(), dateStages = new Map();
     let lastDailyDay = 1;
-    let hasDaily = false, hasAligned = false, hasHistorical = false;
+    let hasDaily = false, hasAligned = false;
     function findStage(model, secondary) {
       if (!models.has(model)) models.set(model, new Map());
       const variants = models.get(model);
@@ -256,7 +257,7 @@ const campaignEditor = (() => {
       if (stage.start && end) lastDailyDay = Math.max(lastDailyDay,dayNumber(end)-dayNumber(stage.start)+1);
       stage.openEnded = !end;
     }
-    for (const info of current.sheets.slice(1)) {
+    for (const info of reportingSheets()) {
       const daily = info.name === dailyName;
       const headers = info.headerRows || [1];
       // Later progress blocks contain rates, not the reported quantities.
@@ -280,10 +281,7 @@ const campaignEditor = (() => {
           for (const [key,col] of columns) {
             if (!used(row[col-1])) continue;
             stage.observed.add(info.name);
-            if (!daily) {
-              if (info.name === '小订进度') hasHistorical = true;
-              continue;
-            }
+            if (!daily) continue;
             hasDaily = true;
             if (!dateStages.has(key)) dateStages.set(key,new Set());
             dateStages.get(key).add(stage);
@@ -299,7 +297,7 @@ const campaignEditor = (() => {
     const stageList = Array.from(models.values()).flatMap(variants=>Array.from(variants.values()));
     indexedWorkbook = current;
     indexedReports = {models,stageList,dates:[...dates].sort(),lastDailyDay,
-      metricDays,dateStages,defaultAxis:hasDaily && !hasAligned ? 'date' : 'day',hasHistorical};
+      metricDays,dateStages,defaultAxis:hasDaily && !hasAligned ? 'date' : 'day'};
     return indexedReports;
   }
   function reportStages() {
@@ -573,17 +571,13 @@ const campaignEditor = (() => {
   }
   function renderReport(query) {
     const index = reportIndex();
-    const legacy = '小订进度';
-    if (progressName === legacy && !index.hasHistorical) progressName = dailyName;
     const daily = progressName === dailyName;
     const filteredDates = searchDates(index,query);
     if (!filteredDates) dateSearchPosition=null;
     const axis = filteredDates ? 'date' : daily ? reportAxis || index.defaultAxis : 'day';
     const times = timelineAxis(index,axis,filteredDates);
     const select = (id,label,options,disabled=false)=>`<label class="inline-label">${label}<select id="${id}" aria-label="${label}" ${disabled?'disabled':''}>${options}</select></label>`;
-    const metrics = [option(dailyName,'每日小订',progressName),...current.sheets.slice(2)
-      .filter(info=>info.name !== legacy).map(info=>option(info.name,info.name,progressName))];
-    if (index.hasHistorical) metrics.push('<optgroup label="历史参考">'+option(legacy,'小订进度（历史）',progressName)+'</optgroup>');
+    const metrics = reportingSheets().map(info=>option(info.name,info.name===dailyName?'每日小订':info.name,progressName));
     const toolbar = [select('campaign-progress','指标',metrics.join(''))];
     if (daily) toolbar.push(select('report-axis','横轴',option('day','按日序',axis)+option('date','按日期',axis),Boolean(filteredDates)));
     if (!readonly) toolbar.push(index.stageList.some(stage=>stage.hasSummary) ? action('batch','批量粘贴') : action('new-stage','新增发布日程'));

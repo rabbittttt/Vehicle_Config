@@ -47,6 +47,8 @@ def legacy_file(model):
              for col, value in fields.items()]
     edits.append({'sheet': '小转大进度', 'model': model, 'secondary': '纯电版',
                   'section': 1, 'day': 1, 'value': 6})
+    edits.append({'sheet': '小订进度', 'model': model, 'secondary': '纯电版',
+                  'section': 1, 'day': 1, 'value': 63})
     book = load_workbook(BytesIO(export_workbook(apply_edits(empty_workbook(), edits))))
     # These independently maintained legacy values must survive a trip through the editor.
     summary = book['车型汇总']
@@ -54,6 +56,9 @@ def legacy_file(model):
     curve = book['小转大进度']
     d1 = next(cell.column for cell in curve[1] if cell.value == 'D1')
     curve.cell(curve.max_row, d1).value = .18
+    history = book['小订进度']
+    history_d1 = next(cell.column for cell in history[1] if cell.value == 'D1')
+    history.cell(history.max_row, history_d1).value = .37
     output = BytesIO()
     book.save(output)
     book.close()
@@ -132,7 +137,10 @@ def check_result_review(page):
     for rate in ['小订转化率', '直接大定占比', '小订后退定占比', '净大定率', '留存大定到锁单率', '大定到锁单率']:
         expect(rates.get_by_text(rate, exact=True)).to_be_visible()
     expect(rates.locator('input')).to_have_count(0)
-    expect(rates).to_contain_text('46%')
+    net_rate = rates.locator('div').filter(has=page.get_by_text('净大定率', exact=True))
+    expect(net_rate.locator('output')).to_have_text('46%')
+    expect(net_rate).to_contain_text('历史值，按数量计算 25%')
+    expect(net_rate).to_contain_text('首销期净大定 40 ÷ 总小订 160')
     for rate, formula in [('留存大定到锁单率', '首销期锁单 30 ÷ 首销期净大定 40'),
                           ('大定到锁单率', '首销期锁单 30 ÷ 大定量 77')]:
         entry = rates.locator('div').filter(has=page.get_by_text(rate, exact=True))
@@ -194,6 +202,9 @@ def check_reporting(page):
     expect(page.locator('[data-view=stageProgress]')).to_have_count(0)
     check_result_review(page)
     view(page, 'dailyOrders')
+    expect(page.locator('#campaign-progress option')).to_have_text([
+        '每日小订', '小订期退订进度', '小转大进度', '直接大定进度', '大定进度', '首销期退订进度',
+    ])
     page.get_by_role('button', name='批量粘贴').click()
     page.locator('[name=rows]').fill('2026-11-01\t0\n2026-11-02\t15')
     confirm(page)
@@ -230,6 +241,8 @@ def check_reporting(page):
     assert (result['小订待转单'], result['小订待转单占比'], result['净大定率']) == (91, .59, .46)
     curve = complete['小转大进度']
     assert curve[-1][curve[0].index('D1')] == .18
+    history = complete['小订进度']
+    assert [r[history[0].index('D1')] for r in history if r[0] == '历史车型'] == [63, .37]
     page.locator('#export').click()
     ready(page)
     for box in page.locator('[name=sheets]').all():
@@ -342,8 +355,10 @@ def seed_stage_matrix(campaign):
     ]:
         edits.append(dict(sheet='小订by天', model=model, secondary=secondary, date=date, value=value))
     edits.append(dict(sheet='车型汇总', row=2, col=10, value='2026-11-28'))
-    edits.append(dict(sheet='小订进度', model='矩阵车型', secondary='标准', section=1, day=1, value=63))
-    edits.append(dict(sheet='小订进度', model='仅有历史进度', secondary='', section=1, day=3, value=57))
+    edits.extend([dict(sheet='车型汇总', row=3, col=16, value=160),
+                  dict(sheet='车型汇总', row=3, col=26, value=40)])
+    edits.append(dict(sheet='小订期退订进度', model='矩阵车型', secondary='标准', section=1, day=1, value=63))
+    edits.append(dict(sheet='小订期退订进度', model='仅有历史进度', secondary='', section=1, day=3, value=57))
     snapshot = campaign.save(0, edits, '测试')
     daily = next(sheet for sheet in snapshot['sheets'] if sheet['name'] == '小订by天')
     # Old spreadsheets can have two physical rows for the same model, stage and date.
@@ -403,7 +418,7 @@ def check_stage_matrix(browser):
         expect(report_cell(row, 'D1')).to_have_text('0')
         historical = report_row(page, '仅有历史进度')
         expect(historical).to_have_count(0)
-        metric.select_option('小订进度')
+        metric.select_option('小订期退订进度')
         expect(report_cell(row, 'D1')).to_have_text('63')
         expect(report_cell(historical, 'D3')).to_have_text('57')
         expect(historical.locator('[data-campaign-action=report-add]')).to_have_count(0)
@@ -422,6 +437,8 @@ def check_stage_matrix(browser):
         expect(totals.locator('select[data-report-stage]')).to_have_value('焕新')
         totals.locator('[data-campaign-action=totals]').click()
         expect(page.get_by_label('大定量', exact=True)).to_have_value('82')
+        page.locator('.campaign-rates summary').click()
+        expect(page.get_by_label('净大定率', exact=True)).to_have_text('25%')
         page.locator('#cancel').click()
         view(page, 'dailyOrders')
         stage.select_option('标准')
@@ -439,6 +456,7 @@ def check_stage_matrix(browser):
         ready(page)
         expect(page.locator('#save')).to_be_disabled()
         sheets = {sheet['name']: sheet['rows'] for sheet in campaign.get()['sheets']}
+        assert sheets['车型汇总'][2][26] == .25
         observed = {}
         for record in sheets['小订by天']:
             if record[0] == '代际名':
@@ -451,7 +469,7 @@ def check_stage_matrix(browser):
         assert [r['2026-11-28'] for r in observed['矩阵车型', '标准']] == [9]
         assert [r['2026-11-02'] for r in observed['待定车型', '']] == [17, 19]
         assert len(observed) == 3
-        metric.select_option('小订进度')
+        metric.select_option('小订期退订进度')
         stage.select_option('标准')
         expect(report_cell(row, 'D1')).to_have_text('63')
         page.close()
