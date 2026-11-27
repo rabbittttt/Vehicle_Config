@@ -148,7 +148,7 @@ const campaignEditor = (() => {
       ${identityCell(r)}<td>${esc(displayValue(r[4]))}</td><td>${esc(displayValue(r[7]))}</td>
       <td>${esc(displayValue(r[5]))}</td>${timeWindow(r,8,9)}<td>${esc(displayValue(r[12]))}</td>
       <td>${esc(displayValue(r[6]))}</td>${timeWindow(r,10,11)}<td>${esc(displayValue(r[13]))}</td>${rowAction('stage',row)}</tr>`).join('');
-    $('#content').innerHTML = body ? table(['车型与阶段','发布类型','留资日期','小订发布时间','小订日期','小订天数','首销发布时段','首销日期','首销期天数','操作'],body) : empty(query?'没有匹配的日程':'暂无发布日程');
+    $('#content').innerHTML = body ? table(['车型与阶段','发布类型','留资日期','小订发布时段','小订起止日期','小订天数','首销发布时段','首销日期','首销期天数','操作'],body) : empty(query?'没有匹配的日程':'暂无发布日程');
   }
   function grossDifference(small,direct,gross) {
     if (![small,direct,gross].every(value=>Number.isFinite(value) && value>=0)) return '';
@@ -592,7 +592,7 @@ const campaignEditor = (() => {
     const derived = new Set(info.derivedCells || []);
     const scheduleReferences = info.name===summaryName ? [] : sheet(summaryName).rows[0].slice(0,14);
     function control(i) {
-      const field = String(labels[i]);
+      const field = labels[i]==='小订发布时间' ? '小订发布时段' : String(labels[i]);
       const coord = row+':'+(i+1);
       const computed = derived.has(coord) || (info.computed.includes(i+1) && !(info.literalCells||[]).includes(coord));
       const date = dateField(field);
@@ -611,12 +611,15 @@ const campaignEditor = (() => {
       const opts = number?'min="0" step="any"':'maxlength="256"';
       changes.push({i,number,percent,original:String(val)});
       const accessibleLabel = noteId ? ` aria-label="${esc(label)}"${description}` : '';
-      return `<label>${heading}<input name="f${i}" type="${type}"${accessibleLabel} ${opts} value="${esc(val)}" ${i===0?'required list="campaign-models"':''}></label>`;
+      const list = i===0 ? 'required list="campaign-models"' : field==='小订发布时段' ? 'list="small-order-periods"' : '';
+      return `<label>${heading}<input name="f${i}" type="${type}"${accessibleLabel} ${opts} value="${esc(val)}" ${list}></label>`;
     }
     const renderFields = columns => columns.filter(i=>used(labels[i])).map(control).join('');
     const controls = groups ? groups.map(([name,columns])=>`<fieldset class="wide campaign-field-group"><legend>${esc(name)}</legend><div class="form">${renderFields(columns)}</div></fieldset>`).join('') : renderFields(indexes);
     const suggestions = indexes.includes(0) ? `<datalist id="campaign-models">${modelNames().map(name=>option(name,name,'')).join('')}</datalist>` : '';
-    modal(title,`<form class="form campaign-form">${controls}${suggestions}</form>`, readonly?null:async values=>{
+    const periods = !readonly && info.name===summaryName && indexes.includes(5)
+      ? '<datalist id="small-order-periods"><option value="上午"></option><option value="下午"></option><option value="晚上"></option></datalist>' : '';
+    modal(title,`<form class="form campaign-form">${controls}${suggestions}${periods}</form>`, readonly?null:async values=>{
       const pending = [];
       for (const {i,number,percent,original} of changes) {
         const raw = String(values.get('f'+i)).trim();

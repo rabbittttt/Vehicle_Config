@@ -45,6 +45,29 @@ class CampaignStoreTests(unittest.TestCase):
         self.assertEqual(CampaignStore(self.temp.name).get(), state)
         self.assertFalse(list(Path(self.temp.name).rglob('*.xlsx')))
 
+    def test_legacy_period_header_survives_edit_and_export(self):
+        previous = self.store.save(0, [*self.edits, edit(6, '上午')], '甲', publish=True)
+        legacy = {'sheets': previous['sheets']}
+        legacy['sheets'][0]['rows'][0][5] = '小订发布时间'
+        payload = encode(legacy)
+        with self.store._write() as db:
+            db.execute('UPDATE publications SET data=? WHERE revision=1', (payload,))
+            db.execute('UPDATE draft SET data=?', (payload,))
+
+        draft = self.store.get()
+        self.assertFalse(draft['hasUnpublishedChanges'])
+        self.assertEqual(self.store.save(draft['revision'], [], '乙')['revision'], draft['revision'])
+        for source in ('draft', 'published'):
+            with BytesIO(self.store.export({'scope':'schedule'}, source=source)) as stream:
+                workbook = load_workbook(stream, read_only=True)
+                header, row = workbook.active.values
+                self.assertEqual((header[5], row[5]), ('小订发布时段', '上午'))
+                workbook.close()
+        self.store.save(draft['revision'], [edit(6, '晚上')], '乙', publish=True)
+        rows = self.store.published()['sheets'][0]['rows']
+        self.assertEqual((rows[0][5], rows[1][5], rows[1][8]), ('小订发布时段','晚上','2026-01-01'))
+        self.assertEqual(self.store.published(1)['sheets'], legacy['sheets'])
+
     def test_failed_publish_validation_keeps_existing_state(self):
         before = self.store.save(0, self.edits, '甲')
         with patch('campaign_store.validate_publication', side_effect=ValueError('日期错误')):

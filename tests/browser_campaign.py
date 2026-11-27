@@ -50,6 +50,7 @@ def legacy_file(model):
     book = load_workbook(BytesIO(export_workbook(apply_edits(empty_workbook(), edits))))
     # These independently maintained legacy values must survive a trip through the editor.
     summary = book['车型汇总']
+    summary['F1'], summary['F2'] = '小订发布时间', '上午'
     summary['X2'], summary['Y2'], summary['AA2'] = 91, .59, .46
     curve = book['小转大进度']
     d1 = next(cell.column for cell in curve[1] if cell.value == 'D1')
@@ -98,10 +99,17 @@ def check_configuration(page):
     confirm(page)
     view(page, 'launchSchedule')
     expect(page.locator('#content')).not_to_contain_text('大定量')
+    expect(page.get_by_role('columnheader', name='小订发布时段', exact=True)).to_be_visible()
     action(page, 'stage').click()
     expect(page.locator('#dialog [name=f2], #dialog [name=f18]')).to_have_count(0)
+    period = page.get_by_label('小订发布时段', exact=True)
+    expect(period).to_have_value('上午')
+    assert period.evaluate('el => Array.from(el.list.options, option => option.value)') == ['上午', '下午', '晚上']
+    period.fill('晚上')
+    expect(page.get_by_label('小订开始日期', exact=True)).to_have_value('2026-11-01')
     page.get_by_label('小订结束日期').fill('2026-11-03')
     confirm(page)
+    expect(page.locator('#content')).to_contain_text('晚上')
     action(page, 'stage').click()
     expect(page.locator('label').filter(has_text='小订天数').locator('output')).to_have_text('3')
     page.locator('#cancel').click()
@@ -116,6 +124,7 @@ def check_configuration(page):
     assert len(sheets) == 1
     headers, row = next(iter(sheets.values()))
     assert list(headers) == SUMMARY_FIELDS[:14]
+    assert headers[5] == '小订发布时段' and row[5] == '晚上'
     assert row[2] == '中大型' and row[12] == 3
 
 

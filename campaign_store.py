@@ -8,12 +8,20 @@ from tempfile import NamedTemporaryFile
 
 from catalog import Conflict, now, read_history_page
 from stage_workbook import (
-    apply_edits, backfill_totals, empty_workbook, export_workbook, import_workbook, validate_publication,
+    SUMMARY_FIELDS, apply_edits, backfill_totals, empty_workbook, export_workbook, import_workbook, validate_publication,
 )
 
 
 def encode(data):
     return json.dumps(data, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+
+
+def decode_workbook(payload):
+    data = json.loads(payload)
+    header = data['sheets'][0]['rows'][0]
+    if header[5] == '小订发布时间':
+        header[5] = SUMMARY_FIELDS[5]
+    return data
 
 
 def _data_rows(sheet):
@@ -139,13 +147,13 @@ class CampaignStore:
     @staticmethod
     def _response(row, data=None, error=''):
         if data is None:
-            data = backfill_totals(json.loads(row['data']))
+            data = backfill_totals(decode_workbook(row['data']))
         return {
             **data,
             'available': True,
             'revision': row['revision'],
             'publishedRevision': row['published_revision'],
-            'hasUnpublishedChanges': encode(data) != row['published_data'],
+            'hasUnpublishedChanges': data != decode_workbook(row['published_data']),
             'canImportLegacy': True,
             'canUndoImport': row['undo_revision'] is not None,
             'projectionPending': bool(error),
@@ -189,7 +197,7 @@ class CampaignStore:
         with closing(self.connect()) as db:
             row = self._current(db)
         self._check(row, revision)
-        data = apply_edits(json.loads(row['data']), edits)
+        data = apply_edits(decode_workbook(row['data']), edits)
         return self._response(row, data)
 
     @staticmethod
@@ -209,13 +217,14 @@ class CampaignStore:
         with self._write() as db:
             row = self._current(db)
             self._check(row, revision)
-            data = apply_edits(json.loads(row['data']), edits)
+            draft = decode_workbook(row['data'])
+            data = apply_edits(draft, edits)
             payload = encode(data)
             if publish:
                 validate_publication(data)
-                if payload == row['published_data']:
+                if data == decode_workbook(row['published_data']):
                     raise ValueError('没有需要发布的小订与首销变更')
-            if publish or payload != row['data']:
+            if publish or data != draft:
                 self._update(db, row, payload, '发布' if publish else '草稿', actor)
         return self.get()
 
@@ -223,7 +232,7 @@ class CampaignStore:
         with closing(self.connect()) as db:
             row = self._current(db)
         self._check(row, revision)
-        current = backfill_totals(json.loads(row['data']))
+        current = backfill_totals(decode_workbook(row['data']))
         incoming = import_workbook(path)
         changes = import_comparison(current, incoming)
         identical = current == incoming
@@ -238,7 +247,7 @@ class CampaignStore:
         with self._write() as db:
             row = self._current(db)
             self._check(row, revision)
-            current = backfill_totals(json.loads(row['data']))
+            current = backfill_totals(decode_workbook(row['data']))
             if current != incoming:
                 if current != empty_workbook() and confirm_replace is not True:
                     raise ValueError('请预览差异并确认替换现有草稿')
@@ -264,5 +273,5 @@ class CampaignStore:
             raise ValueError('小订与首销尚未发布')
         if source not in ('draft', 'published'):
             raise ValueError('未知的导出来源')
-        data = backfill_totals(json.loads(row['data'])) if source == 'draft' else json.loads(row['published_data'])
+        data = backfill_totals(decode_workbook(row['data'])) if source == 'draft' else decode_workbook(row['published_data'])
         return export_workbook(data, selection)

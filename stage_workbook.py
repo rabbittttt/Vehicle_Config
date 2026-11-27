@@ -25,7 +25,7 @@ CONVERTED = '小转大进度'
 DIRECT = '直接大定进度'
 PRIMARY = '代际名'
 SECONDARY = '二级代际名'
-SUMMARY_FIELDS = [PRIMARY, SECONDARY, '产品档位', '能源类型', '发布类型', '小订发布时间',
+SUMMARY_FIELDS = [PRIMARY, SECONDARY, '产品档位', '能源类型', '发布类型', '小订发布时段',
                   '首销发布时段', '留资', '小订开始日期', '小订结束日期', '开始大定日期',
                   '首销结束日期', '小订天数', '首销期天数', None, '总小订', '小订转大定量',
                   '小订转化率', '大定量', '直接大定量', '直接大定占比', '小订后退定', '小订后退定占比',
@@ -54,8 +54,8 @@ SHEET_ALIASES = {'传播名汇总':SUMMARY, '小订按天':DAILY, '小订期退�
                  '首销期退定进度':'首销期退订进度'}
 HEADER_ALIASES = {
     PRIMARY:('传播名','历史传播名','车型','车型名称'), SECONDARY:('二级代际',),
-    '留资':('留资日期',), '小订发布时间':('小订发布时段',), '首销发布时段':('首销发布时间',),
-    '小订开始日期':('小订开始','小订开启日期'), '小订结束日期':('小订结束','小订截止日期'),
+    '留资':('留资日期',), '小订发布时段':('小订发布时间',), '首销发布时段':('首销发布时间',),
+    '小订开始日期':('小订开始','小订开启日期','小订发布日期','小订开始时间'), '小订结束日期':('小订结束','小订截止日期'),
     '开始大定日期':('大定开始日期','首销开始日期','发布日','上市日期'),
     '首销结束日期':('首销期结束日期','首销结束','首销截止日期','首销截止'),
     '小订天数':('小订期天数',), '首销期天数':('首销天数','首销周期天数'),
@@ -194,7 +194,10 @@ def _import_scalar(cell, field, epoch):
     if cell.data_type == 'e':
         raise ValueError(f'单元格 {cell.coordinate} 含 Excel 错误 {value}')
     if field in DATE_FIELDS and value not in (None,''):
-        match = re.fullmatch(r'(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?',str(value).strip())
+        text = str(value).strip()
+        if field == '小订开始日期' and re.match(r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:', text):
+            return datetime.fromisoformat(text).date().isoformat()
+        match = re.fullmatch(r'(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?',text)
         if match:
             return date(*map(int,match.groups())).isoformat()
         raise ValueError(f'{cell.coordinate} 无法识别日期 {value}')
@@ -230,7 +233,7 @@ def _summary_layout(cells):
         if title not in SUMMARY_FIELDS:
             raise ValueError(f'车型汇总 {cell.coordinate} 含未识别字段「{field}」，请核对表头')
         idx = SUMMARY_FIELDS.index(title)
-        if idx in mapping.values():
+        if idx in mapping.values() and title != '小订开始日期':
             raise ValueError(f'车型汇总 {cell.coordinate} 重复对应字段「{title}」')
         mapping[j] = idx
     if 0 not in mapping.values():
@@ -252,22 +255,23 @@ def _cached(cell, cache_cell, sheet, numeric):
     return cache_cell
 
 
-def _canonical_formula(col, n, mapping):
+def _matches_canonical_formula(formula, col, n, mapping):
     refs = {idx+1:get_column_letter(source+1)+str(n) for source,idx in mapping.items()}
     try:
         if col in RATIOS:
             a,b = RATIOS[col]
-            return f'={refs[a]}/{refs[b]}'
+            return formula == f'={refs[a]}/{refs[b]}'
         if col in (13,14):
             a,b = (9,10) if col==13 else (11,12)
-            return f'={refs[b]}-{refs[a]}+1'
+            return any(formula == f'={refs[b]}-{get_column_letter(j+1)}{n}+1'
+                       for j,idx in mapping.items() if idx == a-1)
         if col==24:
-            return f'=MAX({refs[16]}-{refs[17]}-{refs[22]},0)'
+            return formula == f'=MAX({refs[16]}-{refs[17]}-{refs[22]},0)'
         if col==25:
-            return f'=IFERROR({refs[24]}/{refs[16]},0)'
+            return formula == f'=IFERROR({refs[24]}/{refs[16]},0)'
     except KeyError:
-        return None
-    return None
+        return False
+    return False
 
 
 def _summary_row(cells, caches, mapping, n, epoch):
@@ -290,12 +294,17 @@ def _summary_row(cells, caches, mapping, n, epoch):
                     value = _num(value.strip()[:-1])/100
                 else:
                     value = _num(value,integer=field not in RATE_FIELDS)
+            if field == '小订开始日期':
+                if value in (None, ''):
+                    continue
+                if row[idx] is not None and value != row[idx]:
+                    raise ValueError('与同一行的另一列小订开始日期不一致')
             row[idx] = value
         except (TypeError,ValueError,OverflowError) as exc:
             raise ValueError(f'车型汇总 {cell.coordinate}「{field}」：{exc}') from exc
         if idx+1 in COMPUTED and cell.data_type=='f':
             formula = str(cell.value).upper().replace('$','').replace(' ','')
-            if formula != _canonical_formula(idx+1,n,mapping):
+            if not _matches_canonical_formula(formula,idx+1,n,mapping):
                 override.add(idx+1)
         elif idx+1 in (24,25,30):
             override.add(idx+1)

@@ -75,6 +75,22 @@ class CampaignWorkbookTests(unittest.TestCase):
         edited = apply_edits(import_workbook(raw),summary(2,**{'16':20}))
         self.assertEqual(.1,edited['sheets'][0]['rows'][1][17])
 
+    def test_release_date_and_start_time_share_one_date(self):
+        columns = ['代际名','小订发布日期','小订开始时间','小订结束日期','小订天数','小订发布时间']
+        for published, start in [(None, '2026-01-02 09:00'), ('2026/1/2', None),
+                                 ('2026/1/2', datetime(2026,1,2,14))]:
+            formula = '=D2-C2+1' if published is None else '=D2-B2+1'
+            source = self.legacy(columns, ['甲', published, start, '2026-01-04', formula, '下午'],
+                                 cache={'E2':('n','3')})
+            data = import_workbook(source)
+            header, row = data['sheets'][0]['rows']
+            self.assertEqual(header[5], '小订发布时段')
+            self.assertEqual((row[5], row[8], row[12]), ('下午','2026-01-02',3))
+            edited = apply_edits(data, summary(2, **{'9':'2026-01-03'}))
+            self.assertEqual(edited['sheets'][0]['rows'][1][12], 2)
+        with self.assertRaisesRegex(ValueError, 'C2.*不一致'):
+            import_workbook(self.legacy(columns, ['甲','2026-01-02','2026-01-03']))
+
     def test_invalid_import_names_and_caches_locate_the_source(self):
         for fields,body,expected in [
             (['代际名','车型名称'],['甲','乙'],'重复对应'),
