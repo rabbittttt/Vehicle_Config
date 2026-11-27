@@ -578,10 +578,26 @@ def check_review_backfill(browser):
 
 
 def check_module_imports(browser):
-    def upload(page, raw):
+    from datetime import date
+
+    def filled_template(page, filename, sheet, values):
+        with page.expect_download() as received:
+            page.locator('#template').click()
+        assert received.value.suggested_filename == filename
+        book = load_workbook(BytesIO(Path(received.value.path()).read_bytes()))
+        try:
+            for address, value in values.items():
+                book[sheet][address] = value
+            buffer = BytesIO()
+            book.save(buffer)
+            return buffer.getvalue()
+        finally:
+            book.close()
+
+    def upload(page, raw, filename='局部导出.xlsx'):
         with page.expect_file_chooser() as chooser:
             page.get_by_role('button', name='导入', exact=True).click()
-        chooser.value.set_files({'name':'局部导出.xlsx','mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':raw})
+        chooser.value.set_files({'name':filename,'mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':raw})
         expect(page.get_by_role('heading',name='导入预览')).to_be_visible()
 
     with TemporaryDirectory() as directory, isolated_server(directory) as (url, store, *_):
@@ -596,13 +612,21 @@ def check_module_imports(browser):
         upload(page, raw)
         page.locator('#cancel').click()
         expect(page.locator('#content')).not_to_contain_text('导入车型')
-        upload(page, raw)
+        schedule_template = '车型与日程-导入模板.xlsx'
+        raw = filled_template(page, schedule_template, '车型汇总', {'A2':'导入车型', 'C2':'模板档位'})
+        upload(page, raw, schedule_template)
         confirm(page)
         expect(page.locator('#content')).to_contain_text('导入车型')
+        expect(page.locator('#content')).to_contain_text('模板档位')
         tab(page, 'reporting')
         raw = export_workbook(data, {'sheets':['小订by天'],'dateFrom':'2026-11-26'})
         upload(page, raw)
         expect(page.locator('#dialog-body')).to_contain_text('小订by天')
+        page.locator('#cancel').click()
+        reporting_template = '小订首销填报-导入模板.xlsx'
+        raw = filled_template(page, reporting_template, '小订by天',
+                              {'C1':date(2026,11,26), 'A2':'导入车型', 'C2':0})
+        upload(page, raw, reporting_template)
         confirm(page)
         # The reporting import previews against the unsaved stage and can be undone separately.
         assert campaign.get()['revision']==0
@@ -615,7 +639,9 @@ def check_module_imports(browser):
         fill_owner(page)
         page.locator('#save').click()
         ready(page)
-        daily = next(s for s in campaign.get()['sheets'] if s['name']=='小订by天')
+        saved = {s['name']: s for s in campaign.get()['sheets']}
+        assert saved['车型汇总']['rows'][1][:3] == ['导入车型', None, '模板档位']
+        daily = saved['小订by天']
         assert daily['rows'][1][daily['rows'][0].index('2026-11-26')]==0
         page.close()
 

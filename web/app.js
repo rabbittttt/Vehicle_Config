@@ -80,10 +80,8 @@ function flags() {
   $('#publish').disabled=readonly || history || !ready || !editor.canPublish();
   setText($('#publish'),isRuleView()?'发布并更新脚本':'发布数据');
   for(const id of ['save','publish','undo','redo']) $('#'+id).hidden=history;
-  $('#template').hidden=!isRuleView() || tab==='history';
-  $('#import').hidden=tab==='history';
+  for(const id of ['template','import','export']) $('#'+id).hidden=tab==='history';
   $('#import').disabled=readonly || !ready;
-  $('#export').hidden=tab==='history';
   $('#export').disabled=$('#template').disabled=!ready;
   $('#clear-filters').disabled=!searchValue();
   $('#campaign-import').hidden=$('#reload-rules').hidden=readonly;
@@ -440,7 +438,11 @@ $('#export').onclick=()=>{
   if(tab==='schedule' && !scheduleToolsAvailable) return notice('重启车型配置服务后可导出 A–N 列。',true);
   run(activeEditor().openExport,'正在导出…');
 };
-$('#template').onclick=()=>run(orderRules.template);
+$('#template').onclick=()=>run(()=>{
+  if(isRuleView()) return orderRules.template();
+  const name=isReportingView()?'小订首销填报':'车型与日程';
+  return download('campaign/template?scope='+tab,undefined,name+'-导入模板.xlsx');
+});
 $('#import').onclick=()=>{
   $('#file').multiple=isRuleView();
   $('#file').click();

@@ -7,6 +7,22 @@ from browser_rules_check import add_vehicle, fill_owner, isolated_server, ready,
 from campaign_store import CampaignStore
 
 
+def check_header_actions(page, tab):
+    actions = page.locator('header .top-actions :is(#template, #import, #export, #data-tools):visible')
+    expected = ['data-tools'] if tab == 'history' else ['template', 'import', 'export', 'data-tools']
+    expect(actions).to_have_count(len(expected))
+    assert actions.evaluate_all('buttons => buttons.map(button => button.id)') == expected
+    boxes = [button.bounding_box() for button in actions.all()]
+    center_y = boxes[0]['y'] + boxes[0]['height'] / 2
+    assert all(box['y'] <= center_y <= box['y'] + box['height'] for box in boxes), tab
+    assert all(left['x'] + left['width'] <= right['x'] + 1 for left, right in zip(boxes, boxes[1:])), tab
+    assert boxes[0]['x'] >= 0 and boxes[-1]['x'] + boxes[-1]['width'] <= page.viewport_size['width'] + 1, tab
+    if page.viewport_size['width'] > 700:
+        nav = page.locator('header nav').bounding_box()
+        assert nav['y'] <= center_y <= nav['y'] + nav['height'], tab
+        assert nav['x'] + nav['width'] <= boxes[0]['x'] + 1, tab
+
+
 def test_editor(browser):
     with tempfile.TemporaryDirectory() as directory, isolated_server(directory) as (url, store, rules, _):
         page = browser.new_page(viewport={"width": 1120, "height": 820})
@@ -41,7 +57,7 @@ def test_editor(browser):
         page.keyboard.press("Control+Shift+z")
         expect(page.locator("#content")).to_contain_text("未保存车型甲")
         expect(page.locator("#export")).to_have_accessible_name("导出车型与日程（Excel）")
-        expect(page.locator("#template")).to_be_hidden()
+        expect(page.locator("#template")).to_be_enabled()
         expect(page.locator("#import")).to_be_visible()
         expect(page.locator("#import")).to_have_accessible_name("导入")
         expect(page.locator("#import")).to_have_attribute("title", "导入车型与日程（Excel）")
@@ -191,6 +207,7 @@ def test_global_tools(browser):
 
         for tab in ("schedule", "generation", "options", "reporting", "history"):
             page.locator(f"[data-tab={tab}]").click()
+            check_header_actions(page, tab)
             tools.focus()
             tools.press("Enter")
             expect(tools).to_have_attribute("aria-expanded", "true")
@@ -203,6 +220,8 @@ def test_global_tools(browser):
             expect(tools).to_be_focused()
 
         page.set_viewport_size({"width": 390, "height": 844})
+        page.locator("[data-tab=reporting]").click()
+        check_header_actions(page, "reporting")
         tools.click()
         expect(reload_rules).to_be_in_viewport(ratio=1)
         expect(panel.get_by_role("button", name="运行路径")).to_be_in_viewport(ratio=1)

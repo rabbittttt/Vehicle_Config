@@ -1298,6 +1298,22 @@ def _within_dates(sheet, start_date, end_date):
     return _sheet(DAILY,projected or [[PRIMARY,'合计',SECONDARY]])
 
 
+def module_template(scope):
+    if scope == 'schedule':
+        return export_workbook(empty_workbook(), {'scope':'schedule'})
+    if scope != 'reporting':
+        raise ValueError('请选择车型与日程或小订首销填报模板')
+
+    day_columns = [f'D{i}' for i in range(1,71)]
+    sheets = [_sheet(DAILY, [[PRIMARY, SECONDARY, date.today().isoformat()]])]
+    for name in PROGRESS_FIELDS:
+        if name != GROSS:
+            sheets.append(_sheet(name, [[PRIMARY, SECONDARY, *day_columns]]))
+    review_fields = [SUMMARY_FIELDS[col-1] for col in sorted(REVIEW_COLUMNS)]
+    sheets.append(_sheet(SUMMARY, [[PRIMARY, SECONDARY, *review_fields]]))
+    return export_workbook({'sheets':sheets})
+
+
 def export_workbook(data, selection=None):
     selection = {} if selection is None else selection
     if not isinstance(selection,dict):

@@ -7,7 +7,7 @@ from catalog import CATALOG_DB, Store, Conflict, PUBLISH_REQUIRED, IDENTITY_FIEL
 from shared_rules import RuleStore, validate as validate_rules
 from rules_excel import rules_excel, preview_rules_import
 from campaign_store import CampaignStore
-from stage_workbook import module_import_edits
+from stage_workbook import module_import_edits, module_template
 from xlsx_input import WorkbookBatch
 ROOT=Path(__file__).resolve().parent
 
@@ -92,6 +92,9 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     return self.send(200,runtime_info(store.root,rules.source_path,path_sources or {}))
                 if path=='/api/rules/state':return self.send(200,rules.get())
                 if path=='/api/campaign/state':return self.send(200,campaigns.get())
+                if path=='/api/campaign/template':
+                    scope=parse_qs(urlsplit(self.path).query).get('scope',[''])[0]
+                    return self.send(200,module_template(scope),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 if path=='/api/campaign/published':
                     requested=parse_qs(urlsplit(self.path).query).get('revision')
                     return self.send(200,campaigns.published(int(requested[0]) if requested else None))

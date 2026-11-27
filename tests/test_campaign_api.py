@@ -1,3 +1,4 @@
+import base64
 import json
 from datetime import datetime
 from io import BytesIO
@@ -10,7 +11,7 @@ from urllib.request import Request, urlopen
 from openpyxl import load_workbook
 from catalog import Store
 from server import make_server
-from stage_workbook import SUMMARY, SUMMARY_FIELDS
+from stage_workbook import DAILY, GROSS, PROGRESS_FIELDS, REVIEW_COLUMNS, SUMMARY, SUMMARY_FIELDS
 
 
 class CampaignApiTests(unittest.TestCase):
@@ -60,6 +61,66 @@ class CampaignApiTests(unittest.TestCase):
             self.assertNotIn(12, entries[1])
         finally:
             book.close()
+
+    def test_module_templates_fill_and_import_without_copying_draft_rows(self):
+        def template(scope):
+            with urlopen(self.base+'campaign/template?scope='+scope) as response:
+                self.assertEqual(response.headers.get_content_type(),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                raw = response.read()
+            self.assertEqual(preview(scope, raw), [])
+            book = load_workbook(BytesIO(raw))
+            self.addCleanup(book.close)
+            self.assertTrue(all(sheet.max_row==1 for sheet in book))
+            return book
+
+        def preview(scope, raw):
+            with self.post('module-import-preview', {
+                'scope':scope, 'revision':revision, 'name':'已填写的模板.xlsx',
+                'content':base64.b64encode(raw).decode('ascii'),
+            }) as response:
+                return json.load(response)['edits']
+
+        def fill_and_save(scope, book):
+            output = BytesIO()
+            book.save(output)
+            edits = preview(scope, output.getvalue())
+            with self.post('save', {'revision':revision,'edits':edits,'owner':'验收'}) as response:
+                return json.load(response)
+
+        revision = 0
+        schedule = template('schedule')
+        self.assertEqual(schedule.sheetnames,[SUMMARY])
+        self.assertEqual(list(next(schedule.active.values)),SUMMARY_FIELDS[:14])
+        schedule.active.append(['车型甲','阶段一','高配','纯电','发布','下午','晚上',
+                                datetime(2026,11,1),datetime(2026,11,2)])
+        state = fill_and_save('schedule',schedule)
+        revision = state['revision']
+        self.assertEqual(state['sheets'][0]['rows'][1][7:9],['2026-11-01','2026-11-02'])
+        template('schedule')  # The saved vehicle must not appear in a new template.
+
+        report = template('reporting')
+        self.assertEqual(set(report.sheetnames), {SUMMARY,DAILY,*PROGRESS_FIELDS} - {GROSS})
+        self.assertIsInstance(report[DAILY]['C1'].value,datetime)
+        report[DAILY]['C1'] = datetime(2026,11,7)
+        report[DAILY].append(['车型甲','阶段一',0])
+        for name in set(PROGRESS_FIELDS)-{GROSS}:
+            self.assertEqual(report[name]['C1'].value,'D1')
+            report[name].append(['车型甲','阶段一',5])
+        review = report[SUMMARY]
+        columns = list(next(review.values))
+        self.assertEqual(columns, [*SUMMARY_FIELDS[:2],*[SUMMARY_FIELDS[i-1] for i in sorted(REVIEW_COLUMNS)]])
+        review.append(['车型甲','阶段一'])
+        review.cell(2,columns.index('首销期锁单')+1,7)
+        state = fill_and_save('reporting',report)
+        sheets = {item['name']:item['rows'] for item in state['sheets']}
+        self.assertEqual(sheets[DAILY][1][sheets[DAILY][0].index('2026-11-07')],0)
+        self.assertEqual(sheets[SUMMARY][1][SUMMARY_FIELDS.index('首销期锁单')],7)
+        for name in set(PROGRESS_FIELDS)-{GROSS}:
+            self.assertEqual(sheets[name][1][sheets[name][0].index('D1')],5)
+        with self.assertRaises(HTTPError) as failed:
+            urlopen(self.base+'campaign/template?scope=other')
+        self.assertEqual(failed.exception.code,400)
+        failed.exception.close()
 
     def test_schedule_only_exports_selected_stage_and_saved_edition(self):
         values = [(2, 1, '车型甲'), (2, 2, '甲一期'), (2, 3, '标准'),
