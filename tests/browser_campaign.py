@@ -341,6 +341,7 @@ def seed_stage_matrix(campaign):
         ('待定车型', '', '2026-11-02', 17),
     ]:
         edits.append(dict(sheet='小订by天', model=model, secondary=secondary, date=date, value=value))
+    edits.append(dict(sheet='车型汇总', row=2, col=10, value='2026-11-28'))
     edits.append(dict(sheet='小订进度', model='矩阵车型', secondary='标准', section=1, day=1, value=63))
     edits.append(dict(sheet='小订进度', model='仅有历史进度', secondary='', section=1, day=3, value=57))
     snapshot = campaign.save(0, edits, '测试')
@@ -372,6 +373,17 @@ def check_stage_matrix(browser):
         expect(page.locator('#report-axis')).to_have_value('day')
         expect(report_cell(row, 'D1')).to_have_text('0')
         expect(report_cell(row, 'D2')).to_have_text('—')
+        matrix = page.locator('.report-matrix')
+        matrix.evaluate('el => el.scrollLeft = el.scrollWidth')
+        late_day = report_cell(row, 'D28')
+        expect(late_day).to_have_text('—')
+        late_day.click()
+        expect(page.get_by_label('日期', exact=True)).to_have_value('2026-11-28')
+        page.get_by_label('小订量').fill('9')
+        before_apply = matrix.evaluate('el => el.scrollLeft')
+        confirm(page)
+        expect(late_day).to_have_text('9')
+        assert abs(matrix.evaluate('el => el.scrollLeft') - before_apply) <= 1
         search = page.locator('#search')
         search.fill('2026-11-05')
         expect(rows).to_have_count(1)
@@ -385,6 +397,9 @@ def check_stage_matrix(browser):
         expect(report_cell(report_row(page, '待定车型'), '2026-11-02')).to_have_text(['17', '31'])
         search.fill('')
         expect(page.locator('#report-axis')).to_have_value('day')
+        expect(late_day).to_have_text('9')
+        assert abs(matrix.evaluate('el => el.scrollLeft') - before_apply) <= 1
+        matrix.evaluate('el => el.scrollLeft = 0')
         expect(report_cell(row, 'D1')).to_have_text('0')
         historical = report_row(page, '仅有历史进度')
         expect(historical).to_have_count(0)
@@ -433,6 +448,7 @@ def check_stage_matrix(browser):
                 observed.setdefault((record[0], fields.get('二级代际名') or ''), []).append(fields)
         assert [r['2026-11-05'] for r in observed['矩阵车型', '焕新']] == [27]
         assert [r['2026-11-01'] for r in observed['矩阵车型', '标准']] == [0]
+        assert [r['2026-11-28'] for r in observed['矩阵车型', '标准']] == [9]
         assert [r['2026-11-02'] for r in observed['待定车型', '']] == [17, 19]
         assert len(observed) == 3
         metric.select_option('小订进度')

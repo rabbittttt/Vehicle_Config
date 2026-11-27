@@ -224,10 +224,9 @@ const campaignEditor = (() => {
     form.addEventListener('input',update);
     update();
   }
-  const reportWidth = 10;
   const reportVariants = new Map();
-  let reportAxis, reportOffset, indexedWorkbook, indexedReports;
-  let dateSearchTerm = '', dateSearchOffset = 0;
+  const timelinePositions = new Map();
+  let reportAxis, indexedWorkbook, indexedReports, calendarTarget, dateSearchPosition, stopTimeline;
   function dateKey(value) {
     const stamp = dateText(value);
     return /^\d{4}-\d{2}-\d{2}$/.test(stamp) && Number.isFinite(Date.parse(stamp)) ? stamp : '';
@@ -237,8 +236,8 @@ const campaignEditor = (() => {
   }
   function reportIndex() {
     if (indexedWorkbook === current) return indexedReports;
-    const models = new Map(), dates = new Set(), dayOffsets = new Set([0]);
-    const metricDays = new Map(), observedDays = new Map(), dateStages = new Map();
+    const models = new Map(), dates = new Set(), metricDays = new Map(), dateStages = new Map();
+    let lastDailyDay = 1;
     let hasDaily = false, hasAligned = false, hasHistorical = false;
     function findStage(model, secondary) {
       if (!models.has(model)) models.set(model, new Map());
@@ -253,6 +252,9 @@ const campaignEditor = (() => {
       // Duplicate summary identities do not unambiguously specify an anchor.
       stage.start = stage.hasSummary ? '' : dateKey(row[8]);
       stage.hasSummary = true;
+      const end = dateKey(row[9]);
+      if (stage.start && end) lastDailyDay = Math.max(lastDailyDay,dayNumber(end)-dayNumber(stage.start)+1);
+      stage.openEnded = !end;
     }
     for (const info of current.sheets.slice(1)) {
       const daily = info.name === dailyName;
@@ -267,7 +269,7 @@ const campaignEditor = (() => {
           if (axis) columns.set(axis,index+1);
         });
         if (daily) for (const date of columns.keys()) dates.add(date);
-        else metricDays.set(info.name,[...columns.keys()].map(key=>Number(key.slice(1))).sort((a,b)=>a-b));
+        else metricDays.set(info.name,[...columns.keys()]);
         const end = (headers[i+1] || info.rows.length+1)-1;
         for (let r = head; r < end; r++) {
           const row = info.rows[r], model = row[0];
@@ -279,7 +281,6 @@ const campaignEditor = (() => {
             if (!used(row[col-1])) continue;
             stage.observed.add(info.name);
             if (!daily) {
-              observedDays.set(info.name,Math.min(observedDays.get(info.name) || Infinity,Number(key.slice(1))));
               if (info.name === '小订进度') hasHistorical = true;
               continue;
             }
@@ -289,16 +290,16 @@ const campaignEditor = (() => {
             if (key > stage.lastDate) stage.lastDate = key;
             if (!stage.start || key < stage.start) continue;
             hasAligned = true;
-            const dayIndex = dayNumber(key) - dayNumber(stage.start);
-            dayOffsets.add(Math.floor(dayIndex/reportWidth)*reportWidth);
+            const day = dayNumber(key) - dayNumber(stage.start) + 1;
+            lastDailyDay = Math.max(lastDailyDay,day+(stage.openEnded ? 1 : 0));
           }
         }
       }
     }
     const stageList = Array.from(models.values()).flatMap(variants=>Array.from(variants.values()));
     indexedWorkbook = current;
-    indexedReports = {models,stageList,dates:[...dates].sort(),dayOffsets:[...dayOffsets].sort((a,b)=>a-b),
-      metricDays,observedDays,dateStages,defaultAxis:hasDaily && !hasAligned ? 'date' : 'day',hasHistorical};
+    indexedReports = {models,stageList,dates:[...dates].sort(),lastDailyDay,
+      metricDays,dateStages,defaultAxis:hasDaily && !hasAligned ? 'date' : 'day',hasHistorical};
     return indexedReports;
   }
   function reportStages() {
@@ -370,7 +371,7 @@ const campaignEditor = (() => {
     return visible.find(stage=>stage.secondary === reportVariants.get(stage.model)) ||
       visible.find(stage=>stage.observed?.has(progressName)) || visible[0];
   }
-  function reportIdentity(variants,stage) {
+  function reportIdentity(variants,stage,extra='') {
     const shortName = item => {
       const name = item.secondary;
       if (!name) return '未分阶段';
@@ -381,7 +382,7 @@ const campaignEditor = (() => {
       const options = variants.map(item=>`<option value="${esc(item.secondary)}" title="${esc(item.secondary)}" ${item.secondary===stage.secondary?'selected':''}>${esc(shortName(item))}</option>`).join('');
       secondary = `<select data-report-stage aria-label="${esc(stage.model+' · 二级代际')}" title="${esc(stage.secondary)}">${options}</select>`;
     } else if (stage.secondary && stage.secondary !== stage.model) secondary = `<small title="${esc(stage.secondary)}">${esc(shortName(stage))}</small>`;
-    return `<th scope="row"><span class="report-name">${esc(stage.model)}</span>${secondary}</th>`;
+    return `<th scope="row" aria-colindex="1"><span class="report-name">${esc(stage.model)}</span>${secondary}${extra}</th>`;
   }
   function wireReportStages() {
     for (const select of $('#content').querySelectorAll('[data-report-stage]')) {
@@ -399,34 +400,31 @@ const campaignEditor = (() => {
       matched([stage.model,stage.secondary],query))) return null;
     return index.dates.filter(date=>date.startsWith(query) && index.dateStages.has(date));
   }
-  function reportWindows(index,axis,filteredDates) {
-    const calendar = axis === 'date';
-    let dates = filteredDates ?? index.dates;
-    if (calendar && !dates.length && !filteredDates) {
-      const today = new Date();
-      dates = [new Date(today.getTime()-today.getTimezoneOffset()*60000).toISOString().slice(0,10)];
+  function timelineAxis(index,axis,filteredDates) {
+    if (axis === 'date') {
+      let keys = filteredDates ?? index.dates;
+      if (!keys.length && !filteredDates) {
+        const today = new Date();
+        keys = [new Date(today.getTime()-today.getTimezoneOffset()*60000).toISOString().slice(0,10)];
+      }
+      return {length:keys.length, key:i=>keys[i], index:key=>keys.indexOf(key)};
     }
-    let offsets;
-    if (calendar) offsets = Array.from({length:Math.ceil(dates.length/reportWidth)},(_,i)=>i*reportWidth);
-    else if (progressName === dailyName) offsets = index.dayOffsets;
-    else {
-      const days = index.metricDays.get(progressName) || [];
-      offsets = [...new Set([0,...days.map(day=>Math.floor((day-1)/reportWidth)*reportWidth)])];
+    let days = index.lastDailyDay, extra = [];
+    if (progressName !== dailyName) {
+      const keys = index.metricDays.get(progressName) || [];
+      // New progress columns follow the service limit. Keep imported sparse headers verbatim.
+      days = Math.min(1004,Math.max(1,...keys.map(key=>Number(key.slice(1)))));
+      extra = keys.filter(key=>Number(key.slice(1))>days).sort((a,b)=>a.length-b.length || a.localeCompare(b));
     }
-    const firstObservation = index.observedDays.get(progressName) || 1;
-    const initial = calendar ? (filteredDates ? 0 : offsets.at(-1)) : Math.floor((firstObservation-1)/reportWidth)*reportWidth;
-    const requested = filteredDates ? dateSearchOffset : reportOffset;
-    const offset = offsets.includes(requested) ? requested : initial;
-    const keys = calendar ? dates.slice(offset,offset+reportWidth) : Array.from({length:reportWidth},(_,i)=>'D'+(offset+i+1));
-    const range = i=> calendar ? dates[i]+' – '+dates[Math.min(i+reportWidth-1,dates.length-1)] : `D${i+1} – D${i+reportWidth}`;
-    return {offsets,offset,keys,range};
+    return {length:days+extra.length, key:i=>i<days ? 'D'+(i+1) : extra[i-days],
+      index:key=>Number(key.slice(1))<=days ? Number(key.slice(1))-1 : days+extra.indexOf(key)};
   }
-  function reportCell(stage,records,key,axis) {
+  function reportCell(stage,records,key,axis,colIndex) {
     let target = key;
     if (progressName === dailyName && axis === 'day') {
       const time = (dayNumber(stage.start) + Number(key.slice(1)) - 1) * 86400000;
       target = new Date(time).toISOString().split('T')[0];
-      if (!dateKey(target)) return '<td>—</td>';
+      if (!dateKey(target)) return `<td aria-colindex="${colIndex}">—</td>`;
     }
     const matches = records.filter(record=>record.columns.has(target));
     // Disjoint blocks and repeated historical rows retain their physical coordinates.
@@ -442,20 +440,136 @@ const campaignEditor = (() => {
         used(value) ? numericText(value) : '未填'].filter(Boolean).join(' · ');
       return action('report-cell',text,`class="${cls}" ${attributes} ${location} aria-label="${esc(label)}" title="${esc(label)}"`);
     });
-    return `<td>${buttons.join(' ')}</td>`;
+    return `<td aria-colindex="${colIndex}">${buttons.join(' ')}</td>`;
   }
-  function reportRow(variants,stage,keys,axis) {
-    const records = stage.records.get(progressName) || [];
-    const attrs = `class="link" data-model="${esc(stage.model)}" data-secondary="${esc(stage.secondary)}"`;
-    let cells;
-    if (progressName === dailyName && axis === 'day' && !stage.start) {
-      cells = `<td colspan="${keys.length}"><button type="button" class="link" data-report-calendar="${esc(stage.lastDate)}" aria-label="${esc(stage.label+' · 按日期查看')}">按日期查看</button></td>`;
-    } else cells = keys.map(key=>reportCell(stage,records,key,axis)).join('');
-    const controls = [];
-    if (!readonly && stage.hasSummary && records.length <= 1) controls.push(action('report-add','填报',attrs));
-    if (progressName !== dailyName) records.forEach((record,i)=>controls.push(action('report-detail',records.length>1?'明细 '+(i+1):'明细',`${attrs} data-row="${record.row}"`)));
-    else if (records.length) controls.push(action('report-detail','明细',attrs));
-    return `<tr data-model="${esc(stage.model)}">${reportIdentity(variants,stage)}${cells}<td class="report-actions">${controls.join(' ')}</td></tr>`;
+  function showTimeline(groups,count,axis,times,query,filtered) {
+    const positionKey = filtered ? '' : progressName+'|'+axis;
+    const variants = groups.map(items=>activeVariant(items,query));
+    const records = variants.map(stage=>stage.records.get(progressName) || []);
+    const needsCalendar = stage=>progressName===dailyName && axis==='day' && !stage.start;
+    const spacer = '<td class="report-spacer" aria-hidden="true"></td>';
+    const rows = groups.map((group,i)=>{
+      const stage = variants[i], entries = records[i];
+      const attrs = `class="link" data-model="${esc(stage.model)}" data-secondary="${esc(stage.secondary)}"`;
+      const actions = [];
+      if (!readonly && stage.hasSummary && entries.length<=1) actions.push(action('report-add','填报',attrs));
+      if (progressName!==dailyName) entries.forEach((entry,n)=>actions.push(action('report-detail',entries.length>1?'明细 '+(n+1):'明细',`${attrs} data-row="${entry.row}"`)));
+      else if (entries.length) actions.push(action('report-detail','明细',attrs));
+      const calendarLink = needsCalendar(stage) ? `<button type="button" class="link" data-report-calendar="${esc(stage.lastDate)}" aria-label="${esc(stage.label+' · 按日期查看')}">按日期查看</button>` : '';
+      return `<tr data-model="${esc(stage.model)}">${reportIdentity(group,stage,calendarLink)}${spacer}${spacer}<td class="report-actions" aria-colindex="${times.length+2}">${actions.join(' ')}</td></tr>`;
+    }).join('');
+    const blankHead = '<th class="report-spacer" aria-hidden="true"></th>';
+    $('#content').innerHTML = `<div class="report-matrix report-timeline scroll" data-axis="${axis}" tabindex="0" role="region" aria-label="填报时间表"><table aria-colcount="${times.length+2}"><colgroup></colgroup><thead><tr><th scope="col" aria-colindex="1">车型<span class="report-count">（${count}）</span></th>${blankHead}${blankHead}<th scope="col" aria-colindex="${times.length+2}">操作</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    wireReportStages();
+    const grid = $('#content .report-timeline'), table = grid.firstElementChild;
+    const columns = table.querySelector('colgroup');
+    const bands = [...table.rows].map(row=>({before:row.cells[1], after:row.cells[2]}));
+    let start=0, end=0, cellWidth=0, scale=1, track=0, available=0, modelWidth=0, actionsWidth=0, outerWidth, scrollFrame;
+    const position = ()=>grid.scrollLeft/(cellWidth*scale);
+    function paint(force=false) {
+      const first = Math.min(times.length-1,Math.floor(position()));
+      const limit = Math.min(times.length,first+Math.ceil(available/cellWidth)+1);
+      if (!force && scale===1 && first>=start && limit<=end) return;
+      const next = Math.max(0,first-4), until = Math.min(times.length,limit+4);
+      const span = (until-next)*cellWidth;
+      const leading = Math.max(0,Math.min(track-span,next*cellWidth+grid.scrollLeft*(1-1/scale)));
+      const trailing = Math.max(0,track-leading-span);
+      const widths=[modelWidth,leading,...Array(until-next).fill(cellWidth),trailing,actionsWidth];
+      columns.replaceChildren(...widths.map(width=>{
+        const col=document.createElement('col');
+        col.style.width=width+'px';
+        return col;
+      }));
+      // Keep the intersecting cells in place so a scroll preserves focus and existing buttons.
+      const overlapStart = Math.min(end,Math.max(start,next));
+      const overlapEnd = Math.max(overlapStart,Math.min(end,until));
+      const focused=grid.contains(document.activeElement) ? document.activeElement : null;
+      for (let r=0;r<bands.length;r++) {
+        const {before,after} = bands[r];
+        for(let i=start;i<overlapStart;i++) before.nextElementSibling.remove();
+        for(let i=overlapEnd;i<end;i++) after.previousElementSibling.remove();
+        const cells = (from,to)=>{
+          let html='';
+          for(let i=from;i<to;i++) {
+            const key=times.key(i);
+            if (!r) html+=`<th scope="col" aria-colindex="${i+2}">${esc(key)}</th>`;
+            else html+=needsCalendar(variants[r-1]) ? `<td aria-colindex="${i+2}">—</td>` : reportCell(variants[r-1],records[r-1],key,axis,i+2);
+          }
+          return html;
+        };
+        if (overlapStart===overlapEnd) before.insertAdjacentHTML('afterend',cells(next,until));
+        else {
+          if (next<overlapStart) before.insertAdjacentHTML('afterend',cells(next,overlapStart));
+          if (until>overlapEnd) after.insertAdjacentHTML('beforebegin',cells(overlapEnd,until));
+        }
+      }
+      if (focused && !focused.isConnected) grid.focus({preventScroll:true});
+      start=next; end=until;
+    }
+    function measure() {
+      const width=grid.clientWidth;
+      if (!width || width===outerWidth) return;
+      const at=cellWidth ? position() : null;
+      const css=getComputedStyle(grid);
+      const px=(name,fallback)=>parseFloat(css.getPropertyValue(name)) || fallback;
+      modelWidth=px('--report-model-width',180);
+      actionsWidth=px('--report-actions-width',80);
+      available=Math.max(1,width-modelWidth-actionsWidth);
+      cellWidth=Math.max(px('--report-time-width',axis==='date'?98:68),available/times.length);
+      // Date arithmetic can span centuries. Stay inside the browser's maximum layout width.
+      const full=cellWidth*times.length;
+      track=Math.min(full,16000000);
+      scale=track===full ? 1 : (track-available)/(full-available);
+      outerWidth=width;
+      table.style.width=(modelWidth+actionsWidth+track)+'px';
+      const initial=calendarTarget && axis==='date' ? times.index(calendarTarget) : null;
+      const old=filtered && dateSearchPosition?.query===query ? dateSearchPosition.at : timelinePositions.get(positionKey);
+      const target=at ?? (initial>=0 && initial!==null ? initial : old ?? (axis==='date' && !filtered ? times.length-1 : 0));
+      grid.scrollLeft=target*cellWidth*scale;
+      paint(true);
+    }
+    measure();
+    calendarTarget=null;
+    const observer = new ResizeObserver(()=>{
+      if (grid.isConnected) measure();
+      else dispose();
+    });
+    observer.observe(grid);
+    grid.onscroll=()=>{
+      if (positionKey) timelinePositions.set(positionKey,position());
+      if (!scrollFrame) scrollFrame=requestAnimationFrame(()=>{scrollFrame=0;paint();});
+    };
+    grid.onkeydown=event=>{
+      const button=event.target.closest('[data-campaign-action="report-cell"]');
+      if (!button || !['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+      event.preventDefault();
+      const i=times.index(button.dataset.key), row=button.closest('tr');
+      const next=event.key==='Home'?0:event.key==='End'?times.length-1:Math.max(0,Math.min(times.length-1,i+(event.key==='ArrowLeft'?-1:1)));
+      const left=grid.scrollLeft/scale;
+      if(next*cellWidth<left) grid.scrollLeft=next*cellWidth*scale;
+      else if((next+1)*cellWidth>left+available) grid.scrollLeft=((next+1)*cellWidth-available)*scale;
+      paint();
+      const target=row.querySelector('[data-key="'+CSS.escape(times.key(next))+'"]');
+      (target || grid).focus({preventScroll:true});
+    };
+    grid.onclick=event=>{
+      const control=event.target.closest('[data-report-calendar]');
+      if (!control || busy) return;
+      reportAxis='date';
+      calendarTarget=control.dataset.reportCalendar;
+      render();
+      $('#report-axis')?.focus({preventScroll:true});
+    };
+    function dispose() {
+      if (grid.isConnected && cellWidth) {
+        if (filtered) dateSearchPosition={query,at:position()};
+        else timelinePositions.set(positionKey,position());
+      }
+      observer.disconnect();
+      cancelAnimationFrame(scrollFrame);
+      if (stopTimeline===dispose) stopTimeline=null;
+    }
+    stopTimeline=dispose;
   }
   function renderReport(query) {
     const index = reportIndex();
@@ -463,56 +577,31 @@ const campaignEditor = (() => {
     if (progressName === legacy && !index.hasHistorical) progressName = dailyName;
     const daily = progressName === dailyName;
     const filteredDates = searchDates(index,query);
-    const term = filteredDates ? query : '';
-    if (term!==dateSearchTerm) { dateSearchTerm=term; dateSearchOffset=0; }
+    if (!filteredDates) dateSearchPosition=null;
     const axis = filteredDates ? 'date' : daily ? reportAxis || index.defaultAxis : 'day';
-    const {offsets,offset,keys,range} = reportWindows(index,axis,filteredDates);
+    const times = timelineAxis(index,axis,filteredDates);
     const select = (id,label,options,disabled=false)=>`<label class="inline-label">${label}<select id="${id}" aria-label="${label}" ${disabled?'disabled':''}>${options}</select></label>`;
     const metrics = [option(dailyName,'每日小订',progressName),...current.sheets.slice(2)
       .filter(info=>info.name !== legacy).map(info=>option(info.name,info.name,progressName))];
     if (index.hasHistorical) metrics.push('<optgroup label="历史参考">'+option(legacy,'小订进度（历史）',progressName)+'</optgroup>');
     const toolbar = [select('campaign-progress','指标',metrics.join(''))];
     if (daily) toolbar.push(select('report-axis','横轴',option('day','按日序',axis)+option('date','按日期',axis),Boolean(filteredDates)));
-    if (offsets.length > 1) {
-      const arrow = (dir,label,disabled,icon)=>`<button type="button" data-report-page="${dir}" aria-label="${label}" title="${label}" ${disabled?'disabled':''}>${icon}</button>`;
-      toolbar.push(arrow('prev','上一组',offset===offsets[0],'‹'),
-        select('report-window','范围',offsets.map(i=>option(String(i),range(i),String(offset))).join('')),
-        arrow('next','下一组',offset===offsets.at(-1),'›'));
-    }
     if (!readonly) toolbar.push(index.stageList.some(stage=>stage.hasSummary) ? action('batch','批量粘贴') : action('new-stage','新增发布日程'));
     $('#actions').innerHTML = toolbar.join('');
-    const refresh = selector=>{ renderKeepingScroll(); $(selector)?.focus({preventScroll:true}); };
-    $('#campaign-progress').onchange = e=>{progressName=e.target.value;reportOffset=undefined;page=1;refresh('#campaign-progress');};
-    if (daily && !filteredDates) $('#report-axis').onchange = e=>{reportAxis=e.target.value;reportOffset=undefined;refresh('#report-axis');};
-    if (offsets.length > 1) {
-      const setOffset = next=>{
-        if (filteredDates) dateSearchOffset=next;
-        else reportOffset=next;
-        refresh('#report-window');
-      };
-      $('#report-window').onchange = e=>setOffset(Number(e.target.value));
-      for (const button of $('#actions').querySelectorAll('[data-report-page]')) button.onclick = ()=>{
-        const step = button.dataset.reportPage==='prev' ? -1 : 1;
-        setOffset(offsets[offsets.indexOf(offset)+step]);
-      };
-    }
-    const dateMatches = filteredDates && new Set(keys.flatMap(key=>[...index.dateStages.get(key)]));
+    const refresh = selector=>{ render(); $(selector)?.focus({preventScroll:true}); };
+    $('#campaign-progress').onchange = e=>{progressName=e.target.value;page=1;refresh('#campaign-progress');};
+    if (daily && !filteredDates) $('#report-axis').onchange = e=>{reportAxis=e.target.value;refresh('#report-axis');};
+    const dateMatches = filteredDates && new Set(filteredDates.flatMap(key=>[...index.dateStages.get(key)]));
     const groups = Array.from(index.models.values(),variants=>[...variants.values()].filter(stage=>
       (stage.hasSummary || stage.records.has(progressName)) &&
       (dateMatches ? dateMatches.has(stage) : matched([stage.model,stage.secondary],query)))).filter(variants=>variants.length);
     const window = paginator(groups.length);
     $('#count').textContent = '';
-    const rows = groups.slice(...window).map(variants=>reportRow(variants,activeVariant(variants,query),keys,axis)).join('');
-    if (!rows) { $('#content').innerHTML = empty(filteredDates ? '该日期范围暂无小订记录' : query ? '没有匹配的车型' : '暂无车型'); return; }
-    renderModelTable([...keys,'操作'],rows,groups.length);
-    for (const button of $('#content').querySelectorAll('[data-report-calendar]')) button.onclick = ()=>{
-      reportAxis='date';
-      const at = index.dates.indexOf(button.dataset.reportCalendar);
-      reportOffset = at<0 ? undefined : Math.floor(at/reportWidth)*reportWidth;
-      refresh('#report-axis');
-    };
+    if (!groups.length) { $('#content').innerHTML = empty(filteredDates ? '该日期范围暂无小订记录' : query ? '没有匹配的车型' : '暂无车型'); return; }
+    showTimeline(groups.slice(...window),groups.length,axis,times,query,Boolean(filteredDates));
   }
   function renderView(view,query) {
+    stopTimeline?.();
     if (!ready()) {
       $('#count').textContent = '';
       $('#pagination').innerHTML = $('#actions').innerHTML = '';

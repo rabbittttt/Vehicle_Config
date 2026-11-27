@@ -573,7 +573,7 @@ dialog:not([open]) { pointer-events: none; }
   .undo-actions button, .operation .link, .pagination button, .link,
   .check-label, .members label, .inline-label select { min-height: 44px; }
   .undo-actions button { min-width: 44px; }
-  table:not(.matrix-table):not(.rule-table) tbody td:not(.check-cell, .operation) {
+  table:not(.matrix-table):not(.rule-table) tbody td:not(.check-cell, .operation, .report-spacer) {
     min-width: 5.5em;
   }
   #dialog-body { max-height: 65dvh; }
@@ -694,10 +694,43 @@ footer:has(#error-notice:not(:empty)) .undo-actions { grid-area: 1 / 3; }
 .report-matrix .report-value:focus-visible { outline:2px solid var(--focus); outline-offset:-2px; }
 .report-matrix .report-actions { width:1%; text-align:center; }
 .report-matrix .report-actions button { padding:2px 6px; font-size:12px; min-height:28px; }
+.report-timeline {
+  --report-model-width:206px; --report-actions-width:86px; --report-time-width:68px;
+  scrollbar-width:auto; scrollbar-color:var(--muted) var(--table-head);
+  overscroll-behavior-x:contain;
+  scroll-padding-inline:var(--report-model-width) var(--report-actions-width);
+}
+.report-timeline[data-axis="date"] { --report-time-width:102px; }
+@supports selector(::-webkit-scrollbar) {
+  .report-timeline { scrollbar-color:auto; }
+  .report-timeline::-webkit-scrollbar { width:12px; height:14px; }
+  .report-timeline::-webkit-scrollbar-track,.report-timeline::-webkit-scrollbar-corner { background:var(--table-head); }
+  .report-timeline::-webkit-scrollbar-thumb {
+    background:var(--muted); background-clip:padding-box;
+    border:3px solid transparent; border-radius:8px; min-width:24px;
+  }
+}
+.report-timeline:focus-visible { outline:2px solid var(--focus); outline-offset:-2px; }
+.report-timeline table { table-layout:fixed; }
+.report-timeline tr > th:first-child { width:auto; min-width:0; max-width:none; }
+.report-timeline tr > :last-child {
+  position:sticky; right:0; z-index:1; background:var(--surface); box-shadow:-1px 0 var(--border);
+  text-align:center; white-space:normal; padding-inline:2px;
+}
+.report-timeline thead tr > :last-child { z-index:3; background:var(--table-head); }
+.report-timeline .report-actions { width:auto; }
+.report-timeline .report-actions button { padding-inline:4px; }
+.report-matrix.report-timeline table tr > .report-spacer {
+  padding:0; min-width:0; max-width:none; border-inline:0; pointer-events:none; box-shadow:none;
+}
+@media (min-width:701px) and (max-width:800px) {
+  body:has(.report-timeline) > footer { padding-inline:12px; gap:8px; }
+  body:has(.report-timeline) footer > div { gap:8px; }
+  body:has(.report-timeline) footer > div:first-child { flex:1; min-width:0; }
+}
 .campaign-totals tbody td:not(.report-actions) { text-align:center; padding-inline:8px; }
 #actions:has(#campaign-progress) { align-items:center; gap:4px; }
 #actions:has(#campaign-progress) select { min-width:0; min-height:32px; padding:4px 6px; max-width:12rem; }
-#actions [data-report-page] { min-height:32px; min-width:32px; padding:4px; }
 @media (min-height:600px) {
   body:has(.report-matrix) { display:flex; flex-direction:column; height:100dvh; }
   body:has(.report-matrix) > header,.panel:has(.report-matrix) > :is(.view-toolbar,.results-summary) { flex:none; }
@@ -710,6 +743,7 @@ footer:has(#error-notice:not(:empty)) .undo-actions { grid-area: 1 / 3; }
   body:has(.report-matrix) > footer { position:static; }
   main:has(.report-matrix) { padding-bottom:var(--dashboard-gap); }
   #content > .report-matrix { max-height:none; }
+  #content > .report-timeline { max-height:max(13rem,68dvh); }
 }
 @media (hover:hover) {
   .report-matrix tbody tr:hover > :is(th,td) { background:var(--row-hover); }
@@ -719,16 +753,23 @@ footer:has(#error-notice:not(:empty)) .undo-actions { grid-area: 1 / 3; }
   .report-matrix { max-height:clamp(13rem,calc(100dvh - 245px),45rem); scroll-padding-inline-start:8.25rem; }
   .report-matrix tr > th:first-child { width:8.25rem; min-width:8.25rem; max-width:8.25rem; padding-inline:8px; }
   .report-matrix :is(th,td) { padding-inline:3px; }
-  .report-matrix table:not(.matrix-table):not(.rule-table) tbody td:not(.check-cell,.operation) { min-width:3.2rem; }
+  .report-matrix table:not(.matrix-table):not(.rule-table) tbody td:not(.check-cell,.operation,.report-spacer) { min-width:3.2rem; }
   .report-matrix .report-value,.report-matrix .report-actions button { min-height:40px; }
   .report-matrix [data-report-stage] { min-height:28px; }
   #actions:has(#campaign-progress) {
-    display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); width:100%; gap:4px; padding-bottom:3px;
+    display:flex; flex-wrap:wrap; align-items:center; width:100%; gap:4px; padding-bottom:3px;
   }
-  #actions:has(#campaign-progress) select { width:100%; max-width:none; min-height:36px; }
+  #actions:has(#campaign-progress) select { width:100%; max-width:none; min-height:36px; padding-inline:5px; }
   #actions:has(#campaign-progress) .inline-label { font-size:0; gap:0; min-width:0; }
+  #actions .inline-label:has(#campaign-progress) { flex:1 1 78px; }
   #actions:has(#campaign-progress) button { min-height:36px; }
-  #actions [data-report-page] { display:none; }
+  .report-timeline {
+    --report-model-width:124px; --report-actions-width:74px; --report-time-width:56px;
+    scroll-padding-inline:var(--report-model-width) var(--report-actions-width);
+  }
+  .report-timeline[data-axis="date"] { --report-time-width:90px; }
+  .report-timeline tr > th:first-child { width:auto; min-width:0; max-width:none; }
+  .report-timeline .report-actions button { min-height:40px; padding-inline:3px; }
 }
 @media (max-width:350px) {
   header:has([data-tab="reporting"].active) { padding-inline:8px; column-gap:4px; }
@@ -738,8 +779,19 @@ footer:has(#error-notice:not(:empty)) .undo-actions { grid-area: 1 / 3; }
   .report-matrix tr > th:first-child {
     width:clamp(6.5rem,35vw,7.5rem); min-width:clamp(6.5rem,35vw,7.5rem); max-width:7.5rem; padding-inline:6px;
   }
+  .report-timeline { --report-model-width:100px; --report-actions-width:68px; }
+  .report-timeline tr > th:first-child { width:auto; min-width:0; max-width:none; }
   body:has(.report-matrix) .save-actions { display:grid; grid-template-columns:auto 1fr 1fr; gap:4px; }
   body:has(.report-matrix) .save-actions button { padding-inline:5px; font-size:12px; }
+}
+@media (max-width:300px) {
+  .report-timeline { --report-model-width:92px; --report-actions-width:64px; }
+  .report-timeline[data-axis="date"] { --report-time-width:74px; }
+  .report-timeline .report-actions button { padding-inline:1px; }
+  #actions:has(#campaign-progress) > button { padding-inline:5px; font-size:13px; }
+  .report-timeline[data-axis="date"] thead th[aria-colindex]:not(:first-child,:last-child) {
+    font-size:11px; padding-inline:3px;
+  }
 }
 @media (max-width:700px) {
   .campaign-totals tr > :last-child {
