@@ -8,7 +8,7 @@ from playwright.sync_api import expect, sync_playwright
 
 from browser_rules_check import fill_owner, isolated_server, ready
 from campaign_store import CampaignStore
-from stage_workbook import SUMMARY_FIELDS, apply_edits, empty_workbook, export_workbook
+from stage_workbook import BACKFILLED, SUMMARY_FIELDS, apply_edits, empty_workbook, export_workbook
 
 
 def confirm(page):
@@ -124,9 +124,19 @@ def check_result_review(page):
     expect(page.locator('[data-view=businessTotals]')).to_have_text('结果核对')
     expect(page.locator('#content')).not_to_contain_text('小订待转单')
     expect(page.locator('#content')).not_to_contain_text('小订转化率')
+    metrics = {SUMMARY_FIELDS[col-1]: '可自动回填' if col in BACKFILLED else '手动填报'
+               for col in sorted(BACKFILLED | {26, 28})}
+    headings = page.locator('.campaign-totals thead th')
+    for i, (metric, mode) in enumerate(metrics.items(), 1):
+        expect(headings.nth(i)).to_contain_text(metric)
+        expect(headings.nth(i).locator('.review-mode')).to_have_text(mode)
     action(page, 'totals').click()
     dialog = page.locator('#dialog')
     expect(dialog.locator('input[type=number]')).to_have_count(7)
+    for metric, mode in metrics.items():
+        field = dialog.get_by_label(metric, exact=True)
+        note_id = field.get_attribute('aria-describedby').split()[0]
+        expect(dialog.locator('#' + note_id)).to_have_text(mode)
     expect(dialog).not_to_contain_text('小订待转单')
     rates = dialog.locator('details').filter(has=page.locator('summary', has_text='查看比例'))
     toggle = rates.locator('summary')
@@ -283,6 +293,8 @@ def check_rule_context(page):
     tab(page, 'reporting')
     expect(page.locator('[data-view=dailyOrders]')).to_be_visible()
     view(page, 'businessTotals')
+    expect(page.locator('.campaign-totals .review-mode.manual')).to_have_count(2)
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     action(page, 'totals').first.click()
     expect(page.get_by_label('大定量', exact=True)).to_have_value('83')
     page.locator('#cancel').click()

@@ -73,12 +73,6 @@ const campaignEditor = (() => {
   function table(headings,body) {
     return `<div class="scroll"><table class="campaign-table"><thead><tr>${headings.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>`;
   }
-  function renderModelTable(headings,body,modelCount,extraClass='') {
-    const head=`<th scope="col">车型<span class="report-count">（${modelCount}）</span></th>`+
-      headings.map(h=>`<th scope="col">${esc(h)}</th>`).join('');
-    $('#content').innerHTML=`<div class="report-matrix scroll ${extraClass}"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
-    wireReportStages();
-  }
   function pageRows(rows) {
     const interval = paginator(rows.length);
     $('#count').textContent = rows.length ? `${rows.length} 条记录` : '';
@@ -109,7 +103,13 @@ const campaignEditor = (() => {
     ['大定与留存',[18,19,25]],
     ['锁单',[27]],
   ];
-  const totalColumns = [15,16,18,19,21,25,27];
+  const backfillColumns = [15,16,18,19,21];
+  const totalColumns = [...backfillColumns,25,27];
+  function reviewHeading(label,index,noteId='') {
+    const manual = !backfillColumns.includes(index);
+    const note = `<span class="review-mode${manual?' manual':''}"${noteId?` id="${noteId}"`:''}>${manual?'手动填报':'可自动回填'}</span>`;
+    return `<span class="review-heading">${esc(label)}${note}</span>`;
+  }
   // Zero-based summary columns: ratio, numerator, denominator.
   const reviewRates = [[17,16,15],[20,19,18],[22,21,15],[26,25,15],[28,27,25],[29,27,18]];
   function summaryRows(query, columns) {
@@ -177,8 +177,15 @@ const campaignEditor = (() => {
       const cells=totalColumns.map(index=>`<td>${esc(numericText(r[index]))}${index===18 && difference ? `<small class="campaign-discrepancy">${esc(difference)}</small>` : ''}</td>`).join('');
       return `<tr data-model="${esc(stage.model)}">${reportIdentity(variants,stage)}${cells}<td class="report-actions">${action('totals','核对',`class="link" data-row="${row}"`)}</td></tr>`;
     }).join('');
-    if(body)renderModelTable([...totalColumns.map(index=>labels[index]),'操作'],body,models.size,'campaign-totals');
-    else $('#content').innerHTML=empty(query?'没有匹配的车型':'暂无可核对的车型');
+    if(!body) {
+      $('#content').innerHTML=empty(query?'没有匹配的车型':'暂无可核对的车型');
+      return;
+    }
+    const headings=totalColumns.map(i=>`<th scope="col">${reviewHeading(labels[i],i)}</th>`).join('');
+    $('#content').innerHTML=`<div class="report-matrix scroll campaign-totals"><table><thead><tr>
+      <th scope="col">车型<span class="report-count">（${models.size}）</span></th>${headings}<th scope="col">操作</th>
+      </tr></thead><tbody>${body}</tbody></table></div>`;
+    wireReportStages();
   }
   function reviewTotals(info,row,subject) {
     rowForm(info,row,totalColumns,subject+' · 结果核对',totalsGroups);
@@ -193,7 +200,7 @@ const campaignEditor = (() => {
     grossField.append(grossLabel);
     grossField.insertAdjacentHTML('beforeend','<small class="campaign-discrepancy" id="review-gross-difference" aria-live="polite" hidden></small>');
     const difference=grossField.querySelector('small');
-    grossControl.setAttribute('aria-describedby',difference.id);
+    grossControl.setAttribute('aria-describedby',[grossControl.getAttribute('aria-describedby'),difference.id].filter(Boolean).join(' '));
 
     form.insertAdjacentHTML('beforeend','<details class="campaign-rates wide"><summary>查看比例</summary><dl></dl></details>');
     const details=form.querySelector('.campaign-rates');
@@ -596,11 +603,15 @@ const campaignEditor = (() => {
       if (date) val = dateText(val);
       const unit = percent?'（%）':'';
       const label = field==='留资'?'留资日期':field;
-      if (readonly || computed || scheduleReferences.includes(field)) return `<label>${esc(label)}${unit}<output aria-label="${esc(label)}${unit}">${esc(displayValue(val))}</output></label>`;
+      const noteId = info.name===summaryName && totalColumns.includes(i) ? 'review-mode-'+i : '';
+      const heading = noteId ? reviewHeading(label,i,noteId) : esc(label)+unit;
+      const description = noteId ? ` aria-describedby="${noteId}"` : '';
+      if (readonly || computed || scheduleReferences.includes(field)) return `<label>${heading}<output aria-label="${esc(label)}${unit}"${description}>${esc(displayValue(val))}</output></label>`;
       const type = date?'date':number?'number':'text';
       const opts = number?'min="0" step="any"':'maxlength="256"';
       changes.push({i,number,percent,original:String(val)});
-      return `<label>${esc(label)}${unit}<input name="f${i}" type="${type}" ${opts} value="${esc(val)}" ${i===0?'required list="campaign-models"':''}></label>`;
+      const accessibleLabel = noteId ? ` aria-label="${esc(label)}"${description}` : '';
+      return `<label>${heading}<input name="f${i}" type="${type}"${accessibleLabel} ${opts} value="${esc(val)}" ${i===0?'required list="campaign-models"':''}></label>`;
     }
     const renderFields = columns => columns.filter(i=>used(labels[i])).map(control).join('');
     const controls = groups ? groups.map(([name,columns])=>`<fieldset class="wide campaign-field-group"><legend>${esc(name)}</legend><div class="form">${renderFields(columns)}</div></fieldset>`).join('') : renderFields(indexes);
