@@ -1,5 +1,6 @@
 """SQLite-backed campaign drafts and immutable published editions."""
 from contextlib import closing, contextmanager
+from collections import Counter, defaultdict
 import json
 import os
 from pathlib import Path
@@ -8,7 +9,7 @@ from tempfile import NamedTemporaryFile
 
 from catalog import Conflict, now, read_history_page
 from stage_workbook import (
-    SUMMARY_FIELDS, apply_edits, backfill_totals, empty_workbook, export_workbook, import_workbook, validate_publication,
+    SECONDARY, SUMMARY_FIELDS, apply_edits, backfill_totals, empty_workbook, export_workbook, import_workbook, validate_publication,
 )
 
 
@@ -49,6 +50,77 @@ def import_comparison(current, incoming):
     imported = _stages(after['车型汇总'])
     return {'tables': tables, 'addedStages': _stage_list(imported - previous),
             'removedStages': _stage_list(previous - imported)}
+
+
+def _publication_rows(sheet):
+    """Match spreadsheet rows by block and stage, including duplicate historical entries."""
+    indexed = {}
+    if sheet is None:
+        return indexed
+    marks = defaultdict(dict)
+    for tag in ('reportedTotals', 'literalCells', 'derivedCells'):
+        for address in sheet.get(tag, []):
+            row, col = map(int, address.split(':'))
+            marks[row].setdefault(col-1, []).append(tag)
+    starts = sheet['headerRows']
+    for block, start in enumerate(starts):
+        head = sheet['rows'][start-1]
+        secondary = head.index(SECONDARY)
+        end = starts[block+1]-1 if block+1 < len(starts) else len(sheet['rows'])
+        occurrences = Counter()
+        for n in range(start, end):
+            row = sheet['rows'][n]
+            if not any(value is not None and value != '' for value in row):
+                continue
+            stage = (row[0] or '', (row[secondary] or '') if secondary < len(row) else '')
+            indexed[block, stage, occurrences[stage]] = (head, row, marks.get(n+1, {}))
+            occurrences[stage] += 1
+    return indexed
+
+
+def _publication_fields(record):
+    if record is None:
+        return {}
+    headers, row, marks = record
+    values = dict(zip(headers, row))
+    for index, tags in marks.items():
+        field = headers[index]
+        values[field] = (values.get(field), tags)
+    return values
+
+
+def publication_changes(published, candidate):
+    previous = {s['name']:s for s in published['sheets']}
+    current = {s['name']:s for s in candidate['sheets']}
+    changes = []
+    for name in dict.fromkeys([*current, *previous]):
+        old, new = previous.get(name), current.get(name)
+        if old == new:
+            continue
+        before, after = _publication_rows(old), _publication_rows(new)
+        stages, fields = {}, {}
+        added = removed = updated = 0
+        for key in dict.fromkeys([*after, *before]):
+            left, right = before.get(key), after.get(key)
+            if left == right:
+                continue
+            a, b = _publication_fields(left), _publication_fields(right)
+            changed = [field for field in dict.fromkeys([*b, *a]) if field and a.get(field) != b.get(field)]
+            if changed:
+                if left is None:
+                    added += 1
+                elif right is None:
+                    removed += 1
+                else:
+                    updated += 1
+                stage = key[1]
+                if stage[0] and stage[0] != '合计':
+                    stages[stage] = None
+                fields.update(dict.fromkeys(changed))
+        changes.append({'name':name, 'added':added, 'removed':removed, 'updated':updated,
+                        'stageCount':len(stages), 'stages':list(stages)[:4],
+                        'fieldCount':len(fields), 'fields':list(fields)[:6]})
+    return changes
 
 
 class CampaignStore:
@@ -199,6 +271,20 @@ class CampaignStore:
         self._check(row, revision)
         data = apply_edits(decode_workbook(row['data']), edits)
         return self._response(row, data)
+
+    def publish_preview(self, revision, edits):
+        with closing(self.connect()) as db:
+            row = self._current(db)
+        self._check(row, revision)
+        data = apply_edits(decode_workbook(row['data']), edits)
+        changes = publication_changes(decode_workbook(row['published_data']), data)
+        error = ''
+        if changes:
+            try:
+                validate_publication(data)
+            except ValueError as exc:
+                error = str(exc)
+        return {'revision':revision, 'publishedRevision':row['published_revision'], 'changes':changes, 'error':error}
 
     @staticmethod
     def _update(db, row, data, action, actor):

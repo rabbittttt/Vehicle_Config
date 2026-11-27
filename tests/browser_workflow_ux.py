@@ -73,7 +73,7 @@ def test_editor(browser):
         expect(page.locator("#import")).to_have_accessible_name("导入")
         expect(page.locator("#import")).to_have_attribute("title", "导入脚本规则（Excel）")
         expect(page.locator("#export")).to_have_accessible_name("导出脚本规则（Excel）")
-        expect(page.locator("#publish")).to_be_disabled()
+        expect(page.locator("#publish")).to_be_enabled()
         page.locator("#data-tools").click()
         page.locator("#reload-rules").click()
         ready(page)
@@ -255,11 +255,97 @@ def test_readonly(browser):
         page.close()
 
 
+def test_publication_retry(browser, *, lose_campaign_response=False):
+    with tempfile.TemporaryDirectory() as directory, isolated_server(directory) as (url, store, rules, source):
+        campaign = CampaignStore(store.root)
+        draft = rules.get()["draft"]
+        draft["data"]["gen_names"][0]["target"] = "待发布代际"
+        rules.save(draft["data"], draft["revision"], "测试维护人")
+
+        page = browser.new_page()
+        publications = []
+        lost_response_status = []
+
+        def publish_request(route):
+            group = route.request.url.split("/api/")[1]
+            publications.append(group)
+            if lose_campaign_response and publications == ["campaign/publish"]:
+                # Forward the real unsaved edits and discard only the response to the browser.
+                response = route.fetch()
+                lost_response_status.append(response.status)
+                response.dispose()
+                route.abort("failed")
+            elif not lose_campaign_response and len(publications) == 2:
+                route.fulfill(status=503, json={"error": "规则服务暂时不可用"})
+            else:
+                route.continue_()
+
+        page.route("**/api/*/publish", publish_request)
+        page.goto(url)
+        ready(page)
+        fill_owner(page)
+        add_vehicle(page)
+        switch_view(page, "history", "campaign_history")
+        publish = page.get_by_role("button", name="发布", exact=True)
+        confirm = page.get_by_role("button", name="确认发布", exact=True)
+        dialog = page.locator("#dialog")
+        publish.click()
+        for group in ("车型与日程、小订首销填报", "代际规则、电池与选配"):
+            expect(dialog).to_contain_text(group)
+        page.locator("#cancel").click()
+        expect(dialog).to_be_hidden()
+        assert publications == []
+        assert campaign.published()["revision"] == 0
+        assert rules.get()["published"]["data"]["gen_names"][0]["target"] != "待发布代际"
+
+        original_source = source.read_bytes()
+        source.write_bytes(original_source + b"\n# changed outside the workbench\n")
+        publish.click()
+        expect(dialog).to_contain_text("源文件已被其他程序修改")
+        expect(confirm).to_be_hidden()
+        page.locator("#cancel").click()
+        assert publications == []
+        assert campaign.published()["revision"] == 0
+        source.write_bytes(original_source)
+
+        publish.click()
+        owner = dialog.get_by_label("本次维护人")
+        expect(owner).to_have_count(1)
+        owner.fill("统一发布维护人")
+        confirm.click()
+        if lose_campaign_response:
+            expect(dialog).to_contain_text("代际规则、电池与选配尚未执行")
+            assert lost_response_status == [200]
+            first_attempt = ["campaign/publish"]
+        else:
+            expect(dialog).to_contain_text("规则服务暂时不可用")
+            expect(dialog).to_contain_text("已发布")
+            first_attempt = ["campaign/publish", "rules/publish"]
+        assert publications == first_attempt
+        assert campaign.published()["revision"] == 1
+        assert campaign.published()["sheets"][0]["rows"][1][0] == "未保存车型甲"
+        assert rules.get()["published"]["data"]["gen_names"][0]["target"] != "待发布代际"
+
+        dialog.get_by_role("button", name="重新核对", exact=True).click()
+        expect(dialog.get_by_role("heading", level=3)).to_have_text(["代际规则、电池与选配"])
+        confirm.click()
+        expect(dialog).to_be_hidden()
+        expect(publish).to_be_disabled()
+        assert publications == first_attempt + ["rules/publish"]
+        assert campaign.published()["revision"] == 1
+        assert rules.get()["published"]["data"]["gen_names"][0]["target"] == "待发布代际"
+        assert campaign.history_page()["history"][0]["actor"] == "统一发布维护人"
+        assert rules.history_page()["history"][0]["actor"] == "统一发布维护人"
+        page.close()
+
+
 if __name__ == "__main__":
     with sync_playwright() as pw:
         browser = pw.chromium.launch(channel="msedge")
         test_editor(browser)
         test_global_tools(browser)
+        test_publication_retry(browser)
+        test_publication_retry(browser, lose_campaign_response=True)
         test_readonly(browser)
         browser.close()
     print("Workflow UX passed: editor workflows, global rule reload scope, keyboard and mobile access, and readonly tools.")

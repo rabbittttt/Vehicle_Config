@@ -111,7 +111,7 @@ def check_conditional_prices(browser):
         source = Path(tmp) / 'shared_config.py'
         source.write_text(SOURCE.replace('"天窗", 3000', '"天窗", {"条件乙": 21, "条件甲": 12}'), encoding='utf-8')
         with isolated_server(tmp, source=source) as (url, store, rules, _):
-            CampaignStore(store.root).save(0, [dict(sheet='车型汇总', row=2, col=1, value='车型甲 2026款')], '测试')
+            CampaignStore(store.root).save(0, [dict(sheet='车型汇总', row=2, col=1, value='车型甲 2026款')], '测试', publish=True)
             page = browser.new_page()
             page.goto(url)
             ready(page)
@@ -154,7 +154,9 @@ def check_conditional_prices(browser):
             ready(page)
             page.locator('#publish').click()
             expect(page.locator('#dialog-body .diff')).to_contain_text('默认价 0 元 / 条件丙 9 元')
-            page.locator('#confirm').click()
+            expect(page.locator('#dialog-body')).not_to_contain_text('车型与日程、小订首销填报')
+            page.get_by_role('button', name='确认发布', exact=True).click()
+            expect(page.locator('#dialog')).to_be_hidden()
             ready(page)
             expected = [('条件乙', 21), ('条件甲', 12), ('default', 0), ('条件丙', 9)]
             assert list(rules.get()['published']['data']['option_prices'][0]['price'].items()) == expected
@@ -350,12 +352,16 @@ def main():
         page.locator('[name=price]').fill('4500')
         page.locator('#confirm').click()
         ready(page)
-        expect(page.locator('#publish')).to_have_text('发布并更新脚本')
-        page.locator('#publish').click()
+        page.get_by_role('button', name='发布', exact=True).click()
+        for group in ('车型与日程、小订首销填报', '代际规则、电池与选配'):
+            expect(page.locator('#dialog-body')).to_contain_text(group)
         expect(page.locator('.script-diff')).to_contain_text('4500')
         ready(page)
-        page.locator('#confirm').click()
+        page.get_by_role('button', name='确认发布', exact=True).click()
+        expect(page.locator('#dialog')).to_be_hidden()
         ready(page)
+        expect(page.locator('#publish')).to_be_disabled()
+        assert campaign.published()['sheets'][0]['rows'][2][0] == '未保存车型甲'
         values = assignments(source)
         assert values['GEN_DISPLAY_NAME_MAP']['车型甲旧名'] == '车型甲标准名'
         assert values['BATTERY_RULES'][0][3] == '60度'

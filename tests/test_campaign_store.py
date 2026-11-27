@@ -76,6 +76,40 @@ class CampaignStoreTests(unittest.TestCase):
         self.assertEqual(self.store.get(), before)
         self.assertFalse(self.store.snapshot.exists())
 
+    def test_publication_preview_combines_saved_and_local_changes_against_published(self):
+        old_model = {**edit(1, '旧车型'), 'row':3}
+        unrelated = {**edit(1, '其他车型'), 'row':4}
+        baseline = self.store.save(0, [*self.edits, old_model, unrelated], '甲', publish=True)
+        self.assertEqual(self.store.publish_preview(baseline['revision'], [])['changes'], [])
+        draft = self.store.save(baseline['revision'], [edit(3, '新档位')], '乙')
+        revision = draft['revision']
+        saved_change, = self.store.publish_preview(revision, [])['changes']
+        self.assertEqual((saved_change['name'], saved_change['updated'], saved_change['fields']),
+                         ('车型汇总', 1, ['产品档位']))
+        self.assertEqual(self.store.publish_preview(revision, [edit(3, None)])['changes'], [])
+
+        preview = self.store.publish_preview(revision, [{**old_model, 'value':'新车型'}])
+        self.assertEqual((preview['revision'], preview['publishedRevision'], preview['error']), (revision, 1, ''))
+        change, = preview['changes']
+        self.assertEqual((change['added'], change['updated'], change['removed']), (1, 1, 1))
+        self.assertEqual((change['stageCount'], change['fieldCount']), (3, 2))
+        self.assertCountEqual(change['stages'], [('测试车型 2026款', ''), ('旧车型', ''), ('新车型', '')])
+        self.assertCountEqual(change['fields'], ['代际名', '产品档位'])
+        self.assertEqual(self.store.get(), draft)
+        self.assertEqual(self.store.history_page()['total'], 1)
+        with self.assertRaises(Conflict):
+            self.store.publish_preview(baseline['revision'], [])
+
+    def test_invalid_publication_preview_returns_validation_and_preserves_draft_and_snapshot(self):
+        draft = self.store.save(0, self.edits, '甲', publish=True)
+        snapshot = self.store.snapshot.read_bytes()
+        preview = self.store.publish_preview(draft['revision'], [edit(10, '2025-12-31')])
+        self.assertIn('结束日期早于开始日期', preview['error'])
+        self.assertEqual(preview['changes'][0]['updated'], 1)
+        self.assertEqual(self.store.get(), draft)
+        self.assertEqual(self.store.snapshot.read_bytes(), snapshot)
+        self.assertEqual(self.store.history_page()['total'], 1)
+
     def test_existing_draft_backfills_without_changing_published_history(self):
         schedule = [*self.edits, edit(12, '2026-01-09'), edit(16, 20)]
         summary_before = self.store.preview(0, schedule)['sheets'][0]

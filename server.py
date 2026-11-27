@@ -162,6 +162,8 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                         return self.send(200,campaigns.save(body['revision'],body['edits'],operation_owner(frame_user, body),publish=path.endswith('/publish')))
                     if path=='/api/campaign/preview':
                         return self.send(200,campaigns.preview(body['revision'],body['edits']))
+                    if path=='/api/campaign/publish-preview':
+                        return self.send(200,campaigns.publish_preview(body['revision'],body['edits']))
                     if path=='/api/campaign/export':
                         selection={key:body[key] for key in ('scope','sheets','models','dateFrom','dateTo') if key in body}
                         result=campaigns.export(selection,source=body.get('source','published'))

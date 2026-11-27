@@ -9,6 +9,7 @@ const campaignEditor = (() => {
   };
   let saved, current;
   let edits = [], undo = [], redo = [];
+  let uncertainPublish = null;
   let progressName = dailyName, lastModel = '';
 
   const ready = () => Boolean(current?.available);
@@ -20,6 +21,7 @@ const campaignEditor = (() => {
 
   function accept(result) {
     saved = current = result;
+    uncertainPublish = null;
     edits = []; undo = []; redo = [];
     if (isCampaignView()) renderKeepingScroll();
     else flags();
@@ -54,15 +56,56 @@ const campaignEditor = (() => {
     accept(await writeApi('campaign/save',payload()));
     notice('小订与首销草稿已保存');
   }
-  function previewPublish() {
-    const counts = new Map();
-    for (const item of edits) counts.set(item.sheet,(counts.get(item.sheet)||0)+1);
-    const list = [...counts].map(([name,count]) => `<dt>${esc(name)}</dt><dd>${count} 处编辑</dd>`).join('');
-    const description = '<p>同时发布本次草稿中的车型资料、发布日程和填报数据。</p>' + (list ? `<dl>${list}</dl>` : '');
-    writeModal('发布车型日程与填报数据', description, async () => {
-      accept(await writeApi('campaign/publish',payload()));
-      notice(current.projectionPending ? current.projectionError || '数据已发布，下游同步待重试' : '小订与首销数据已发布', Boolean(current.projectionPending));
-    },'确认发布');
+  const hasPendingPublish = () => Boolean(current?.hasUnpublishedChanges);
+  async function preparePublish() {
+    const attempt = uncertainPublish?.edits === edits ? uncertainPublish : null;
+    if (!isDirty() || attempt) {
+      const latest = await api('campaign/state');
+      if (attempt && latest.publishedRevision >= attempt.edition) {
+        const edition = await api('campaign/published?revision='+attempt.edition);
+        if (JSON.stringify(edition.sheets) === JSON.stringify(current.sheets)) {
+          accept(latest);
+          return null;
+        }
+      }
+      if (attempt && latest.revision !== saved.revision) {
+        throw Error('小订与首销草稿已被其他人修改，请重新载入后核对');
+      }
+      if (!isDirty() && (!saved || latest.revision !== saved.revision)) accept(latest);
+    }
+    if (!hasPendingPublish()) return null;
+    const candidate = payload();
+    const preview = await api('campaign/publish-preview', candidate);
+    if (!preview.changes.length) return null;
+
+    function sample(values, total, unit) {
+      return esc(values.join('、') + (values.length < total ? `等 ${total} ${unit}` : ''));
+    }
+    const summary = preview.changes.map(change => {
+      const stages = change.stages.map(([primary, secondary]) => stageLabel(primary, secondary));
+      const counts = [['新增', change.added], ['修改', change.updated], ['移出', change.removed]]
+        .filter(([,count])=>count).map(([label,count])=>`${label} ${count} 行`).join('、');
+      const details = counts
+        ? [counts, sample(stages, change.stageCount, '个车型阶段'),
+           sample(change.fields, change.fieldCount, '个字段')].filter(Boolean).join(' · ')
+        : '表结构、行序或计算设置有变更';
+      return `<dt>${esc(change.name)}</dt><dd>${details}</dd>`;
+    }).join('');
+    const html = `<p>草稿 r${preview.revision} → 发布 v${preview.publishedRevision+1}</p><dl>${summary}</dl>`;
+    if (preview.error) return {html:html+`<p class="error">${esc(preview.error)}</p>`, publish:null};
+    return {html, publish:async () => {
+      let result;
+      try {
+        result = await writeApi('campaign/publish', candidate);
+      } catch (error) {
+        if (!error.status || error.status >= 500) {
+          uncertainPublish = {edits:candidate.edits, edition:preview.publishedRevision+1};
+        }
+        throw error;
+      }
+      accept(result);
+      return result.projectionPending ? result.projectionError || '数据已发布，下游同步待重试' : '';
+    }};
   }
   const action = (kind,label,attrs='') => `<button type="button" data-campaign-action="${kind}" ${attrs}>${label}</button>`;
   const empty = message => `<div class="empty"><strong>${esc(message)}</strong></div>`;
@@ -894,7 +937,7 @@ const campaignEditor = (() => {
     if (current.projectionPending) return '已发布 · 下游同步待重试';
     return `小订与首销草稿 r${saved.revision} · ${saved.hasUnpublishedChanges?'待发布':'已保存'}`;
   }
-  return {ready,isDirty,reportMetrics,modelNames,reportStages,canUndoImport,selectLegacy,undoImport,canPublish:()=>isDirty()||Boolean(saved?.hasUnpublishedChanges),
+  return {ready,isDirty,reportMetrics,modelNames,reportStages,canUndoImport,selectLegacy,undoImport,hasPendingPublish,
     canUndo:()=>undo.length>0,canRedo:()=>redo.length>0,undo:()=>step(true),redo:()=>step(false),
-    render:renderView,load,reload,status,handle,save,previewPublish,openExport,importFiles,importModule};
+    render:renderView,load,reload,status,handle,save,preparePublish,openExport,importFiles,importModule};
 })();

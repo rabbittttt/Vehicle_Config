@@ -25,6 +25,10 @@ const isReportingView=()=>tab==='reporting';
 const isCampaignView=()=>tab==='schedule' || isReportingView();
 const isRuleView=()=>Object.hasOwn(orderRules.titles,view);
 const activeEditor=()=>isRuleView()?orderRules:campaignEditor;
+const publishGroups = [
+  {title:'车型与日程、小订首销填报', editor:campaignEditor},
+  {title:'代际规则、电池与选配', editor:orderRules},
+];
 const modelYear=name=>String(name ?? '').match(/(?:19|20)\d{2}(?=\s*款)/)?.[0] || '';
 function matchesModelAndYear(primary,secondary) {
   return (!model || primary===model) && (!year || modelYear(primary)===year || modelYear(secondary)===year);
@@ -77,9 +81,8 @@ function flags() {
   document.querySelectorAll('[data-request-disabled]').forEach(e=>{e.disabled=e.dataset.requestDisabled==='true';delete e.dataset.requestDisabled;});
   const editor=activeEditor(), ready=editor.ready(), history=view==='campaign_history';
   $('#save').disabled=readonly || history || !ready || !editor.isDirty();
-  $('#publish').disabled=readonly || history || !ready || !editor.canPublish();
-  setText($('#publish'),isRuleView()?'发布并更新脚本':'发布数据');
-  for(const id of ['save','publish','undo','redo']) $('#'+id).hidden=history;
+  $('#publish').disabled=readonly || !csrf || !publishGroups.some(({editor})=>!editor.ready() || editor.hasPendingPublish());
+  for(const id of ['save','undo','redo']) $('#'+id).hidden=history;
   for(const id of ['template','import','export']) $('#'+id).hidden=tab==='history';
   $('#import').disabled=readonly || !ready;
   $('#export').disabled=$('#template').disabled=!ready;
@@ -111,8 +114,13 @@ async function run(fn, label='正在处理…') {
     clearTimeout(progress);
     showProgress=false;busy=false;flags();
     // Disabling the focused input can send the keyboard to the document body.
-    if (document.activeElement===document.body && focused?.isConnected && !focused.disabled && !$('#dialog').open) {
-      focused.focus({preventScroll:true});
+    if (document.activeElement===document.body || document.activeElement===$('#dialog')) {
+      if ($('#dialog').open) {
+        const owner=$('#write-owner');
+        (owner?.required && !owner.value.trim() ? owner : $('#cancel')).focus({preventScroll:true});
+      } else if (focused?.isConnected && !focused.disabled) {
+        focused.focus({preventScroll:true});
+      }
     }
   }
 }
@@ -354,6 +362,59 @@ function writeModal(title,html,action,label) {
   modal(title,html,action,label);
   if (action && !sessionUser && !$('#write-owner').value) $('#write-owner').focus();
 }
+
+async function reviewPublication(groups=publishGroups, completed=[], previousOwner='') {
+  const prepared = await Promise.all(groups.map(async group => {
+    try {
+      if (!group.editor.ready()) await group.editor.load();
+      const preview = await group.editor.preparePublish();
+      return preview ? {...preview, group} : null;
+    } catch (error) {
+      return {group, html:`<p class="error">${esc(error.message)}</p>`, publish:null};
+    }
+  }));
+  const pending = prepared.filter(Boolean);
+  const sections = pending.map(({group,html})=>`<section><h3>${esc(group.title)}</h3>${html}</section>`).join('');
+  const receipt = completed.map(result=>`<p>${esc(result.message)}</p>`).join('');
+  if (!pending.length) {
+    modal('发布', receipt + '<p>当前没有待发布的变更。</p>');
+    $('#cancel').textContent='关闭';
+    return;
+  }
+
+  async function publish() {
+    const owner = $('#write-owner').value.trim();
+    if (!owner) {
+      throw Error('请填写维护人');
+    }
+    const results = [...completed];
+    for (const [index, item] of pending.entries()) {
+      try {
+        const warning = await item.publish();
+        results.push({message:item.group.title+'已发布'+(warning?'。'+warning:''), warning});
+      } catch (error) {
+        const remaining = pending.slice(index).map(step=>step.group);
+        const details = [
+          ...results.map(result=>`<p>${esc(result.message)}</p>`),
+          `<p class="error">${esc(item.group.title)}：${esc(error.message)}</p>`,
+          ...remaining.slice(1).map(group=>`<p>${esc(group.title)}尚未执行</p>`),
+        ].join('');
+        modal('发布结果', details, async () => {
+          await reviewPublication(remaining, results, owner);
+          return false;
+        }, '重新核对');
+        $('#cancel').textContent='关闭';
+        return false;
+      }
+    }
+    notice(results.map(result=>result.message).join('。'), results.some(result=>result.warning));
+    if (tab==='history') await renderHistory();
+  }
+  const valid = pending.every(item=>item.publish);
+  writeModal('核对发布变更', receipt+sections, valid ? publish : null, '确认发布');
+  if (valid && previousOwner && !sessionUser) $('#write-owner').value=previousOwner;
+  if (!valid) $('#cancel').textContent='关闭';
+}
 function formSelect(field,values,current,mandatory=false) {return `<select name="${field}" ${mandatory?'required':''}>${option('','请选择',current)+values.map(([id,text])=>option(id,text,current)).join('')}</select>`;}
 async function download(path,body,filename) {
   const response=await serviceFetch(path,body);
@@ -430,7 +491,7 @@ $('#save').onclick=()=>{
   else run(activeEditor().save,'正在保存草稿…');
 };
 $('#error-detail').onclick=()=>modal('操作未完成',`<p class="error">${esc($('#error-notice').textContent)}</p>`);
-$('#publish').onclick=()=>run(activeEditor().previewPublish,'正在核对发布差异…');
+$('#publish').onclick=()=>run(()=>reviewPublication(),'正在核对发布差异…');
 $('#reload').onclick=()=>!csrf?run(start):view==='campaign_history'?renderHistory():activeEditor().reload();
 $('#undo').onclick=()=>activeEditor().undo();
 $('#redo').onclick=()=>activeEditor().redo();
@@ -506,6 +567,13 @@ async function start() {
   }
   csrf=session.csrf;
   render();
-  await campaignEditor.load();
+  if (readonly) {
+    await campaignEditor.load();
+  } else {
+    const loads = await Promise.allSettled(publishGroups.map(group=>group.editor.load()));
+    const failures = loads.flatMap((result,index)=>result.status==='rejected'
+      ? [publishGroups[index].title+'：'+result.reason.message] : []);
+    if (failures.length) throw Error(failures.join('。'));
+  }
 }
 run(start,frameAccount?'等待门户账号…':'正在读取车型与日程…');

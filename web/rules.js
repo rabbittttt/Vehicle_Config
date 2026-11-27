@@ -23,11 +23,12 @@ const orderRules = (() => {
   };
 
   let state, draft, saved = '', published = '', modified = false, pendingPublish = false;
+  let publishAttempted = false;
   let undoStack = [], redoStack = [];
 
   const ready = () => Boolean(state);
   const isDirty = () => modified;
-  const canPublish = () => Boolean(pendingPublish && state?.source.available && !state.source.external_modified && !state.sync.pending_token);
+  const hasPendingPublish = () => pendingPublish;
   const canUndo = () => undoStack.length > 0;
   const canRedo = () => redoStack.length > 0;
   const status = () => !ready() ? '脚本规则未载入' : isDirty() ? '脚本规则有未保存修改' : `脚本规则草稿 r${state.draft.revision} · 已保存`;
@@ -106,6 +107,7 @@ const orderRules = (() => {
 
   function accept(next) {
     state = next;
+    publishAttempted = false;
     draft = structuredClone(next.draft.data);
     saved = JSON.stringify(draft);
     published = JSON.stringify(next.published.data);
@@ -447,17 +449,36 @@ const orderRules = (() => {
     notice('脚本规则草稿已保存');
   }
 
-  async function previewPublish() {
+  async function preparePublish() {
+    if (publishAttempted || !isDirty()) {
+      const latest = await api('rules/state');
+      if (publishAttempted && latest.draft.revision !== state.draft.revision) {
+        if (latest.published.revision > state.published.revision &&
+            JSON.stringify(latest.published.data) === JSON.stringify(draft)) {
+          accept(latest);
+          return null;
+        }
+        throw Error('规则草稿已被其他人修改。请导出当前编辑或重新载入草稿后核对。');
+      }
+      if (!state || latest.draft.revision !== state.draft.revision) accept(latest);
+    }
+    if (!pendingPublish) return null;
     const snapshot = structuredClone(draft);
     const revision = state.draft.revision;
     const result = await api('rules/preview', {data: snapshot, revision});
+    if (!result.errors.length && !result.changes.length) {
+      pendingPublish = false;
+      return null;
+    }
     const failure = result.errors.length ? `<p class="error">${esc(result.errors.join('\n'))}</p>` : '';
     const scriptDiff = result.script_diff ? `<pre class="script-diff">${esc(result.script_diff)}</pre>` : '';
-    writeModal('发布并更新脚本', `<div>${esc(state.source.path)}</div>${failure}${diffHTML(result.changes)}${scriptDiff}`,
-      result.errors.length || !result.changes.length ? null : async () => {
+    return {
+      html: `<div>${esc(state.source.path)}</div>${failure}${diffHTML(result.changes)}${scriptDiff}`,
+      publish: result.errors.length ? null : async () => {
+        publishAttempted = true;
         accept(await writeApi('rules/publish', {data: snapshot, revision, source_hash: result.source_hash}));
-        notice('脚本已更新 · 业务报表未重新生成');
-      }, '确认发布');
+      },
+    };
   }
 
   const openExport = () => download('rules/export', {data: draft}, '脚本规则-当前编辑.xlsx');
@@ -483,7 +504,7 @@ const orderRules = (() => {
   }
 
   return {
-    titles, modelNames, yearNames, ready, isDirty, canPublish, canUndo, canRedo, status, load, render: renderView,
-    handleClick, save, previewPublish, reload, syncFromScript, undo, redo, openExport, template, importFiles,
+    titles, modelNames, yearNames, ready, isDirty, hasPendingPublish, canUndo, canRedo, status, load, render: renderView,
+    handleClick, save, preparePublish, reload, syncFromScript, undo, redo, openExport, template, importFiles,
   };
 })();

@@ -147,6 +147,22 @@ class CampaignApiTests(unittest.TestCase):
             finally:
                 book.close()
 
+    def test_publication_preview_returns_json_without_writing_or_requiring_an_owner(self):
+        body = {'revision': 0, 'edits': [{'sheet':SUMMARY, 'row':2, 'col':1, 'value':'车型甲'}]}
+        with self.post('publish-preview', body) as response:
+            preview = json.load(response)
+        self.assertEqual((preview['revision'], preview['publishedRevision'], preview['error']), (0, 0, ''))
+        table, = preview['changes']
+        self.assertEqual((table['name'], table['added'], table['stages']), (SUMMARY, 1, [['车型甲', '']]))
+        for request, token, expected in ((body, 'invalid', 403), ({**body, 'revision':1}, None, 409)):
+            with self.assertRaises(HTTPError) as failed:
+                self.post('publish-preview', request, token)
+            self.assertEqual(failed.exception.code, expected)
+            failed.exception.close()
+        with urlopen(self.base + 'campaign/state') as response:
+            state = json.load(response)
+        self.assertEqual((state['revision'], state['publishedRevision'], state['hasUnpublishedChanges']), (0, 0, False))
+
     def test_campaign_publication_history_excludes_initial_version_and_drafts(self):
         def history(query=''):
             with urlopen(self.base + 'campaign/history' + query) as response:
