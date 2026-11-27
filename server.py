@@ -75,7 +75,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     raise PermissionError('缺少可信代理身份')
             identity = frame_identity(self.headers)
             if proxy_secret and required and not identity:
-                raise PermissionError('尚未收到门户账号')
+                raise PermissionError('本次请求未收到门户账号。请从计划工作台重新打开「车型配置」后重试。如果仍然提示，请管理员检查代理是否转发 Sop-Frame-Identity。')
             return identity
         def do_GET(self):
             try:

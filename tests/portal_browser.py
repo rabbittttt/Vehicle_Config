@@ -1,8 +1,13 @@
 """Verify the registered workbench iframe with isolated schedule and rule data."""
+import json
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 from playwright.sync_api import expect, sync_playwright
+
+from browser_campaign import legacy_file
+from stage_workbook import apply_edits, empty_workbook, export_workbook
 
 
 def check(browser, url):
@@ -74,17 +79,57 @@ def check(browser, url):
     page.close()
 
 
-def check_account_change(browser, url):
+def check_imports(page, app, account, model):
+    def submit(button, filename, raw, endpoint):
+        with page.expect_file_chooser() as chooser:
+            button.click()
+        with page.expect_response(lambda response: response.url.endswith('/api/campaign/'+endpoint)) as reply:
+            chooser.value.set_files({'name': filename, 'mimeType': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'buffer': raw})
+        check_identity(reply.value)
+
+    def check_identity(response):
+        assert response.status == 200, response.text()
+        identity = response.request.header_value('Sop-Frame-Identity')
+        assert identity and json.loads(unquote(identity))['account'] == account
+
+    template = apply_edits(empty_workbook(), [{'sheet':'车型汇总', 'row':2, 'col':1, 'value':model}])
+    submit(app.locator('#import'), '日程.xlsx', export_workbook(template, {'scope':'schedule'}), 'module-import-preview')
+    expect(app.get_by_role('heading', name='导入预览')).to_be_visible()
+    app.locator('#cancel').click()
+    expect(app.locator('#content')).not_to_contain_text(model)
+
+    app.locator('#data-tools').click()
+    submit(app.get_by_role('button', name='导入小订首销旧表'), '旧表.xlsx', legacy_file(model), 'import-preview')
+    expect(app.get_by_role('heading', name='旧表导入预览')).to_be_visible()
+    expect(app.get_by_label('本次维护人', exact=True)).to_have_value(account)
+    with page.expect_response(lambda response: response.url.endswith('/api/campaign/import')) as reply:
+        app.locator('#confirm').click()
+    check_identity(reply.value)
+    expect(app.locator('#dialog')).to_be_hidden()
+    expect(app.locator('#content')).to_contain_text(model)
+
+
+def check_account_change(browser, url, *, legacy_portal=False):
     page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+    if legacy_portal:
+        # Older workbenches have the same account bridge but only push to SOP.
+        def sop_only(route):
+            response = route.fetch()
+            source = response.text()
+            registered = "new Set(['sop', 'vehicle-config'])"
+            assert registered in source
+            route.fulfill(response=response, body=source.replace(registered, "new Set(['sop'])", 1))
+        page.route('**/js/portal.js*', sop_only)
     page.route('**/account-test', lambda route: route.fulfill(content_type='text/html',
                body='<iframe style="position:fixed;inset:0;width:100%;height:100%;border:0" src="/#/app/vehicle-config"></iframe>'))
     page.goto(url + '/account-test')
     portal = page.frame_locator('iframe')
     app = portal.frame_locator('iframe[data-app="vehicle-config"]')
     expect(app.locator('h1')).to_have_text('车型配置')
+    expect(app.locator('#import')).to_be_disabled()
 
     def switch_account(name):
-        with page.expect_response(lambda r: r.url.endswith('/vehicle-config/api/session') and r.status == 200) as reply:
+        with page.expect_response(lambda r: r.url.endswith('/vehicle-config/api/session') and r.status == 200, timeout=10000) as reply:
             page.evaluate("""account => document.querySelector('iframe').contentWindow.postMessage(
                 {account, roleCode: 2, roleName: '维护人'}, location.origin)""", name)
         assert reply.value.json()['user'] == name
@@ -98,6 +143,7 @@ def check_account_change(browser, url):
     switch_account('业务乙')
     expect(app.locator('#save')).to_be_disabled()
     expect(app.locator('#content')).not_to_contain_text('上个账号的草稿')
+    check_imports(page, app, '业务乙', '旧壳导入验收' if legacy_portal else '工作台导入验收')
     app.locator('#publish').click()
     app.locator('#confirm').click()
     expect(app.locator('#dialog')).to_be_hidden()
@@ -111,5 +157,6 @@ if __name__ == '__main__':
         browser = pw.chromium.launch(channel='msedge')
         check(browser, sys.argv[1])
         check_account_change(browser, sys.argv[1])
+        check_account_change(browser, sys.argv[1], legacy_portal=True)
         browser.close()
-    print('Portal iframe: schedule save/reload, A–N ownership, rules, reporting and narrow navigation passed.')
+    print('Portal iframe: schedule, rules, reporting, narrow navigation and attributed Excel imports in both workbenches passed.')

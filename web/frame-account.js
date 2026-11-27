@@ -3,7 +3,8 @@
 // Register before the iframe load event, when the workbench forwards its account.
 window.vehicleConfigFrameAccount = (() => {
   if (window.parent === window) return null;
-  if (window.frameElement?.matches('#frame-container > iframe[data-app="vehicle-config"]')) {
+  const workbenchFrame = window.frameElement?.matches('#frame-container > iframe[data-app="vehicle-config"]');
+  if (workbenchFrame) {
     document.documentElement.classList.add('planhub-embedded');
   }
   let identity = null, switching = false, resolve;
@@ -27,5 +28,17 @@ window.vehicleConfigFrameAccount = (() => {
     identity = Object.freeze({account,roleCode,roleName});
     resolve(identity);
   });
+  // Older workbenches retain the portal account but only push it to the SOP frame.
+  if (workbenchFrame && typeof window.parent.planHubFrameAccount?.send === 'function') {
+    const parent = window.parent;
+    const requestAccount = () => parent.planHubFrameAccount.send(window);
+    const subscribe = () => {
+      parent.addEventListener('planhub-account-change', requestAccount);
+      requestAccount();
+    };
+    subscribe();
+    window.addEventListener('pagehide', () => parent.removeEventListener('planhub-account-change', requestAccount));
+    window.addEventListener('pageshow', event => { if (event.persisted) subscribe(); });
+  }
   return {ready, get current() { return identity; }};
 })();

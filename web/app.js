@@ -565,7 +565,7 @@ async function start() {
     if (frameAccount && (!frameAccount.current || session.user !== frameAccount.current.account))
       throw Error('门户账号与服务端会话不一致。');
     sessionUser=typeof session.user==='string'?session.user.trim():'';
-    if (session.mode==='gateway' && !sessionUser) throw Error('缺少门户账号。');
+    if (session.mode==='gateway' && !sessionUser) throw Error('请从计划工作台打开「车型配置」，以当前门户账号进入。');
     const owner=$('#owner');
     owner.readOnly=Boolean(sessionUser);
     if (sessionUser) owner.value=sessionUser;

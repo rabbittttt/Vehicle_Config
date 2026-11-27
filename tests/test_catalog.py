@@ -196,6 +196,15 @@ class CatalogTests(unittest.TestCase):
             with get('/api/session', transport) as response:
                 pending = json.load(response)
             self.assertEqual((pending['mode'], pending['user'], pending['canWrite']), ('gateway', None, False))
+            request = urllib.request.Request(base+'/api/campaign/import', data=b'{}',
+                                             headers={**transport, 'X-CSRF-Token':pending['csrf']})
+            with self.assertRaises(urllib.error.HTTPError) as blocked:
+                urllib.request.urlopen(request)
+            with blocked.exception as response:
+                self.assertEqual(response.code, 403)
+                self.assertIn('请从计划工作台重新打开', json.load(response)['error'])
+            with get('/api/campaign/state', headers) as response:
+                self.assertEqual(json.load(response)['revision'], 0)
             with get('/vehicle-config/', transport) as response:
                 self.assertEqual(response.status, 200)
             invalid_identity = [{}, {**identity, 'account':' '}, {**identity, 'roleCode':0},
