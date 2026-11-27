@@ -1,5 +1,6 @@
 """Web-owned campaign schedules, daily orders and historical progress series."""
 from bisect import bisect_right
+from collections import Counter
 from copy import deepcopy
 from datetime import date, datetime, time
 from io import BytesIO
@@ -204,7 +205,7 @@ def _import_scalar(cell, field, epoch):
     return value
 
 
-def _sheet_sources(names):
+def _sheet_sources(names, require_full=True):
     sources = {}
     unknown = []
     for raw in names:
@@ -216,7 +217,7 @@ def _sheet_sources(names):
             raise ValueError(f'{sources[canonical]} 与 {raw} 同时对应 {canonical}，请核对工作表')
         else:
             sources[canonical] = raw
-    missing = [name for name in SHEETS if name != GROSS and name not in sources]
+    missing = [name for name in SHEETS if require_full and name != GROSS and name not in sources]
     issues = (['缺少工作表：'+'、'.join(missing)] if missing else []) + (['无法映射工作表：'+'、'.join(unknown)] if unknown else [])
     if issues:
         raise ValueError('；'.join(issues))
@@ -274,7 +275,7 @@ def _matches_canonical_formula(formula, col, n, mapping):
     return False
 
 
-def _summary_row(cells, caches, mapping, n, epoch):
+def _summary_row(cells, caches, mapping, n, epoch, infer_days=True):
     row = [None] * len(SUMMARY_FIELDS)
     override = set()
     for j,cell in enumerate(cells):
@@ -315,7 +316,7 @@ def _summary_row(cells, caches, mapping, n, epoch):
             override.add(col)
     for a,b,col in ((9,10,13),(11,12,14)):
         expected = _days(row[a-1],row[b-1])
-        if col-1 not in mapping.values():
+        if infer_days and col-1 not in mapping.values():
             row[col-1] = expected
         elif row[col-1] is not None and row[col-1]!=expected:
             override.add(col)
@@ -385,8 +386,7 @@ def _read_detail(name,cells,caches,headers,epoch):
     return _trim(row)
 
 
-def import_workbook(path_or_bytes):
-    """Explicit migration only. No worker reads this source after import."""
+def _read_workbook_sheets(path_or_bytes, scope=None):
     if isinstance(path_or_bytes, bytes):
         raw = path_or_bytes
     else:
@@ -400,7 +400,15 @@ def import_workbook(path_or_bytes):
         raise ValueError('无法读取历史 XLSX 工作簿') from exc
     cached = None
     try:
-        sources = _sheet_sources(book.sheetnames)
+        sources = _sheet_sources(book.sheetnames, require_full=scope is None)
+        if scope == 'schedule':
+            if SUMMARY not in sources:
+                raise ValueError('车型与日程导入需要车型汇总表')
+            sources = {SUMMARY: sources[SUMMARY]}
+        elif scope == 'reporting':
+            sources = {k:v for k,v in sources.items() if k not in (GROSS, LEGACY_PROGRESS)}
+            if not sources:
+                raise ValueError('请选择包含可填写数量的工作表')
         cached = load_workbook(BytesIO(raw), data_only=True, read_only=True, keep_links=False)
         result = []
         footprint = 0
@@ -416,9 +424,13 @@ def import_workbook(path_or_bytes):
                 if name==SUMMARY:
                     if n==1:
                         mapping = _summary_layout(cells)
+                        if scope and 1 not in mapping.values():
+                            raise ValueError('按阶段导入需要二级代际名列')
+                        if scope == 'reporting' and len(sources)==1 and not any(i+1 in REVIEW_COLUMNS for i in mapping.values()):
+                            raise ValueError('填报导入需要结果核对字段或逐日数量工作表')
                         rows.append(SUMMARY_FIELDS.copy())
                         continue
-                    row,special = _summary_row(cells,cache_cells,mapping,n,book.epoch)
+                    row,special = _summary_row(cells,cache_cells,mapping,n,book.epoch,infer_days=scope is None)
                     rows.append(row)
                     overrides.extend(special)
                     continue
@@ -427,6 +439,8 @@ def import_workbook(path_or_bytes):
                 is_head = label in (PRIMARY,*HEADER_ALIASES[PRIMARY]) or (label=='小订' and name==DAILY)
                 try:
                     if is_head:
+                        if scope and not any(cell.value in (SECONDARY,'二级代际') for cell in cells):
+                            raise ValueError('按阶段导入需要二级代际名列')
                         headers,add_total = _detail_head(name,cells,book.epoch)
                         width = max((j+1 for j,c in enumerate(cells) if c.value is not None),default=0)
                         rows.append(headers)
@@ -459,23 +473,29 @@ def import_workbook(path_or_bytes):
                     rows.append(rows[0].copy())
                     sheet['headerRows'].append(len(rows))
             result.append(sheet)
-        keys = {_key(row,1) for row in result[0]['rows'][1:]}
-        for sheet in result[1:]:
-            historic = {_key(row,idx) for _,row,_,idx in _detail_rows(sheet)} - keys
-            if historic:
-                sheet['historicalIdentities'] = [list(key) for key in sorted(historic)]
-            if sheet['name'] == DAILY:
-                footers = [n for n,row in enumerate(sheet['rows'],1) if _get(row,0)=='合计'
-                           and any(isinstance(v,(int,float)) for v in row[1:])]
-                if footers:
-                    sheet['totalRows'] = footers
-        data = backfill_totals({'sheets': result})
-        _mark_derived({s['name']:s for s in data['sheets']})
-        return data
+        return result
     finally:
         book.close()
         if cached:
             cached.close()
+
+
+def import_workbook(path_or_bytes):
+    """Explicit migration of a complete workbook."""
+    result = _read_workbook_sheets(path_or_bytes)
+    keys = {_key(row,1) for row in result[0]['rows'][1:]}
+    for sheet in result[1:]:
+        historic = {_key(row,idx) for _,row,_,idx in _detail_rows(sheet)} - keys
+        if historic:
+            sheet['historicalIdentities'] = [list(key) for key in sorted(historic)]
+        if sheet['name'] == DAILY:
+            footers = [n for n,row in enumerate(sheet['rows'],1) if _get(row,0)=='合计'
+                       and any(isinstance(v,(int,float)) for v in row[1:])]
+            if footers:
+                sheet['totalRows'] = footers
+    data = backfill_totals({'sheets': result})
+    _mark_derived({s['name']:s for s in data['sheets']})
+    return data
 
 
 def _days(start, end):
@@ -571,6 +591,110 @@ def _block_totals(sheet, n):
 PROGRESS_TOTALS = {'小转大进度':17, '大定进度':19, '直接大定进度':20}
 CANCEL_SHEETS = ('小订期退订进度', '首销期退订进度')
 BACKFILLED = {16, 22, *PROGRESS_TOTALS.values()}
+REVIEW_COLUMNS = BACKFILLED | {26, 28}
+
+
+def _summary_import_edits(target, source, scope):
+    records = {}
+    for n,row in enumerate(target['rows'][1:],2):
+        records.setdefault(_key(row,1),[]).append((n,row))
+    next_row = len(target['rows'])+1
+    existing_literals = set(target['literalCells'])
+    columns = range(1,15) if scope=='schedule' else sorted(REVIEW_COLUMNS)
+    seen = set()
+    for row in source['rows'][1:]:
+        if not row:
+            continue
+        key = _key(row,1)
+        if not key[0] or key in seen or len(records.get(key,[]))>1:
+            raise ValueError(f'车型汇总中的车型与二级代际缺失或重复：{key}')
+        seen.add(key)
+        if key in records:
+            n, current = records[key][0]
+        elif scope=='schedule':
+            n, current = next_row, []
+            next_row += 1
+        else:
+            raise ValueError(f'请先在车型与日程中建立阶段：{key}')
+        for col in columns:
+            value = _get(row,col-1)
+            if value is None or value == _get(current,col-1):
+                continue
+            if col in target['computed'] and f'{n}:{col}' not in existing_literals:
+                continue
+            yield dict(sheet=SUMMARY,row=n,col=col,value=value)
+
+
+def _report_import_edits(target, source, stages):
+    daily = source['name']==DAILY
+    def quantity_rows(sheet):
+        for block,start in enumerate(sheet['headerRows']):
+            if block and not daily:
+                break
+            end = sheet['headerRows'][block+1]-1 if block+1<len(sheet['headerRows']) else len(sheet['rows'])
+            head = sheet['rows'][start-1]
+            secondary = head.index(SECONDARY)
+            axes = {label:i for i,label in enumerate(head) if _is_date(label) or
+                    (not daily and isinstance(label,str) and re.fullmatch(r'D\d+',label))}
+            for n in range(start+1,end+1):
+                row = sheet['rows'][n-1]
+                if _get(row,0) not in (None,'合计'):
+                    yield _key(row,secondary),n,row,axes
+                elif _get(row,0) is None and any(_get(row,i) is not None for i in axes.values()):
+                    raise ValueError(f'{sheet["name"]} 第 {n} 行缺少车型')
+    current = {}
+    for key,n,row,axes in quantity_rows(target):
+        current.setdefault(key,[]).append((n,row,axes))
+    seen = set()
+    duplicate_values = {}
+    for key,_,row,axes in quantity_rows(source):
+        if key not in current and key not in stages:
+            raise ValueError(f'请先在车型与日程中建立阶段：{key}')
+        for axis,i in axes.items():
+            value = _get(row,i)
+            if value is None:
+                continue
+            matches = [(n,r,a[axis]) for n,r,a in current.get(key,[]) if axis in a]
+            if len(matches)>1:
+                # Historical blocks can repeat a stage and date. Identical exported
+                # observations are a no-op; a changed value cannot identify its row.
+                if (key,axis) not in duplicate_values:
+                    duplicate_values[key,axis] = Counter(_get(r,col) for _,r,col in matches)
+                values = duplicate_values[key,axis]
+                if values[value]>0:
+                    values[value]-=1
+                    continue
+                raise ValueError(f'{source["name"]} {key} {axis} 匹配多条记录，请在页面明细里定位')
+            if (key,axis) in seen or (not matches and len(current.get(key,[]))>1):
+                raise ValueError(f'{source["name"]} {key} {axis} 匹配多条记录，请在页面明细里定位')
+            seen.add((key,axis))
+            if matches:
+                n, old, col = matches[0]
+                if _get(old,col)!=value:
+                    yield dict(sheet=source['name'],row=n,col=col+1,value=value)
+            else:
+                # A previously absent axis may require inserting a date/day column.
+                location = {'date':axis} if daily else {'day':int(axis[1:])}
+                yield dict(sheet=source['name'],model=key[0],secondary=key[1],value=value,**location)
+
+
+def module_import_edits(data, raw_bytes, scope):
+    """Merge populated, writable cells by stage and date/day into the active draft."""
+    if scope not in ('schedule','reporting'):
+        raise ValueError('未知的导入模块')
+    current = {sheet['name']:sheet for sheet in data['sheets']}
+    stages = {_key(row,1) for row in current[SUMMARY]['rows'][1:]}
+    fixed, additions = [], []
+    for source in _read_workbook_sheets(raw_bytes, scope):
+        name = source['name']
+        changes = (_summary_import_edits(current[name],source,scope) if name==SUMMARY else
+                   _report_import_edits(current[name],source,stages))
+        for edit in changes:
+            (additions if 'model' in edit else fixed).append(edit)
+            if len(fixed)+len(additions)>20000:
+                raise ValueError('单次最多导入 20000 个更改，请拆分工作簿')
+    # Keep physical row/column edits ahead of series inserts that shift coordinates.
+    return fixed + additions
 
 
 def _quantity_records(sheet):

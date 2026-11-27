@@ -3,6 +3,10 @@
 const campaignEditor = (() => {
   const summaryName = '车型汇总';
   const dailyName = '小订by天';
+  const reportMetrics = {
+    dailyOrders:dailyName, smallOrderCancellations:'小订期退订进度', conversions:'小转大进度',
+    directOrders:'直接大定进度', launchCancellations:'首销期退订进度',
+  };
   let saved, current;
   let edits = [], undo = [], redo = [];
   let progressName = dailyName, lastModel = '';
@@ -11,7 +15,7 @@ const campaignEditor = (() => {
   const isDirty = () => edits.length > 0;
   const canUndoImport = () => Boolean(saved?.canUndoImport && !isDirty());
   const sheet = name => current?.sheets.find(item => item.name === name);
-  const reportingSheets = () => current.sheets.filter(info=>![summaryName,'小订进度','大定进度'].includes(info.name));
+  const reportingSheets = () => current.sheets.filter(info=>Object.values(reportMetrics).includes(info.name));
   const payload = () => ({revision:saved.revision, edits});
 
   function accept(result) {
@@ -81,23 +85,22 @@ const campaignEditor = (() => {
   function stages() {
     return (sheet(summaryName)?.rows.slice(1) || []).filter(r => r?.[0]);
   }
-  const modelNames = () => [...new Set(stages().map(row=>row[0]))];
+  const modelNames = () => ready() ? [...reportIndex().models.keys()] : [];
   const modelYears = () => [...new Set(stages().flatMap(row=>[modelYear(row[0]),modelYear(row[1])]).filter(Boolean))].sort().reverse();
   function stageSelect(target) {
     if (target) {
       const key = JSON.stringify([target.model,target.secondary]);
       return `<input type="hidden" name="stage" value="${esc(key)}"><label class="wide">车型与阶段<output>${esc(stageLabel(target.model,target.secondary))}</output></label>`;
     }
-    const variants = reportStages().filter(stage=>stage.hasSummary);
+    const variants = reportStages().filter(stage=>stage.hasSummary && (!model || stage.model===model));
     const pairs = variants.map(v => [JSON.stringify([v.model,v.secondary]),v.label]);
     const initial = pairs.some(([key])=>key===lastModel) ? lastModel : pairs.length===1 ? pairs[0][0] : '';
     return `<label class="wide">车型与阶段${formSelect('stage', pairs, initial, true)}</label>`;
   }
-  const identityColumns = [0,1,2,3];
-  const scheduleColumns = [4,5,6,7,8,9,10,11,12,13];
   const scheduleGroups = [
-    ['发布信息',[4,7]], ['小订期',[5,8,9,12]], ['首销期',[6,10,11,13]],
+    ['车型资料',[0,1,2,3]], ['发布信息',[4,7]], ['小订期',[5,8,9,12]], ['首销期',[6,10,11,13]],
   ];
+  const scheduleColumns = scheduleGroups.flatMap(([,columns])=>columns);
   const totalsGroups = [
     ['小订与转化',[15,16,21]],
     ['大定与留存',[18,19,25]],
@@ -115,40 +118,29 @@ const campaignEditor = (() => {
   function summaryRows(query, columns) {
     const info = sheet(summaryName);
     return info.rows.map((r,i)=>({r,row:i+1})).slice(1)
-      .filter(({r})=>r[0] && (isReportingView() || matchesScheduleModel(r[0],r[1])) && matched(columns.map(index=>r[index]),query));
-  }
-  function identityCell(r) {
-    return `<td>${esc(r[0])}${r[1] ? `<small>${esc(r[1])}</small>` : ''}</td>`;
+      .filter(({r})=>r[0] && matchesModelAndYear(r[0],r[1]) && matched(columns.map(index=>r[index]),query));
   }
   function stageLabel(primary,secondary) {
     return secondary && !String(secondary).startsWith(primary) ? primary+' · '+secondary : secondary || primary;
   }
-  function rowAction(kind,row,caption=readonly?'查看':'编辑') {
-    return `<td class="operation">${action(kind,caption,`class="link" data-row="${row}"`)}</td>`;
-  }
-  function renderIdentity(query) {
-    $('#actions').innerHTML = readonly ? '' : action('add-stage','新增车型');
-    const headings = ['代际名','二级代际名','产品档位','能源类型','操作'];
-    const details = identityColumns.slice(1);
-    const body = pageRows(summaryRows(query,identityColumns)).map(({r,row}) => {
-      const metadata = details.filter(index=>used(r[index])).map(index=>
-        `<div><dt>${headings[index]}</dt><dd>${esc(r[index])}</dd></div>`).join('');
-      return `<tr><td><span class="identity-name">${esc(r[0])}</span>${metadata ? `<dl class="identity-details">${metadata}</dl>` : ''}</td>
-        ${details.map(index=>`<td>${esc(displayValue(r[index]))}</td>`).join('')}${rowAction('identity',row)}</tr>`;
-    }).join('');
-    $('#content').innerHTML = body ? `<div class="campaign-identities">${table(headings,body)}</div>` : empty(query?'没有匹配的车型':'暂无车型资料');
-  }
-  function timeWindow(r,start,end) {
-    if (!used(r[start]) && !used(r[end])) return '<td>—</td>';
-    return `<td>${esc(displayValue(r[start]))}<small>至 ${esc(displayValue(r[end]))}</small></td>`;
+  function periodSummary(start,end,period,days) {
+    const dates = start && end ? `${start} 至 ${end}` : start ? `${start} 起` : end ? `截至 ${end}` : '';
+    const detail = [used(period) ? '发布：'+period : '', used(days) ? days+' 天' : ''].filter(Boolean).join(' · ');
+    return dates && detail ? `${esc(dates)}<small>${esc(detail)}</small>` : esc(dates || detail || '—');
   }
   function renderSchedule(query) {
-    $('#actions').innerHTML = readonly ? '' : action('add-stage','新增发布日程');
-    const body = pageRows(summaryRows(query,[0,1,...scheduleColumns])).map(({r,row})=>`<tr>
-      ${identityCell(r)}<td>${esc(displayValue(r[4]))}</td><td>${esc(displayValue(r[7]))}</td>
-      <td>${esc(displayValue(r[5]))}</td>${timeWindow(r,8,9)}<td>${esc(displayValue(r[12]))}</td>
-      <td>${esc(displayValue(r[6]))}</td>${timeWindow(r,10,11)}<td>${esc(displayValue(r[13]))}</td>${rowAction('stage',row)}</tr>`).join('');
-    $('#content').innerHTML = body ? table(['车型与阶段','发布类型','留资日期','小订发布时段','小订起止日期','小订天数','首销发布时段','首销日期','首销期天数','操作'],body) : empty(query?'没有匹配的日程':'暂无发布日程');
+    $('#actions').innerHTML = readonly ? '' : action('add-stage','新增车型');
+    const headings = ['车型与阶段','车型资料','发布信息','小订期','首销期','操作'];
+    const body = pageRows(summaryRows(query,scheduleColumns)).map(({r,row})=>`<tr>
+      <td><span class="identity-name">${esc(r[0])}</span>${r[1] ? `<small>${esc(r[1])}</small>` : ''}</td>
+      <td><dl class="vehicle-specs"><div><dt>产品档位</dt><dd>${esc(displayValue(r[2]))}</dd></div>
+        <div><dt>能源类型</dt><dd>${esc(displayValue(r[3]))}</dd></div></dl></td>
+      <td data-label="发布信息">${esc(displayValue(r[4]))}${r[7] ? `<small>留资 ${esc(r[7])}</small>` : ''}</td>
+      <td data-label="小订期">${periodSummary(r[8],r[9],r[5],r[12])}</td>
+      <td data-label="首销期">${periodSummary(r[10],r[11],r[6],r[13])}</td>
+      <td class="operation">${action('stage',readonly?'查看':'编辑',`class="link" data-row="${row}"`)}</td>
+      </tr>`).join('');
+    $('#content').innerHTML = body ? `<div class="schedule-list">${table(headings,body)}</div>` : empty(query||model||year?'没有匹配的车型与日程':'暂无车型资料');
   }
   function grossDifference(small,direct,gross) {
     if (![small,direct,gross].every(value=>Number.isFinite(value) && value>=0)) return '';
@@ -544,18 +536,18 @@ const campaignEditor = (() => {
     if (!filteredDates) dateSearchPosition=null;
     const axis = filteredDates ? 'date' : daily ? reportAxis || index.defaultAxis : 'day';
     const times = timelineAxis(index,axis,filteredDates);
-    const select = (id,label,options,disabled=false)=>`<label class="inline-label">${label}<select id="${id}" aria-label="${label}" ${disabled?'disabled':''}>${options}</select></label>`;
-    const metrics = reportingSheets().map(info=>option(info.name,info.name===dailyName?'每日小订':info.name,progressName));
-    const toolbar = [select('campaign-progress','指标',metrics.join(''))];
-    if (daily) toolbar.push(select('report-axis','横轴',option('day','按日序',axis)+option('date','按日期',axis),Boolean(filteredDates)));
+    const toolbar = [];
+    if (daily) toolbar.push(`<label class="inline-label">横轴<select id="report-axis" ${filteredDates?'disabled':''}>${option('day','按日序',axis)}${option('date','按日期',axis)}</select></label>`);
     if (!readonly) toolbar.push(index.stageList.some(stage=>stage.hasSummary) ? action('batch','批量粘贴') : action('new-stage','新增发布日程'));
     $('#actions').innerHTML = toolbar.join('');
-    const refresh = selector=>{ render(); $(selector)?.focus({preventScroll:true}); };
-    $('#campaign-progress').onchange = e=>{progressName=e.target.value;page=1;refresh('#campaign-progress');};
-    if (daily && !filteredDates) $('#report-axis').onchange = e=>{reportAxis=e.target.value;refresh('#report-axis');};
+    if (daily && !filteredDates) $('#report-axis').onchange = e=>{
+      reportAxis=e.target.value;
+      render();
+      $('#report-axis').focus({preventScroll:true});
+    };
     const dateMatches = filteredDates && new Set(filteredDates.flatMap(key=>[...index.dateStages.get(key)]));
     const groups = Array.from(index.models.values(),variants=>[...variants.values()].filter(stage=>
-      (stage.hasSummary || stage.records.has(progressName)) &&
+      (!model || stage.model===model) && (stage.hasSummary || stage.records.has(progressName)) &&
       (dateMatches ? dateMatches.has(stage) : matched([stage.model,stage.secondary],query)))).filter(variants=>variants.length);
     const window = paginator(groups.length);
     $('#count').textContent = '';
@@ -570,10 +562,12 @@ const campaignEditor = (() => {
       $('#content').innerHTML = empty(current?.reason || '正在读取小订与首销…');
       return;
     }
-    if (view==='dailyOrders') renderReport(query);
+    if (Object.hasOwn(reportMetrics,view)) {
+      progressName=reportMetrics[view];
+      renderReport(query);
+    }
     else if (view==='businessTotals') renderTotals(query);
-    else if (view==='launchSchedule') renderSchedule(query);
-    else renderIdentity(query);
+    else renderSchedule(query);
   }
 
   function numericValue(value,percent=false) {
@@ -774,20 +768,18 @@ const campaignEditor = (() => {
       rowForm(p.s,row,columns,subject+' · '+progressName);
       return;
     }
-    if(['identity','stage','totals'].includes(kind)){
+    if(kind==='stage'||kind==='totals'){
       const s=sheet(summaryName);
       const record=s.rows[row-1];
       const subject=stageLabel(record[0],record[1]);
-      if(kind==='identity')return rowForm(s,row,identityColumns,subject+' · 车型资料');
-      if(kind==='stage')return rowForm(s,row,scheduleColumns,subject+' · 发布日程',scheduleGroups);
+      if(kind==='stage')return rowForm(s,row,scheduleColumns,subject+' · 车型与日程',scheduleGroups);
       return reviewTotals(s,row,subject);
     }
     if(readonly)return;
-    if(kind==='new-stage') switchView('schedule','launchSchedule');
+    if(kind==='new-stage') switchView('schedule');
     if(kind==='new-stage'||kind==='add-stage') {
       const s=sheet(summaryName);
-      if(view==='vehicleIdentity')return rowForm(s,s.rows.length+1,identityColumns,'新增车型');
-      return rowForm(s,s.rows.length+1,[...identityColumns,...scheduleColumns],'新增发布日程',[['车型资料',identityColumns],...scheduleGroups]);
+      return rowForm(s,s.rows.length+1,scheduleColumns,'新增车型',scheduleGroups);
     }
     if(kind==='batch') return entryForm(true);
     if(kind==='report-cell'||kind==='report-add')return entryForm(false,target);
@@ -840,6 +832,17 @@ const campaignEditor = (() => {
       area.hidden=!names;
     };
   }
+  async function importModule(files,scope) {
+    if (files.length!==1) throw Error('请选择一份 Excel 工作簿');
+    const [file]=await encodeWorkbooks(files);
+    const {edits:changes}=await api('campaign/module-import-preview',{...payload(),...file,scope});
+    const counts=new Map();
+    for (const edit of changes) counts.set(edit.sheet,(counts.get(edit.sheet)||0)+1);
+    const summary=[...counts].map(([name,count])=>`<dt>${esc(name)}</dt><dd>${count} 处更改</dd>`).join('');
+    modal('导入预览',`<div class="file-list"><span>${esc(file.name)}</span></div>${summary?`<dl>${summary}</dl>`:empty('没有可导入的更改')}`,
+      changes.length ? ()=>apply(changes) : null,'应用');
+    if (!changes.length) $('#cancel').textContent='关闭';
+  }
   const saveBeforeImport = '车型日程或填报数据有未保存修改。请先保存草稿，再导入旧表。';
   function selectLegacy() {
     if (readonly || busy) return;
@@ -889,7 +892,7 @@ const campaignEditor = (() => {
     if (current.projectionPending) return '已发布 · 下游同步待重试';
     return `小订与首销草稿 r${saved.revision} · ${saved.hasUnpublishedChanges?'待发布':'已保存'}`;
   }
-  return {ready,isDirty,modelNames,modelYears,canUndoImport,selectLegacy,undoImport,canPublish:()=>isDirty()||Boolean(saved?.hasUnpublishedChanges),
+  return {ready,isDirty,reportMetrics,modelNames,modelYears,canUndoImport,selectLegacy,undoImport,canPublish:()=>isDirty()||Boolean(saved?.hasUnpublishedChanges),
     canUndo:()=>undo.length>0,canRedo:()=>redo.length>0,undo:()=>step(true),redo:()=>step(false),
-    render:renderView,load,reload,status,handle,save,previewPublish,openExport,importFiles};
+    render:renderView,load,reload,status,handle,save,previewPublish,openExport,importFiles,importModule};
 })();

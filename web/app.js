@@ -3,15 +3,15 @@ const $ = s => document.querySelector(s);
 const frameAccount = window.vehicleConfigFrameAccount;
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const sections = {
-  schedule: ['vehicleIdentity', 'launchSchedule'],
+  schedule: ['schedule'],
   generation: ['gen_names', 'merge_groups'],
   options: ['battery_rules', 'option_names', 'option_prices'],
-  reporting: ['dailyOrders', 'businessTotals'],
+  reporting: [...Object.keys(campaignEditor.reportMetrics), 'businessTotals'],
   history: ['campaign_history', 'rule_history'],
 };
 const viewLabels = {
-  ...orderRules.titles, vehicleIdentity:'车型资料', launchSchedule:'发布日程',
-  dailyOrders:'日常填报', businessTotals:'结果核对', campaign_history:'日程与填报发布',
+  ...orderRules.titles,
+  ...campaignEditor.reportMetrics, dailyOrders:'每日小订', businessTotals:'结果核对', campaign_history:'日程与填报发布',
 };
 let tab='schedule', view=sections.schedule[0], csrf='', readonly=true, busy=false, confirmAction=null;
 let sessionUser = '';
@@ -26,8 +26,8 @@ const isCampaignView=()=>tab==='schedule' || isReportingView();
 const isRuleView=()=>Object.hasOwn(orderRules.titles,view);
 const activeEditor=()=>isRuleView()?orderRules:campaignEditor;
 const modelYear=name=>String(name ?? '').match(/(?:19|20)\d{2}(?=\s*款)/)?.[0] || '';
-function matchesScheduleModel(primary,secondary) {
-  return (!model || primary===model) && (!year || modelYear(primary)===year || modelYear(secondary)===year);
+function matchesModelAndYear(primary,secondary) {
+  return (!model || primary===model) && (tab!=='schedule' || !year || modelYear(primary)===year || modelYear(secondary)===year);
 }
 function newId() {
   if(crypto.randomUUID)return crypto.randomUUID();
@@ -80,7 +80,8 @@ function flags() {
   $('#publish').disabled=readonly || history || !ready || !editor.canPublish();
   setText($('#publish'),isRuleView()?'发布并更新脚本':'发布数据');
   for(const id of ['save','publish','undo','redo']) $('#'+id).hidden=history;
-  $('#import').hidden=$('#template').hidden=!isRuleView() || tab==='history';
+  $('#template').hidden=!isRuleView() || tab==='history';
+  $('#import').hidden=tab==='history';
   $('#import').disabled=readonly || !ready;
   $('#export').hidden=tab==='history';
   $('#export').disabled=$('#template').disabled=!ready;
@@ -129,16 +130,17 @@ function renderKeepingScroll() {
 function filters() {
   const schedule=tab==='schedule';
   $('#schedule-filters').hidden=!schedule;
+  const names=[...new Set([...campaignEditor.modelNames(),...orderRules.modelNames()])];
+  if(!names.includes(model))model='';
+  updateOptions($('#model'),option('','全部车型','')+names.map(n=>option(n,n,'')).join(''),model);
   if(schedule && campaignEditor.ready()) {
-    const names=campaignEditor.modelNames();
-    if(!names.includes(model))model='';
     const years=campaignEditor.modelYears();
     if(!years.includes(year))year='';
-    updateOptions($('#model'),option('','全部车型','')+names.map(n=>option(n,n,'')).join(''),model);
     updateOptions($('#year'),option('','全部年款','')+years.map(y=>option(y,y+'款','')).join(''),year);
   }
-  $('#clear-schedule-filters').hidden=!model && !year;
-  setText(filterToggle,searchValue()?'筛选 · 1':'筛选');
+  $('#clear-schedule-filters').hidden=!year;
+  const count=[model,searchValue()].filter(Boolean).length;
+  setText(filterToggle,count?'筛选 · '+count:'筛选');
 }
 const renderedOptions=new WeakMap();
 function updateOptions(select, html, value) {
@@ -217,12 +219,12 @@ function updateExcelActions() {
   const scope = isRuleView() ? '脚本规则' : isReportingView() ? '小订与首销' : '车型与日程';
   for (const [id, description] of [
     ['template', '下载' + scope + '模板（Excel）'],
-    ['import', '批量导入' + scope + '（Excel）'],
+    ['import', '导入' + scope + '（Excel）'],
     ['export', '导出' + scope + '（Excel）'],
   ]) {
     const button = $('#' + id);
     button.title = description;
-    button.setAttribute('aria-label', button.title);
+    button.setAttribute('aria-label', id==='import'?'导入':button.title);
   }
 }
 const tabSizes = new ResizeObserver(entries => entries.forEach(entry => revealActiveTab(entry.target)));
@@ -233,7 +235,8 @@ function render() {
   if (nav.dataset.active !== tab) {
     nav.querySelectorAll('[data-tab]').forEach(b=>{b.classList.toggle('active',b.dataset.tab===tab);b.setAttribute('aria-current',b.dataset.tab===tab?'page':'false');});
     nav.dataset.active = tab;
-    viewTabs.innerHTML = sections[tab].map(t => `<button id="view-${t}" data-view="${t}">${viewLabels[t]}</button>`).join('');
+    viewTabs.hidden = sections[tab].length === 1;
+    viewTabs.innerHTML = viewTabs.hidden ? '' : sections[tab].map(t => `<button id="view-${t}" data-view="${t}">${viewLabels[t]}</button>`).join('');
     revealActiveTab(nav);
   }
   if (viewTabs.dataset.active !== view) {
@@ -244,7 +247,7 @@ function render() {
       button.setAttribute('aria-pressed', String(active));
     }
     viewTabs.dataset.active = view;
-    viewTabs.closest('section').setAttribute('aria-labelledby','view-'+view);
+    viewTabs.closest('section').setAttribute('aria-labelledby',viewTabs.hidden ? 'tab-'+tab : 'view-'+view);
     revealActiveTab(viewTabs);
   }
   if(isCampaignView()) campaignEditor.render(view,searchValue());
@@ -307,7 +310,7 @@ document.addEventListener('click',event=>{
 $('#dialog').addEventListener('close',()=>{
   if($('#dialog').open||document.activeElement!==document.body&&!$('#dialog').contains(document.activeElement))return;
   const opener=returnFocus&&$(returnFocus);
-  (opener?.getClientRects().length&&!opener.disabled?opener:$('#view-tabs .active'))?.focus({preventScroll:true});
+  (opener?.getClientRects().length&&!opener.disabled?opener:$('#view-tabs .active') || nav.querySelector('.active'))?.focus({preventScroll:true});
 });
 function formSnapshot() {
   const form=$('#dialog-body form');
@@ -410,7 +413,7 @@ function clearSearch() {
 }
 $('#clear-filters').onclick=clearSearch;
 $('#clear-schedule-filters').onclick=()=>{
-  model=year='';
+  year='';
   page=1;
   render();
 };
@@ -447,10 +450,13 @@ $('#export').onclick=()=>{
   run(activeEditor().openExport,'正在导出…');
 };
 $('#template').onclick=()=>run(orderRules.template);
-$('#import').onclick=()=>$('#file').click();
+$('#import').onclick=()=>{
+  $('#file').multiple=isRuleView();
+  $('#file').click();
+};
 $('#file').onchange=e=>{
   const files=[...e.target.files];e.target.value='';
-  if(files.length)run(()=>orderRules.importFiles(files),'正在预览导入…');
+  if(files.length)run(()=>isCampaignView()?campaignEditor.importModule(files,tab):orderRules.importFiles(files),'正在预览导入…');
 };
 $('#campaign-file').onchange=event=>{
   const files=[...event.target.files];event.target.value='';

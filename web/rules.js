@@ -44,6 +44,37 @@ const orderRules = (() => {
   }
   const label = (table, field) => table === 'battery_rules' && field === 'generation' ? '代际关键词' : labels[field];
 
+  function modelNames() {
+    if (!draft) return [];
+    return [...new Set([
+      ...draft.gen_names.map(row=>row.target),
+      ...draft.merge_groups.flatMap(row=>row.members),
+      ...draft.option_prices.map(row=>row.generation),
+    ].filter(Boolean))];
+  }
+
+  function modelAliases(name) {
+    const names = new Set([name]);
+    for (const row of draft.gen_names) {
+      if (row.source===name || row.target===name) {
+        names.add(row.source);
+        names.add(row.target);
+      }
+    }
+    return names;
+  }
+
+  function matchesModel(table,row,names) {
+    if (!names) return true;
+    switch (table) {
+      case 'gen_names': return names.has(row.source) || names.has(row.target);
+      case 'merge_groups': return names.has(row.name) || row.members.some(name=>names.has(name));
+      case 'battery_rules': return [...names].some(name=>row.generation.every(keyword=>name.includes(keyword)));
+      case 'option_prices': return names.has(row.generation);
+      default: return true;
+    }
+  }
+
   function accept(next) {
     state = next;
     draft = structuredClone(next.draft.data);
@@ -139,13 +170,14 @@ const orderRules = (() => {
     $('#actions').innerHTML = readonly ? '' : (mapping ? ruleButton('batch', '批量粘贴') : '') +
       ruleButton('add', '新增规则');
 
+    const names = model ? modelAliases(model) : null;
     const rows = draft[table]
       .map((row, index) => ({row, index}))
-      .filter(({row}) => Object.values(row).map(text).join(' ').toLocaleLowerCase().includes(search));
+      .filter(({row}) => matchesModel(table,row,names) && Object.values(row).map(text).join(' ').toLocaleLowerCase().includes(search));
     const range = paginator(rows.length);
     $('#count').textContent = rows.length ? `${rows.length} 条记录` : '';
     if (!rows.length) {
-      $('#content').innerHTML = sourceAlert() + `<div class="empty"><strong>${search ? '没有匹配的规则' : '暂无'+titles[table]}</strong>${search ? '<button data-clear>清空筛选</button>' : ''}</div>`;
+      $('#content').innerHTML = sourceAlert() + `<div class="empty"><strong>${search || (model && table!=='option_names') ? '没有匹配的规则' : '暂无'+titles[table]}</strong>${search ? '<button data-clear>清空搜索</button>' : ''}</div>`;
       return;
     }
 
@@ -154,7 +186,7 @@ const orderRules = (() => {
     const body = rows.slice(...range).map(({row, index}) => {
       const controls = ['edit', 'copy', 'delete'].map((name, i) =>
         ruleButton(name, ['编辑', '复制', '删除'][i], {id: row.id, inline: true, disabled: readonly}));
-      if (battery && !search) {
+      if (battery && !search && !model) {
         controls.push(ruleButton('up', '上移', {id: row.id, inline: true, disabled: readonly || index === 0}));
         controls.push(ruleButton('down', '下移', {id: row.id, inline: true, disabled: readonly || index === draft[table].length - 1}));
       }
@@ -360,7 +392,7 @@ const orderRules = (() => {
       }, '删除');
     }
     if (action === 'up' || action === 'down') {
-      if (searchValue()) return;
+      if (searchValue() || model) return;
       const rows = [...draft[table]];
       const index = rows.findIndex(row => row.id === id);
       const target = index + (action === 'up' ? -1 : 1);
@@ -422,7 +454,7 @@ const orderRules = (() => {
   }
 
   return {
-    titles, ready, isDirty, canPublish, canUndo, canRedo, status, load, render: renderView,
+    titles, modelNames, ready, isDirty, canPublish, canUndo, canRedo, status, load, render: renderView,
     handleClick, save, previewPublish, reload, syncFromScript, undo, redo, openExport, template, importFiles,
   };
 })();

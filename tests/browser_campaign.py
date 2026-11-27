@@ -88,20 +88,19 @@ def download(page):
 
 
 def check_configuration(page):
-    expect(page.locator('[data-view=vehicleIdentity]')).to_have_attribute('aria-pressed', 'true')
-    expect(page.locator('#content thead th')).to_have_text(['代际名', '二级代际名', '产品档位', '能源类型', '操作'])
-    expect(page.locator('#content')).to_contain_text('历史车型')
+    expect(page.locator('[data-tab=schedule]')).to_have_attribute('aria-current', 'page')
+    expect(page.locator('#view-tabs')).to_be_hidden()
+    expect(page.locator('#view-tabs [data-view]')).to_have_count(0)
+    expect(page.locator('#content thead th')).to_have_text(['车型与阶段', '车型资料', '发布信息', '小订期', '首销期', '操作'])
+    row = page.locator('#content tbody tr')
+    for value in ['历史车型', '纯电版', '中型', '纯电', '标准发布', '2026-11-01']:
+        expect(row).to_contain_text(value, use_inner_text=True)
     expect(page.locator('header nav [data-tab=models], header nav [data-tab=matrix], [data-view=versions]')).to_have_count(0)
-    action(page, 'identity').click()
-    expect(page.get_by_label('代际名', exact=True)).to_have_value('历史车型')
-    expect(page.locator('#dialog [name=f4], #dialog [name=f18]')).to_have_count(0)
-    page.get_by_label('产品档位').fill('中大型')
-    confirm(page)
-    view(page, 'launchSchedule')
     expect(page.locator('#content')).not_to_contain_text('大定量')
-    expect(page.get_by_role('columnheader', name='小订发布时段', exact=True)).to_be_visible()
     action(page, 'stage').click()
-    expect(page.locator('#dialog [name=f2], #dialog [name=f18]')).to_have_count(0)
+    expect(page.get_by_label('代际名', exact=True)).to_have_value('历史车型')
+    expect(page.locator('#dialog [name=f18]')).to_have_count(0)
+    page.get_by_label('产品档位').fill('中大型')
     period = page.get_by_label('小订发布时段', exact=True)
     expect(period).to_have_value('上午')
     assert period.evaluate('el => Array.from(el.list.options, option => option.value)') == ['上午', '下午', '晚上']
@@ -109,7 +108,15 @@ def check_configuration(page):
     expect(page.get_by_label('小订开始日期', exact=True)).to_have_value('2026-11-01')
     page.get_by_label('小订结束日期').fill('2026-11-03')
     confirm(page)
-    expect(page.locator('#content')).to_contain_text('晚上')
+    expect(row).to_contain_text('中大型', use_inner_text=True)
+    expect(row).to_contain_text('晚上', use_inner_text=True)
+    search = page.get_by_role('searchbox')
+    search.fill('不存在的车型')
+    expect(row).to_have_count(0)
+    for query in ['中大型', '2026-11-03']:
+        search.fill(query)
+        expect(row).to_contain_text('历史车型')
+    search.fill('')
     action(page, 'stage').click()
     expect(page.locator('label').filter(has_text='小订天数').locator('output')).to_have_text('3')
     page.locator('#cancel').click()
@@ -181,30 +188,30 @@ def check_result_review(page):
 
 
 def check_quantity_progress(page):
-    metric = page.locator('#campaign-progress')
     expect(page.get_by_label('分组', exact=True)).to_have_count(0)
-    metric.select_option('小转大进度')
+    view(page, 'conversions')
     page.get_by_role('button', name='批量粘贴').click()
     page.locator('[name=rows]').fill('D1\t8\nD2\t0')
     confirm(page)
-    metric.select_option('直接大定进度')
+    view(page, 'directOrders')
     action(page, 'report-add').click()
     page.get_by_label('日序').fill('1')
     page.get_by_label('数量', exact=True).fill('0')
     confirm(page)
-    expect(metric.locator('option[value="大定进度"]')).to_have_count(0)
+    expect(page.locator('#view-tabs').get_by_role('button', name='大定进度', exact=True)).to_have_count(0)
 
 
 def check_reporting(page):
     tab(page, 'reporting')
     expect(page.locator('[data-view=dailyOrders]')).to_have_attribute('aria-pressed', 'true')
-    expect(page.locator('[data-view=dailyOrders]')).to_have_text('日常填报')
+    expect(page.locator('[data-view=dailyOrders]')).to_have_text('每日小订')
     expect(page.locator('[data-view=stageProgress]')).to_have_count(0)
     check_result_review(page)
     view(page, 'dailyOrders')
-    expect(page.locator('#campaign-progress option')).to_have_text([
-        '每日小订', '小订期退订进度', '小转大进度', '直接大定进度', '首销期退订进度',
+    expect(page.locator('#view-tabs button')).to_have_text([
+        '每日小订', '小订期退订进度', '小转大进度', '直接大定进度', '首销期退订进度', '结果核对',
     ])
+    expect(page.get_by_role('combobox', name='指标')).to_have_count(0)
     page.get_by_role('button', name='批量粘贴').click()
     page.locator('[name=rows]').fill('2026-11-01\t0\n2026-11-02\t15')
     confirm(page)
@@ -261,7 +268,6 @@ def check_reporting(page):
 
 def check_rule_context(page):
     tab(page, 'schedule')
-    view(page, 'launchSchedule')
     action(page, 'add-stage').click()
     page.get_by_label('代际名', exact=True).fill('验收新车型')
     page.get_by_label('留资日期', exact=True).fill('2027-02-01')
@@ -287,8 +293,7 @@ def check_rule_context(page):
     confirm(page)
     expect(page.locator('#content')).to_contain_text('历史车型')
     expect(page.locator('#content')).to_contain_text('验收新车型')
-    view(page, 'vehicleIdentity')
-    action(page, 'identity').first.click()
+    action(page, 'stage').first.click()
     page.get_by_label('产品档位').fill('未保存的调整')
     confirm(page)
     tab(page, 'generation')
@@ -301,6 +306,10 @@ def check_rule_context(page):
     page.set_viewport_size({'width': 390, 'height': 844})
     tab(page, 'reporting')
     expect(page.locator('[data-view=dailyOrders]')).to_be_visible()
+    view(page, 'launchCancellations')
+    expect(page.locator('[data-view=launchCancellations]')).to_be_in_viewport(ratio=0.95)
+    expect(page.locator('#report-axis')).to_have_count(0)
+    expect(action(page, 'batch')).to_be_visible()
     view(page, 'businessTotals')
     expect(page.locator('.campaign-totals .review-mode.manual')).to_have_count(2)
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
@@ -308,14 +317,13 @@ def check_rule_context(page):
     expect(page.get_by_label('大定量', exact=True)).to_have_value('83')
     page.locator('#cancel').click()
     tab(page, 'schedule')
-    view(page, 'vehicleIdentity')
     scroll = page.locator('#content .scroll')
     assert scroll.evaluate('el => el.scrollWidth <= el.clientWidth')
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     first = page.locator('#content tbody tr').first
     expect(first.locator('.identity-name')).to_have_text('历史车型')
-    expect(first.locator('.identity-details dt:visible')).to_have_text(['二级代际名', '产品档位', '能源类型'])
-    expect(first.locator('.identity-details dd:visible')).to_have_text(['纯电版', '未保存的调整', '纯电'])
+    for value in ['纯电版', '产品档位', '未保存的调整', '能源类型', '纯电', '标准发布', '2026-11-01']:
+        expect(first).to_contain_text(value, use_inner_text=True)
     edit = first.get_by_role('button', name='编辑')
     bounds = edit.bounding_box()
     assert bounds and bounds['x'] >= 0 and bounds['x'] + bounds['width'] <= 390
@@ -379,14 +387,22 @@ def check_stage_matrix(browser):
         page.goto(url)
         ready(page)
         fill_owner(page)
+        model_rows = page.locator('#content tbody tr').filter(has_text='矩阵车型')
+        expect(model_rows).to_have_count(2)
+        for stage_name, start in [('标准', '2026-11-01'), ('焕新', '2026-11-05')]:
+            record = model_rows.filter(has_text=stage_name)
+            expect(record).to_contain_text(start)
+            record.get_by_role('button', name='编辑', exact=True).click()
+            expect(page.get_by_label('二级代际名', exact=True)).to_have_value(stage_name)
+            expect(page.get_by_label('小订开始日期', exact=True)).to_have_value(start)
+            page.locator('#cancel').click()
         tab(page, 'reporting')
         rows = page.locator('.report-matrix tbody tr[data-model]')
         expect(rows).to_have_count(2)
         row = report_row(page, '矩阵车型')
         stage = row.locator('select[data-report-stage]')
         stage.select_option('标准')
-        metric = page.locator('#campaign-progress')
-        expect(metric).to_have_value('小订by天')
+        expect(page.locator('[data-view=dailyOrders]')).to_have_attribute('aria-pressed', 'true')
         expect(page.locator('#report-axis')).to_have_value('day')
         expect(report_cell(row, 'D1')).to_have_text('0')
         expect(report_cell(row, 'D2')).to_have_text('—')
@@ -420,11 +436,11 @@ def check_stage_matrix(browser):
         expect(report_cell(row, 'D1')).to_have_text('0')
         historical = report_row(page, '仅有历史进度')
         expect(historical).to_have_count(0)
-        metric.select_option('小订期退订进度')
+        view(page, 'smallOrderCancellations')
         expect(report_cell(row, 'D1')).to_have_text('63')
         expect(report_cell(historical, 'D3')).to_have_text('57')
         expect(historical.locator('[data-campaign-action=report-add]')).to_have_count(0)
-        metric.select_option('小订by天')
+        view(page, 'dailyOrders')
         stage.select_option('焕新')
         expect(rows).to_have_count(2)
         expect(report_cell(row, 'D1')).to_have_text('25')
@@ -471,7 +487,7 @@ def check_stage_matrix(browser):
         assert [r['2026-11-28'] for r in observed['矩阵车型', '标准']] == [9]
         assert [r['2026-11-02'] for r in observed['待定车型', '']] == [17, 19]
         assert len(observed) == 3
-        metric.select_option('小订期退订进度')
+        view(page, 'smallOrderCancellations')
         stage.select_option('标准')
         expect(report_cell(row, 'D1')).to_have_text('63')
         page.close()
@@ -489,7 +505,7 @@ def check_readonly(browser):
         expect(page.locator('#campaign-undo-import')).to_be_hidden()
         page.locator('#data-tools').click()
         tab(page, 'reporting')
-        page.locator('#campaign-progress').select_option('小转大进度')
+        view(page, 'conversions')
         row = report_row(page, '只读车型')
         expect(row.get_by_text('6', exact=True)).to_be_visible()
         expect(action(page, 'report-cell')).to_have_count(0)
@@ -513,10 +529,9 @@ def check_review_backfill(browser):
         ready(page)
         fill_owner(page)
         tab(page, 'reporting')
-        metric = page.locator('#campaign-progress')
-        for sheet_name, values in [('小订by天', '2026-11-01\t12\n2026-11-02\t0'),
-                                   ('小转大进度', 'D1\t2\nD2\t1'), ('直接大定进度', 'D1\t0')]:
-            metric.select_option(sheet_name)
+        for metric_view, values in [('dailyOrders', '2026-11-01\t12\n2026-11-02\t0'),
+                                   ('conversions', 'D1\t2\nD2\t1'), ('directOrders', 'D1\t0')]:
+            view(page, metric_view)
             page.get_by_role('button', name='批量粘贴').click()
             page.locator('[name=rows]').fill(values)
             confirm(page)
@@ -526,8 +541,7 @@ def check_review_backfill(browser):
                                 ('大定量', ''), ('小订后退定', ''), ('首销期净大定', ''), ('首销期锁单', '')]:
             expect(page.get_by_label(label, exact=True)).to_have_value(expected)
         page.locator('#cancel').click()
-        view(page, 'dailyOrders')
-        metric.select_option('直接大定进度')
+        view(page, 'directOrders')
         action(page, 'report-add').click()
         page.get_by_label('日序').fill('2')
         page.get_by_label('数量', exact=True).fill('4')
@@ -561,6 +575,49 @@ def check_review_backfill(browser):
         page.close()
 
 
+def check_module_imports(browser):
+    def upload(page, raw):
+        with page.expect_file_chooser() as chooser:
+            page.get_by_role('button', name='导入', exact=True).click()
+        chooser.value.set_files({'name':'局部导出.xlsx','mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':raw})
+        expect(page.get_by_role('heading',name='导入预览')).to_be_visible()
+
+    with TemporaryDirectory() as directory, isolated_server(directory) as (url, store, *_):
+        campaign = CampaignStore(store.root)
+        data = apply_edits(empty_workbook(), [
+            dict(sheet='车型汇总',row=2,col=1,value='导入车型'),
+            dict(sheet='小订by天',model='导入车型',date='2026-11-26',value=0)])
+        page = browser.new_page()
+        page.goto(url)
+        ready(page)
+        raw = export_workbook(data, {'scope':'schedule'})
+        upload(page, raw)
+        page.locator('#cancel').click()
+        expect(page.locator('#content')).not_to_contain_text('导入车型')
+        upload(page, raw)
+        confirm(page)
+        expect(page.locator('#content')).to_contain_text('导入车型')
+        tab(page, 'reporting')
+        raw = export_workbook(data, {'sheets':['小订by天'],'dateFrom':'2026-11-26'})
+        upload(page, raw)
+        expect(page.locator('#dialog-body')).to_contain_text('小订by天')
+        confirm(page)
+        # The reporting import previews against the unsaved stage and can be undone separately.
+        assert campaign.get()['revision']==0
+        page.locator('#undo').click()
+        ready(page)
+        tab(page, 'schedule')
+        expect(page.locator('#content')).to_contain_text('导入车型')
+        page.locator('#redo').click()
+        ready(page)
+        fill_owner(page)
+        page.locator('#save').click()
+        ready(page)
+        daily = next(s for s in campaign.get()['sheets'] if s['name']=='小订by天')
+        assert daily['rows'][1][daily['rows'][0].index('2026-11-26')]==0
+        page.close()
+
+
 def check_running_previous_backend(browser):
     with TemporaryDirectory() as directory, isolated_server(directory) as (url, store, *_):
         CampaignStore(store.root).import_legacy(0, legacy_file('已导入车型'), '测试迁入')
@@ -588,6 +645,7 @@ if __name__ == '__main__':
         check_stage_matrix(browser)
         check_review_backfill(browser)
         check_readonly(browser)
+        check_module_imports(browser)
         check_running_previous_backend(browser)
         browser.close()
     print('Campaign configuration, reporting, rule-draft isolation and scoped Excel exports passed.')

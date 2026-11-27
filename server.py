@@ -7,6 +7,7 @@ from catalog import CATALOG_DB, Store, Conflict, PUBLISH_REQUIRED, IDENTITY_FIEL
 from shared_rules import RuleStore, validate as validate_rules
 from rules_excel import rules_excel, preview_rules_import
 from campaign_store import CampaignStore
+from stage_workbook import module_import_edits
 from xlsx_input import WorkbookBatch
 ROOT=Path(__file__).resolve().parent
 
@@ -130,7 +131,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 if readonly and path not in ['/api/export','/api/rules/export','/api/campaign/export']:raise PermissionError('服务维护中，暂不可写入')
                 size=int(self.headers.get('Content-Length',0))
                 # A preview can include both a full editor snapshot and encoded workbooks.
-                limit_mb = 16 if path in ('/api/import-batch', '/api/rules/import','/api/campaign/import','/api/campaign/import-preview') else 8
+                limit_mb = 16 if path in ('/api/import-batch', '/api/rules/import','/api/campaign/import','/api/campaign/import-preview','/api/campaign/module-import-preview') else 8
                 if size <= 0 or size > limit_mb * 1_000_000:
                     raise ValueError(f'请求正文不能为空或超过 {limit_mb} MB')
                 raw=self.rfile.read(size);path=self.route()
@@ -140,6 +141,11 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 body=json.loads(raw)
                 if path.startswith('/api/campaign/'):
                     if not isinstance(body,dict):raise ValueError('小订与首销请求格式无效')
+                    if path=='/api/campaign/module-import-preview':
+                        _,content=WorkbookBatch([body]).decode(body)
+                        base=campaigns.preview(body['revision'],body.get('edits',[]))
+                        edits=module_import_edits(base,content,body.get('scope'))
+                        return self.send(200,{'revision':base['revision'],'edits':edits})
                     if path in ('/api/campaign/import','/api/campaign/import-preview'):
                         _,content=WorkbookBatch([body]).decode({'name':'历史数据.xlsx','content':body.get('content')})
                         if path.endswith('/import-preview'):
