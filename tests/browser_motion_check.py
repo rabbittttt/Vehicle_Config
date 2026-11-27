@@ -172,10 +172,8 @@ def main():
             page.on('pageerror', lambda exc: errors.append(str(exc)))
             page.goto(url)
             ready(page)
-            if width > 700:
-                page.locator('[data-tab=reporting]').click()
-            else:
-                page.get_by_label('配置管理模块').select_option('reporting')
+            page.locator('header nav [data-tab=reporting]').click()
+            if width <= 700:
                 page.get_by_role('button', name='筛选', exact=True).click()
             expect(page.locator('.report-matrix tbody tr[data-model]')).to_have_count(MODELS)
             expect(page.locator('#report-axis')).to_have_value('day')

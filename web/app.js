@@ -210,14 +210,6 @@ toolsButton.parentElement.addEventListener('focusout', event => {
 document.addEventListener('click', event => {
   if (!toolsPanel.hidden && !toolsButton.parentElement.contains(event.target)) showDataTools(false);
 });
-const mobileTab = $('#mobile-tab');
-for (const button of nav.querySelectorAll('[data-tab]')) {
-  mobileTab.add(new Option(button.textContent.trim(), button.dataset.tab));
-}
-mobileTab.onchange = () => {
-  if (busy || !csrf) mobileTab.value = tab;
-  else switchView(mobileTab.value);
-};
 const filterToggle = $('.mobile-filter-toggle');
 filterToggle.onclick = () => {
   filterToggle.setAttribute('aria-expanded', String(filterToggle.getAttribute('aria-expanded') !== 'true'));
@@ -242,7 +234,6 @@ function render() {
   filters();
   if (nav.dataset.active !== tab) {
     nav.querySelectorAll('[data-tab]').forEach(b=>{b.classList.toggle('active',b.dataset.tab===tab);b.setAttribute('aria-current',b.dataset.tab===tab?'page':'false');});
-    mobileTab.value = tab;
     nav.dataset.active = tab;
     viewTabs.innerHTML = sections[tab].map(t => `<button id="view-${t}" data-view="${t}">${viewLabels[t]}</button>`).join('');
     revealActiveTab(nav);
