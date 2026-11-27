@@ -84,6 +84,7 @@ function flags() {
   $('#import').disabled=readonly || !ready;
   $('#export').hidden=tab==='history';
   $('#export').disabled=$('#template').disabled=!ready;
+  $('#clear-filters').disabled=!searchValue();
   $('#campaign-import').hidden=$('#reload-rules').hidden=readonly;
   $('#campaign-import').disabled=$('#reload-rules').disabled=readonly || !csrf;
   $('#campaign-undo-import').hidden=readonly || !campaignEditor.canUndoImport();
@@ -127,7 +128,7 @@ function renderKeepingScroll() {
 }
 function filters() {
   const schedule=tab==='schedule';
-  $('#model-filter-label').hidden=$('#year-filter-label').hidden=!schedule;
+  $('#schedule-filters').hidden=!schedule;
   if(schedule && campaignEditor.ready()) {
     const names=campaignEditor.modelNames();
     if(!names.includes(model))model='';
@@ -136,11 +137,8 @@ function filters() {
     updateOptions($('#model'),option('','全部车型','')+names.map(n=>option(n,n,'')).join(''),model);
     updateOptions($('#year'),option('','全部年款','')+years.map(y=>option(y,y+'款','')).join(''),year);
   }
-  const hints={vehicleIdentity:'代际、产品档位或能源',launchSchedule:'代际、发布类型或日期',dailyOrders:'车型、阶段或小订日期',businessTotals:'车型或汇总数值'};
-  $('#search').placeholder=hints[view] || (tab==='history'?'记录、操作人或时间':'搜索当前规则');
-  const count=[schedule && model,schedule && year,searchValue()].filter(Boolean).length;
-  $('#clear-filters').hidden=!count;
-  setText(filterToggle,count?'筛选 · '+count:'筛选');
+  $('#clear-schedule-filters').hidden=!model && !year;
+  setText(filterToggle,searchValue()?'筛选 · 1':'筛选');
 }
 const renderedOptions=new WeakMap();
 function updateOptions(select, html, value) {
@@ -402,16 +400,20 @@ document.addEventListener('click',e=>{
   if(b.dataset.campaignAction && isCampaignView())return campaignEditor.handle(b);
   if(b.dataset.ruleAction && isRuleView())return orderRules.handleClick(b,view);
   if(b.dataset.page){page=Number(b.dataset.page);render();}
-  if(b.hasAttribute('data-clear'))clearFilters();
+  if(b.hasAttribute('data-clear'))clearSearch();
 });
-function clearFilters() {
-  if(tab==='schedule')model=year='';
+function clearSearch() {
   queries[tab]='';
   $('#search').value='';
   page=1;
   render();
 }
-$('#clear-filters').onclick=clearFilters;
+$('#clear-filters').onclick=clearSearch;
+$('#clear-schedule-filters').onclick=()=>{
+  model=year='';
+  page=1;
+  render();
+};
 $('#model').onchange=e=>{model=e.target.value;page=1;render();};
 $('#year').onchange=e=>{year=e.target.value;page=1;render();};
 let searchTimer, searchFrame;

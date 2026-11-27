@@ -60,7 +60,7 @@ $releaseVersion = Read-Host '输入新发布版本'
 
 ### 订单配置规则
 
-「代际规则」管理 `GEN_DISPLAY_NAME_MAP` 和 `MERGE_GROUPS`。「电池与选配」管理 `BATTERY_RULES`、`MERGE_OPTIONS` 和 `OPTION_CONFIG`。桌面在标题行显示当前视图适用的筛选。手机横向滑动顶部页签切换栏目，点「筛选」展开条件。
+「代际规则」管理 `GEN_DISPLAY_NAME_MAP` 和 `MERGE_GROUPS`。「电池与选配」管理 `BATTERY_RULES`、`MERGE_OPTIONS` 和 `OPTION_CONFIG`。桌面标题栏右上角固定显示搜索框，各栏目分别保留搜索词。「车型与日程」的车型和年款筛选位于该栏目的工具栏。手机横向滑动顶部页签切换栏目，点「筛选」展开搜索框。
 
 切换栏目保留未保存的车型配置和脚本规则。保存草稿、导入导出、撤销和发布作用于当前视图所属的数据。电池规则保留优先级，使用代际、动力及版本、SKU 关键词匹配电池容量。选配金保留金额、默认选配和版本包含、版本精确、座位限制。
 
