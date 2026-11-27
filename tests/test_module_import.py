@@ -59,7 +59,11 @@ class ModuleImportTests(unittest.TestCase):
 
     def test_reporting_summary_ignores_schedule_fields_and_updates_selected_stage(self):
         selection = {'sheets': [SUMMARY], 'models': ['二期']}
-        raw = change_export(self.data, selection, [(SUMMARY, 'C2', '外部资料'), (SUMMARY, 'Z2', 0)])
+        raw = change_export(self.data, selection, [
+            (SUMMARY, 'C2', '外部资料'), (SUMMARY, 'W1', '小订后退定\n 占比'),
+            (SUMMARY, 'Z1', '首销期\n 留存大定'), (SUMMARY, 'Z2', 0),
+            (SUMMARY, 'AC2', '=IFERROR(AB2/Z2,"")'),
+        ])
         self.assert_import_matches_edits(raw, 'reporting', [summary_cell(3, 26, 0)])
 
     def test_duplicate_daily_observations_only_accept_unchanged_values(self):

@@ -9,7 +9,7 @@ from tempfile import NamedTemporaryFile
 
 from catalog import Conflict, now, read_history_page
 from stage_workbook import (
-    SECONDARY, SUMMARY_FIELDS, apply_edits, backfill_totals, empty_workbook, export_workbook, import_workbook, validate_publication,
+    DAILY, SECONDARY, SUMMARY_FIELDS, apply_edits, backfill_totals, empty_workbook, export_workbook, import_workbook, validate_publication,
 )
 
 
@@ -28,7 +28,8 @@ def decode_workbook(payload):
 def _data_rows(sheet):
     headers = set(sheet['headerRows'])
     return (row for i, row in enumerate(sheet['rows'], 1)
-            if i not in headers and any(v is not None and v != '' for v in row))
+            if i not in headers and any(v is not None and v != '' for v in row)
+            and (sheet['name']!=DAILY or row[0] not in (None,'合计','总计')))
 
 
 def _stages(summary):
@@ -58,7 +59,7 @@ def _publication_rows(sheet):
     if sheet is None:
         return indexed
     marks = defaultdict(dict)
-    for tag in ('reportedTotals', 'literalCells', 'derivedCells'):
+    for tag in ('reportedTotals', 'literalCells', 'derivedCells', 'zeroFallbackCells'):
         for address in sheet.get(tag, []):
             row, col = map(int, address.split(':'))
             marks[row].setdefault(col-1, []).append(tag)

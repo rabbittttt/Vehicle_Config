@@ -6,7 +6,7 @@ from xml.etree import ElementTree as ET
 
 from openpyxl import load_workbook
 
-from stage_workbook import (DAILY, SUMMARY, apply_edits, empty_workbook, export_workbook,
+from stage_workbook import (DAILY, SUMMARY, SUMMARY_FIELDS, apply_edits, empty_workbook, export_workbook,
                             import_workbook, validate_publication)
 
 
@@ -74,6 +74,120 @@ class CampaignWorkbookTests(unittest.TestCase):
                           ['甲','=D2/C2',10,2],{'B2':('n','0.2')})
         edited = apply_edits(import_workbook(raw),summary(2,**{'16':20}))
         self.assertEqual(.1,edited['sheets'][0]['rows'][1][17])
+
+    def test_wrapped_canonical_and_legacy_summary_headers(self):
+        for header in ('小订后退定\n 占比', '小订后退订\r\n\u3000占比'):
+            with self.subTest(header=header):
+                fields = SUMMARY_FIELDS.copy()
+                fields[22] = header
+                row = ['甲'] + [None] * 21 + [.25]
+                sheet = import_workbook(self.legacy(fields, row))['sheets'][0]
+                self.assertEqual(sheet['rows'][0][22], '小订后退定占比')
+                self.assertEqual(sheet['rows'][1][22], .25)
+                fields[29] = '退订\n占比'
+                with self.assertRaisesRegex(ValueError, 'AD1.*重复对应.*小订后退定占比'):
+                    import_workbook(self.legacy(fields, row))
+
+    def test_legacy_ac31_can_recover_its_ratio_without_a_valid_cache(self):
+        def fill(book):
+            sheet = book[SUMMARY]
+            sheet['A31'] = '车型乙'
+            sheet['Z31'] = 8
+            sheet['AB31'] = 2
+            sheet['AC31'] = '=$AB31/$Z31'
+            sheet['AC32'] = '=AB32/Z32'
+            sheet['M32'] = '=J32-I32+1'
+
+        for cache in (None, {'AC31': ('e', '#DIV/0!'), 'AC32': ('e', '#DIV/0!'), 'M32': ('n', '1')}):
+            with self.subTest(cache=cache):
+                data = import_workbook(self.legacy(SUMMARY_FIELDS, ['甲'], cache, fill))
+                sheet = data['sheets'][0]
+                self.assertEqual(len(sheet['rows']), 31)
+                self.assertEqual(sheet['rows'][30][28], .25)
+                self.assertNotIn('31:29', sheet['literalCells'])
+                edited = apply_edits(data, summary(31, **{'26': 4}))
+                self.assertEqual(edited['sheets'][0]['rows'][30][28], .5)
+
+    def test_reordered_zero_denominator_and_explicit_iferror_fallback(self):
+        fields = ['代际名', '留存大定到锁单率', '首销期锁单', '净大定']
+        for formula, expected in [('=C2/D2', None), ('=IFERROR(C2/D2,0)', 0),
+                                  ('=IFERROR(C2/D2,"")', None)]:
+            with self.subTest(formula=formula):
+                data = import_workbook(self.legacy(fields, ['甲', formula, 2, 0]))
+                sheet = data['sheets'][0]
+                self.assertEqual(dict(zip(SUMMARY_FIELDS, sheet['rows'][1])).get(fields[1]), expected)
+                self.assertNotIn('2:29', sheet['literalCells'])
+                edited = apply_edits(data, summary(2, **{'26': 8}))
+                self.assertEqual(edited['sheets'][0]['rows'][1][28], .25)
+                reset = apply_edits(edited, summary(2, **{'26': 0}))
+                row = reset['sheets'][0]['rows'][1]
+                self.assertEqual(dict(zip(SUMMARY_FIELDS, row)).get(fields[1]), expected)
+
+    def test_lock_ratio_respects_valid_independent_cache_and_rejects_unknown_formulas_without_it(self):
+        fields = ['代际名', '首销期锁单', '净大定', '留存大定到锁单率']
+        for formula in ('=B2/C3', '=IFERROR(B2/C2,0.8)'):
+            with self.subTest(formula=formula):
+                with self.assertRaisesRegex(ValueError, '车型汇总 D2'):
+                    import_workbook(self.legacy(fields, ['甲', 2, 8, formula]))
+        data = import_workbook(self.legacy(fields, ['甲', 2, 8, '=B2/C2'], {'D2': ('n', '0.8')}))
+        self.assertIn('2:29', data['sheets'][0]['literalCells'])
+        edited = apply_edits(data, summary(2, **{'26': 4}))
+        self.assertEqual(edited['sheets'][0]['rows'][1][28], .8)
+
+    def test_actual_ac31_legacy_division_uses_its_referenced_column(self):
+        # The archived file divides by physical column B, even when B is not net orders.
+        cases = [
+            ('二级代际名', None, ('e', '#DIV/0!'), None),
+            ('总小订', 0, ('e', '#DIV/0!'), None),
+            ('总小订', 10, None, .2),
+            ('总小订', 10, ('n', '0.8'), .8),
+        ]
+        for heading, denominator, cache, expected in cases:
+            with self.subTest(heading=heading, denominator=denominator, cache=cache):
+                fields = SUMMARY_FIELDS.copy()
+                if heading != '二级代际名':
+                    fields[1], fields[15] = fields[15], fields[1]
+                def fill(book):
+                    sheet = book[SUMMARY]
+                    sheet['A31'] = '车型乙'
+                    sheet['B31'] = denominator
+                    sheet['Z31'] = 4
+                    sheet['AB31'] = 2
+                    sheet['AC31'] = '=AB31/B31'
+
+                source = self.legacy(fields, ['车型甲'], {'AC31': cache} if cache else None, fill)
+                data = import_workbook(source)
+                sheet = data['sheets'][0]
+                self.assertEqual(sheet['rows'][1][0], '车型甲')
+                self.assertEqual(sheet['rows'][30][0], '车型乙')
+                field = '留存大定到锁单率'
+                self.assertEqual(dict(zip(SUMMARY_FIELDS, sheet['rows'][30])).get(field), expected)
+                self.assertIn('31:29', sheet['literalCells'])
+                edited = apply_edits(data, summary(31, **{'26': 8, '28': 1}))
+                row = edited['sheets'][0]['rows'][30]
+                self.assertEqual(dict(zip(SUMMARY_FIELDS, row)).get(field), expected)
+
+    def test_other_excel_errors_and_cross_row_division_still_locate_the_cell(self):
+        fields = ['代际名', '首销期锁单', '净大定', '留存大定到锁单率']
+        cases = [('=B2/C3', '#DIV/0!'), ('=B2/C2', '#REF!'), ('=C2/B2', '#VALUE!')]
+        for formula, error in cases:
+            with self.subTest(formula=formula, error=error):
+                with self.assertRaisesRegex(ValueError, '车型汇总 D2'):
+                    import_workbook(self.legacy(fields, ['甲', 2, 0, formula], {'D2': ('e', error)}))
+
+    def test_an_unnamed_row_with_an_entered_zero_is_not_an_empty_template(self):
+        def fill(book):
+            sheet = book[SUMMARY]
+            sheet['AB3'] = 0
+            sheet['AC3'] = '=AB3/Z3'
+            sheet['AC4'] = '=AB4/Z4'
+
+        source = self.legacy(SUMMARY_FIELDS, ['甲'], configure=fill)
+        data = import_workbook(source)
+        self.assertEqual(len(data['sheets'][0]['rows']), 3)
+        self.assertEqual(data['sheets'][0]['rows'][2][27], 0)
+        with self.assertRaisesRegex(ValueError, '第 3 行缺少代际名'):
+            validate_publication(data)
 
     def test_release_date_and_start_time_share_one_date(self):
         columns = ['代际名','小订发布日期','小订开始时间','小订结束日期','小订天数','小订发布时间']

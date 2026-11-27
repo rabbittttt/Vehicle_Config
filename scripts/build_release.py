@@ -4,7 +4,7 @@ ROOT=Path(__file__).resolve().parents[1]
 def build(destination,version):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,79}',version) or version.endswith('.'):raise ValueError('版本号无效')
     names=['server.py','excel_io.py','xlsx_input.py','rules_excel.py','shared_rules.py','catalog.py',
-           'campaign_store.py','stage_workbook.py','requirements.txt','README.md','start.ps1','启动车型配置.cmd',
+           'campaign_store.py','stage_workbook.py','daily_import.py','requirements.txt','README.md','start.ps1','启动车型配置.cmd',
            'web/index.html','web/frame-account.js','web/rules.js','web/campaign.js','web/app.js','web/style.css']
     snapshots={name:(ROOT/name).read_bytes() for name in names}
     files=[{'path':name,'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()} for name,raw in sorted(snapshots.items())]

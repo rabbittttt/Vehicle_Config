@@ -12,9 +12,10 @@ from zipfile import BadZipFile
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.datetime import from_excel
 
+from daily_import import daily_sum_value
 from xlsx_input import MAX_BYTES, WorkbookBatch
 
 
@@ -42,7 +43,8 @@ PROGRESS_FIELDS = {
 PROGRESS_DATES = ['留资', '小订开始日期', '小订结束日期', '开始大定日期', '小转大结束日期']
 DATE_FIELDS = set(PROGRESS_DATES + ['首销结束日期'])
 RATIOS = {18:(17,16), 21:(20,19), 23:(22,16), 27:(26,16), 29:(28,26), 30:(28,19)}
-COMPUTED = sorted({13, 14, 24, 25, *RATIOS})
+SUMMARY_INPUTS = {13:(9,10), 14:(11,12), 24:(16,17,22), 25:(24,16), **RATIOS}
+COMPUTED = sorted(SUMMARY_INPUTS)
 RATE_FIELDS = {'小订转化率', '直接大定占比', '小订后退定占比', '小订待转单占比', '净大定率',
                '留存大定到锁单率', '大定到锁单率', '小订期期结束日退订率', '退订率', '首销期结束日退订率'}
 MAX_COLUMNS = 1024
@@ -230,7 +232,9 @@ def _summary_layout(cells):
         field = str(cell.value or '').strip()
         if not field:
             continue
-        title = ALIAS_TO_HEADER.get(field,field)
+        # Excel headers may contain manual line breaks and alignment spaces.
+        compact = ''.join(field.split())
+        title = ALIAS_TO_HEADER.get(compact,compact)
         if title not in SUMMARY_FIELDS:
             raise ValueError(f'车型汇总 {cell.coordinate} 含未识别字段「{field}」，请核对表头')
         idx = SUMMARY_FIELDS.index(title)
@@ -256,36 +260,98 @@ def _cached(cell, cache_cell, sheet, numeric):
     return cache_cell
 
 
-def _matches_canonical_formula(formula, col, n, mapping):
+def _summary_formula(formula, col, n, mapping):
+    """Recognize only equations over the mapped input columns on this row."""
+    if not isinstance(formula,str):
+        return None
+    formula = re.sub(r'\$(?=[A-Z0-9])','',formula.strip().upper())
+    formula = re.sub(r'\s*([=/(),+*-])\s*', r'\1', formula)
     refs = {idx+1:get_column_letter(source+1)+str(n) for source,idx in mapping.items()}
     try:
         if col in RATIOS:
             a,b = RATIOS[col]
-            return formula == f'={refs[a]}/{refs[b]}'
-        if col in (13,14):
-            a,b = (9,10) if col==13 else (11,12)
-            return any(formula == f'={refs[b]}-{get_column_letter(j+1)}{n}+1'
-                       for j,idx in mapping.items() if idx == a-1)
-        if col==24:
-            return formula == f'=MAX({refs[16]}-{refs[17]}-{refs[22]},0)'
-        if col==25:
-            return formula == f'=IFERROR({refs[24]}/{refs[16]},0)'
+            division = f'{refs[a]}/{refs[b]}'
+            if formula == '='+division:
+                return 'derived'
+            for fallback,kind in (('0','zero'),('""','blank')):
+                if formula in (f'=IFERROR({division},{fallback})',
+                               f'=IF({refs[b]}=0,{fallback},{division})'):
+                    return kind
+        elif col in (13,14):
+            a,b = SUMMARY_INPUTS[col]
+            if any(formula == f'={refs[b]}-{get_column_letter(j+1)}{n}+1'
+                   for j,idx in mapping.items() if idx == a-1):
+                return 'derived'
+        elif col==24 and formula == f'=MAX({refs[16]}-{refs[17]}-{refs[22]},0)':
+            return 'derived'
+        elif col==25 and formula == f'=IFERROR({refs[24]}/{refs[16]},0)':
+            return 'zero'
     except KeyError:
-        return False
-    return False
+        pass  # An input column is absent from this workbook.
+    return None
+
+
+def _legacy_ratio_value(formula, cells, caches, n, source_column, division_error):
+    """Read a historical same-row division using its own operands."""
+    if not isinstance(formula,str):
+        return NotImplemented
+    ref = rf'\$?([A-Z]{{1,3}})\$?{n}'
+    match = re.fullmatch(rf'=\s*{ref}\s*/\s*{ref}\s*',formula,re.IGNORECASE)
+    if not match:
+        return NotImplemented
+    a,b = (column_index_from_string(column)-1 for column in match.groups())
+    if source_column in (a,b) or max(a,b)>=len(cells):
+        return NotImplemented
+    if division_error:
+        return None  # Excel has already determined that this rate is undefined.
+    numerator,denominator = caches[a].value,caches[b].value
+    if cells[b].value is None or (type(denominator) in (int,float) and denominator==0):
+        return None
+    if type(denominator) not in (int,float):
+        return NotImplemented
+    if cells[a].value is None:
+        return None
+    if type(numerator) not in (int,float):
+        return NotImplemented
+    return _num(numerator/denominator)
 
 
 def _summary_row(cells, caches, mapping, n, epoch, infer_days=True):
     row = [None] * len(SUMMARY_FIELDS)
     override = set()
+    zero_fallback = set()
+    pending = {}
+    template_only = True
     for j,cell in enumerate(cells):
         if cell.value is None:
             continue
         if j not in mapping:
             raise ValueError(f'车型汇总 {cell.coordinate} 所在列有数据但缺少表头，请核对')
         idx = mapping[j]
+        col = idx+1
         field = SUMMARY_FIELDS[idx]
-        resolved = _cached(cell,caches[j],SUMMARY,field in DATE_FIELDS or idx>=12)
+        cache = caches[j]
+        kind = _summary_formula(cell.value,col,n,mapping) if cell.data_type=='f' and col in COMPUTED else None
+        division_error = (col in RATIOS or col==25) and cache.data_type=='e' and cache.value=='#DIV/0!'
+        if kind=='zero' and col in RATIOS:
+            zero_fallback.add(col)
+        missing_result = cache.value is None or division_error or (cache.data_type=='str' and cache.value=='')
+        if not kind and cell.data_type=='f' and field in RATE_FIELDS and missing_result:
+            value = _legacy_ratio_value(cell.value,cells,caches,n,j,division_error)
+            if value is not NotImplemented:
+                row[idx] = value
+                override.add(col)
+                if value not in (None,0):
+                    template_only = False
+                continue
+        # Subtracting two empty dates and adding one gives 1 on a template row.
+        empty_days = col in (13,14) and cache.value==1
+        if not kind or (cache.value not in (None,'',0) and not division_error and not empty_days):
+            template_only = False
+        if kind and missing_result:
+            pending[col] = kind
+            continue
+        resolved = _cached(cell,cache,SUMMARY,field in DATE_FIELDS or idx>=12)
         try:
             value = _import_scalar(resolved,field,epoch)
             if field in (PRIMARY,SECONDARY) and value is not None:
@@ -303,14 +369,19 @@ def _summary_row(cells, caches, mapping, n, epoch, infer_days=True):
             row[idx] = value
         except (TypeError,ValueError,OverflowError) as exc:
             raise ValueError(f'车型汇总 {cell.coordinate}「{field}」：{exc}') from exc
-        if idx+1 in COMPUTED and cell.data_type=='f':
-            formula = str(cell.value).upper().replace('$','').replace(' ','')
-            if not _matches_canonical_formula(formula,idx+1,n,mapping):
-                override.add(idx+1)
-        elif idx+1 in (24,25,30):
-            override.add(idx+1)
+        if col in COMPUTED and cell.data_type=='f':
+            if not kind:
+                override.add(col)
+        elif col in (24,25,30):
+            override.add(col)
+    if template_only:
+        return [],[],[]
+    for col,kind in sorted(pending.items()):
+        row[col-1] = _calculated_summary_value(row,col,zero_fallback=kind=='zero')
     for col,(a,b) in RATIOS.items():
         value,numerator,denominator = (row[i-1] for i in (col,a,b))
+        if col in zero_fallback and denominator==0 and value==0:
+            continue
         if value is not None and (not denominator or numerator is None or
                                  not math.isclose(value,numerator/denominator,rel_tol=1e-9,abs_tol=1e-12)):
             override.add(col)
@@ -320,7 +391,8 @@ def _summary_row(cells, caches, mapping, n, epoch, infer_days=True):
             row[col-1] = expected
         elif row[col-1] is not None and row[col-1]!=expected:
             override.add(col)
-    return _trim(row),[f'{n}:{col}' for col in sorted(override)]
+    return (_trim(row),[f'{n}:{col}' for col in sorted(override)],
+            [f'{n}:{col}' for col in sorted(zero_fallback - override)])
 
 
 def _detail_head(name,cells,epoch):
@@ -361,11 +433,23 @@ def _detail_head(name,cells,epoch):
     return head,add_total
 
 
-def _read_detail(name,cells,caches,headers,epoch):
+def _daily_note(cells,label,before_header):
+    if any(cell.value is not None for cell in cells[1:]):
+        return False
+    return (label in (None,'') or before_header and label in (DAILY,'小订按天','每日小订','小订') or
+            isinstance(label,str) and re.match(r'^(?:备注|说明|注)\s*[:：]', label) is not None)
+
+
+def _read_detail(name,cells,caches,headers,epoch,daily_block=None):
     row = []
+    sums = []
     for j,(cell,cache_cell) in enumerate(zip(cells,caches)):
         field = _get(headers,j)
         numeric = field not in (None,PRIMARY,SECONDARY)
+        if daily_block is not None and numeric and cell.data_type=='f' and cache_cell.value is None:
+            sums.append(j)
+            row.append(None)
+            continue
         cell = _cached(cell,cache_cell,name,numeric)
         value = _import_scalar(cell,field,epoch)
         if field in (PRIMARY,SECONDARY) and value is not None:
@@ -381,6 +465,13 @@ def _read_detail(name,cells,caches,headers,epoch):
             else:
                 value = _num(value)
         row.append(value)
+    # Resolve vertical footer sums before a row total which may reference them.
+    for j in sorted(sums,key=lambda index: headers[index]=='合计'):
+        cell = cells[j]
+        value = daily_sum_value(cell,cells,caches,headers,*daily_block,row)
+        if value is NotImplemented:
+            _cached(cell,caches[j],name,True)
+        row[j] = value
     if _get(row,0)=='总计':
         row[0] = '合计'
     return _trim(row)
@@ -420,6 +511,8 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
             if not ws.max_row or not ws.max_column or ws.max_row > MAX_ROWS or ws.max_column > MAX_COLUMNS or footprint > MAX_CELLS:
                 raise ValueError(name + '的数据范围超出限制')
             rows, overrides, headers = [], [], []
+            zero_fallback = []
+            daily_block = None
             for n,(cells, cache_cells) in enumerate(zip(ws.rows, cached[sources[name]].rows), 1):
                 if name==SUMMARY:
                     if n==1:
@@ -430,12 +523,19 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
                             raise ValueError('填报导入需要结果核对字段或逐日数量工作表')
                         rows.append(SUMMARY_FIELDS.copy())
                         continue
-                    row,special = _summary_row(cells,cache_cells,mapping,n,book.epoch,infer_days=scope is None)
+                    row,special,zeros = _summary_row(cells,cache_cells,mapping,n,book.epoch,infer_days=scope is None)
                     rows.append(row)
                     overrides.extend(special)
+                    zero_fallback.extend(zeros)
                     continue
                 raw_label = cells[0].value
                 label = raw_label.strip() if isinstance(raw_label,str) else raw_label
+                if name==DAILY and _daily_note(cells,label,not headers):
+                    if daily_block is not None:
+                        # Preserve physical offsets for formula references in this block.
+                        daily_block[0].append([])
+                        rows.append([])
+                    continue
                 is_head = label in (PRIMARY,*HEADER_ALIASES[PRIMARY]) or (label=='小订' and name==DAILY)
                 try:
                     if is_head:
@@ -444,13 +544,17 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
                         headers,add_total = _detail_head(name,cells,book.epoch)
                         width = max((j+1 for j,c in enumerate(cells) if c.value is not None),default=0)
                         rows.append(headers)
+                        if name==DAILY:
+                            daily_block = ([],n+1)
                     elif not headers:
                         raise ValueError('第一行须包含代际名或车型表头')
                     else:
-                        row = _read_detail(name,cells,cache_cells,headers[:width],book.epoch)
+                        row = _read_detail(name,cells,cache_cells,headers[:width],book.epoch,daily_block)
                         if add_total and _get(row,0) not in ('合计',None):
                             _daily_total(row,headers)
                         rows.append(row)
+                        if daily_block is not None:
+                            daily_block[0].append(row)
                 except (ValueError,TypeError,OverflowError) as exc:
                     raise ValueError(f'{name} 第 {n} 行：{exc}') from exc
             while rows and not rows[-1]:
@@ -459,6 +563,8 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
                 raise ValueError(f'{name} 缺少代际名表头')
             sheet = _sheet(name, rows)
             sheet['literalCells'] = overrides
+            if zero_fallback:
+                sheet['zeroFallbackCells'] = zero_fallback
             for idx in sheet['headerRows']:
                 head = rows[idx - 1]
                 if name != SUMMARY and (SECONDARY not in head or
@@ -505,21 +611,28 @@ def _days(start, end):
     return count
 
 
+def _calculated_summary_value(row, col, *, zero_fallback=False):
+    values = [_get(row,i-1) for i in SUMMARY_INPUTS[col]]
+    if col in (13,14):
+        return _days(*values)
+    if not all(isinstance(value,(int,float)) for value in values):
+        return None
+    if col==24:
+        total,converted,cancelled = values
+        return max(total-converted-cancelled,0)
+    amount,total = values
+    if total:
+        return amount/total
+    return 0 if zero_fallback or col==25 else None
+
+
 def _summary_calculate(sheet, n, changed):
     row = sheet['rows'][n-1]
-    for a,b,col in ((9,10,13), (11,12,14)):
-        if {a,b} & changed and f'{n}:{col}' not in sheet['literalCells']:
-            _put(row, col - 1, _days(_get(row,a-1), _get(row,b-1)))
-    def derive(col, inputs, calc):
-        if not changed.intersection(inputs) or f'{n}:{col}' in sheet['literalCells']:
-            return
-        values = [_get(row,i-1) for i in inputs]
-        _put(row, col-1, calc(*values) if all(isinstance(v,(int,float)) for v in values) else None)
-        changed.add(col)
-    derive(24, [16,17,22], lambda total, converted, cancelled: max(total-converted-cancelled,0))
-    derive(25, [24,16], lambda pending,total: pending/total if total else 0)
-    for col,(numerator,denominator) in RATIOS.items():
-        derive(col, [numerator,denominator], lambda amount,total: amount/total if total else None)
+    for col in COMPUTED:
+        coord = f'{n}:{col}'
+        if changed.intersection(SUMMARY_INPUTS[col]) and coord not in sheet['literalCells']:
+            _put(row,col-1,_calculated_summary_value(row,col,zero_fallback=coord in sheet.get('zeroFallbackCells',())))
+            changed.add(col)
 
 
 def _locations(sheet, primary, secondary, section=None):
