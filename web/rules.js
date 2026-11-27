@@ -53,23 +53,52 @@ const orderRules = (() => {
     ].filter(Boolean))];
   }
 
-  function modelAliases(name) {
-    const names = new Set([name]);
-    for (const row of draft.gen_names) {
-      if (row.source===name || row.target===name) {
-        names.add(row.source);
-        names.add(row.target);
+  function yearNames() {
+    if (!draft) return [];
+    return [...modelNames(), ...draft.gen_names.map(row=>row.source), ...draft.merge_groups.map(row=>row.name),
+      ...draft.battery_rules.flatMap(row=>row.generation)];
+  }
+
+  function matchesAliasYear(source,target) {
+    if (!year) return true;
+    const years = [modelYear(source),modelYear(target)].filter(Boolean);
+    return !years.length || years.includes(year);
+  }
+
+  function filteredModelNames() {
+    if (!model && !year) return null;
+    const names = new Set();
+    if (!year) {
+      names.add(model);
+    } else {
+      for (const stage of campaignEditor.reportStages()) {
+        if (matchesModelAndYear(stage.model,stage.secondary)) {
+          names.add(stage.model);
+          if (stage.secondary) names.add(stage.secondary);
+        }
+      }
+      for (const name of [...modelNames(), ...draft.merge_groups.map(row=>row.name)]) {
+        if (matchesModelAndYear(name)) names.add(name);
       }
     }
-    return names;
+    const aliases = new Set(names);
+    for (const {source,target} of draft.gen_names) {
+      if (!matchesAliasYear(source,target)) continue;
+      if (names.has(source) || names.has(target) || matchesModelAndYear(target,source) || matchesModelAndYear(source,target)) {
+        aliases.add(source);
+        aliases.add(target);
+      }
+    }
+    return aliases;
   }
 
   function matchesModel(table,row,names) {
     if (!names) return true;
     switch (table) {
-      case 'gen_names': return names.has(row.source) || names.has(row.target);
+      case 'gen_names': return matchesAliasYear(row.source,row.target) && (names.has(row.source) || names.has(row.target));
       case 'merge_groups': return names.has(row.name) || row.members.some(name=>names.has(name));
-      case 'battery_rules': return [...names].some(name=>row.generation.every(keyword=>name.includes(keyword)));
+      case 'battery_rules': return (!model && year && row.generation.some(keyword=>modelYear(keyword)===year)) ||
+        [...names].some(name=>row.generation.every(keyword=>name.includes(keyword)));
       case 'option_prices': return names.has(row.generation);
       default: return true;
     }
@@ -170,14 +199,14 @@ const orderRules = (() => {
     $('#actions').innerHTML = readonly ? '' : (mapping ? ruleButton('batch', '批量粘贴') : '') +
       ruleButton('add', '新增规则');
 
-    const names = model ? modelAliases(model) : null;
+    const names = table==='option_names' ? null : filteredModelNames();
     const rows = draft[table]
       .map((row, index) => ({row, index}))
       .filter(({row}) => matchesModel(table,row,names) && Object.values(row).map(text).join(' ').toLocaleLowerCase().includes(search));
     const range = paginator(rows.length);
     $('#count').textContent = rows.length ? `${rows.length} 条记录` : '';
     if (!rows.length) {
-      $('#content').innerHTML = sourceAlert() + `<div class="empty"><strong>${search || (model && table!=='option_names') ? '没有匹配的规则' : '暂无'+titles[table]}</strong>${search ? '<button data-clear>清空搜索</button>' : ''}</div>`;
+      $('#content').innerHTML = sourceAlert() + `<div class="empty"><strong>${search || names ? '没有匹配的规则' : '暂无'+titles[table]}</strong>${search ? '<button data-clear>清空搜索</button>' : ''}</div>`;
       return;
     }
 
@@ -186,7 +215,7 @@ const orderRules = (() => {
     const body = rows.slice(...range).map(({row, index}) => {
       const controls = ['edit', 'copy', 'delete'].map((name, i) =>
         ruleButton(name, ['编辑', '复制', '删除'][i], {id: row.id, inline: true, disabled: readonly}));
-      if (battery && !search && !model) {
+      if (battery && !search && !names) {
         controls.push(ruleButton('up', '上移', {id: row.id, inline: true, disabled: readonly || index === 0}));
         controls.push(ruleButton('down', '下移', {id: row.id, inline: true, disabled: readonly || index === draft[table].length - 1}));
       }
@@ -392,7 +421,7 @@ const orderRules = (() => {
       }, '删除');
     }
     if (action === 'up' || action === 'down') {
-      if (searchValue() || model) return;
+      if (searchValue() || model || year) return;
       const rows = [...draft[table]];
       const index = rows.findIndex(row => row.id === id);
       const target = index + (action === 'up' ? -1 : 1);
@@ -454,7 +483,7 @@ const orderRules = (() => {
   }
 
   return {
-    titles, modelNames, ready, isDirty, canPublish, canUndo, canRedo, status, load, render: renderView,
+    titles, modelNames, yearNames, ready, isDirty, canPublish, canUndo, canRedo, status, load, render: renderView,
     handleClick, save, previewPublish, reload, syncFromScript, undo, redo, openExport, template, importFiles,
   };
 })();

@@ -175,7 +175,8 @@ def check_conditional_prices(browser):
 def main():
     with tempfile.TemporaryDirectory() as tmp, isolated_server(tmp) as (url, store, rules, source), sync_playwright() as pw:
         campaign = CampaignStore(store.root)
-        campaign.save(0, [dict(sheet='车型汇总', row=2, col=1, value='已保存车型乙 2027款')], '首发维护人', publish=True)
+        campaign.save(0, [dict(sheet='车型汇总', row=2, col=1, value='已保存车型乙 2027款'),
+                          dict(sheet='车型汇总', row=2, col=2, value='焕新 2028款')], '首发维护人', publish=True)
         initial_rules=rules.get()['draft']['data']
         with rules.db:
             rules._event('草稿','早期操作人',initial_rules,[])
@@ -202,14 +203,15 @@ def main():
         nav_top = header.locator('nav').bounding_box()['y']
         search = header.get_by_role('searchbox')
         clear_search = header.get_by_role('button', name='清空搜索', exact=True)
-        schedule_filters = page.locator('.view-toolbar #schedule-filters')
         model = header.locator('#catalog-filters #model')
-        year = schedule_filters.locator('#year')
-        clear_schedule = schedule_filters.locator('#clear-schedule-filters')
+        year = header.locator('#catalog-filters #year')
+        expect(page.locator('#schedule-filters, #clear-schedule-filters')).to_have_count(0)
         expect(search).to_be_visible()
         search_x = search.bounding_box()['x']
         expect(model).to_be_visible()
         model_x = model.bounding_box()['x']
+        expect(year).to_be_visible()
+        year_x = year.bounding_box()['x']
         assert search_x > page.viewport_size['width'] / 2
         for tab in ['schedule', 'generation', 'options', 'reporting', 'history']:
             header.locator(f'[data-tab="{tab}"]').click()
@@ -217,28 +219,46 @@ def main():
             expect(search).to_be_visible()
             expect(model).to_be_visible()
             assert abs(model.bounding_box()['x'] - model_x) <= 1, tab
+            expect(year).to_be_visible()
+            assert abs(year.bounding_box()['x'] - year_x) <= 1, tab
             expect(clear_search).to_be_visible()
             expect(clear_search).to_be_disabled()
             box = search.bounding_box()
             assert abs(box['x'] - search_x) <= 1, tab
             assert box['y'] <= title_mid_y <= box['y'] + box['height'], tab
             assert box['y'] + box['height'] <= nav_top + 1, tab
-            if tab == 'schedule':
-                expect(year).to_be_visible()
-            else:
-                expect(schedule_filters).to_be_hidden()
         header.locator('[data-tab=schedule]').click()
         ready(page)
 
         add_vehicle(page)
         expect(content).to_contain_text('未保存车型甲')
-        year.select_option('2027')
+        year.select_option('2028')
         expect(content).not_to_contain_text('未保存车型甲')
         expect(content).to_contain_text('已保存车型乙')
-        switch_view(page, 'generation', 'gen_names')
+        for report in ['dailyOrders', 'businessTotals']:
+            switch_view(page, 'reporting', report)
+            expect(year).to_have_value('2028')
+            expect(content.locator('tbody tr')).to_have_count(1)
+            expect(content).to_contain_text('已保存车型乙')
+            expect(content).not_to_contain_text('未保存车型甲')
+        for group, view, match in [('generation', 'gen_names', '车型甲旧名'), ('generation', 'merge_groups', '车型甲&乙'),
+                                   ('options', 'battery_rules', '80度'), ('options', 'option_prices', '天窗')]:
+            switch_view(page, group, view)
+            expect(year).to_have_value('2028')
+            expect(content.locator('tbody tr')).to_have_count(0)
+            year.select_option('2026')
+            expect(content).to_contain_text(match)
+            year.select_option('2028')
+        switch_view(page, 'options', 'option_names')
+        expect(content).to_contain_text('旧选配名称')
+        for history, actor in [('campaign_history', '首发维护人'), ('rule_history', '后续操作人')]:
+            switch_view(page, 'history', history)
+            expect(year).to_have_value('2028')
+            expect(content).to_contain_text(actor)
         header.locator('[data-tab=schedule]').click()
         ready(page)
-        expect(year).to_have_value('2027')
+        expect(year).to_have_value('2028')
+        year.select_option('2027')
         expect(content).not_to_contain_text('未保存车型甲')
         expect(clear_search).to_be_disabled()
         model.select_option('已保存车型乙 2027款')
@@ -251,7 +271,7 @@ def main():
         expect(content).to_contain_text('已保存车型乙')
         expect(content).not_to_contain_text('未保存车型甲')
         search.fill('未保存车型甲')
-        clear_schedule.click()
+        year.select_option(label='全部年款')
         expect(year).to_have_value('')
         expect(model).to_have_value('已保存车型乙 2027款')
         expect(search).to_have_value('未保存车型甲')
@@ -259,7 +279,7 @@ def main():
         for report in ['dailyOrders', 'businessTotals']:
             switch_view(page, 'reporting', report)
             expect(model).to_have_value('已保存车型乙 2027款')
-            expect(year).to_be_hidden()
+            expect(year).to_have_value('')
             expect(content.locator('tbody tr')).to_have_count(1)
             expect(content).to_contain_text('已保存车型乙')
             expect(content).not_to_contain_text('未保存车型甲')
@@ -287,7 +307,7 @@ def main():
         expect(page).to_have_url(url)
         expect(page.locator('h1')).to_have_text('车型配置')
         expect(primary_nav).to_have_text(['车型与日程', '代际规则', '电池与选配', '小订首销填报', '变更记录'])
-        expect(schedule_filters).to_be_hidden()
+        expect(year).to_be_visible()
         header.locator('#search').fill('不存在的旧名')
         expect(content).not_to_contain_text('车型甲旧名')
         header.locator('#search').fill('车型甲旧名')
@@ -370,6 +390,7 @@ def main():
         assert header.locator('nav').evaluate('el => el.scrollWidth > el.clientWidth')
         expect(header.locator('#search')).to_be_hidden()
         expect(model).to_be_hidden()
+        expect(year).to_be_hidden()
         header.get_by_role('button', name='筛选', exact=True).click()
         expect(header.locator('#search')).to_be_visible()
         expect(model).to_be_in_viewport(ratio=1)
@@ -383,17 +404,20 @@ def main():
         expect(year).to_be_in_viewport(ratio=1)
         year.select_option('2027')
         expect(content).to_contain_text('已保存车型乙')
-        header.get_by_role('button', name='筛选', exact=True).click()
+        header.get_by_role('button', name='筛选 · 1', exact=True).click()
         expect(search).to_be_hidden()
         expect(model).to_be_hidden()
-        expect(year).to_be_visible()
-        header.get_by_role('button', name='筛选', exact=True).click()
+        expect(year).to_be_hidden()
+        header.get_by_role('button', name='筛选 · 1', exact=True).click()
         search.fill('已保存车型乙')
         model.select_option('已保存车型乙 2027款')
-        header.get_by_role('button', name='筛选 · 2', exact=True).click()
+        header.get_by_role('button', name='筛选 · 3', exact=True).click()
         expect(search).to_be_hidden()
+        header.get_by_role('button', name='筛选 · 3', exact=True).click()
         expect(year).to_have_value('2027')
-        clear_schedule.click()
+        year.select_option(label='全部年款')
+        expect(model).to_have_value('已保存车型乙 2027款')
+        expect(search).to_have_value('已保存车型乙')
         expect(content).to_contain_text('已保存车型乙')
         expect(content).not_to_contain_text('未保存车型甲')
         header.locator('[data-tab=generation]').click()

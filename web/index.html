@@ -12,6 +12,7 @@
     <button type="button" class="mobile-filter-toggle" aria-expanded="false" aria-controls="catalog-filters">筛选</button>
     <div id="catalog-filters" class="filters" role="group" aria-label="筛选">
       <label>车型<select id="model"><option value="">全部车型</option></select></label>
+      <label>年款<select id="year"><option value="">全部年款</option></select></label>
       <label>搜索<input id="search" type="search" placeholder="搜索当前视图"></label>
       <button id="clear-filters" class="quiet" disabled>清空搜索</button>
     </div>
@@ -39,10 +40,6 @@
   <section class="panel">
     <div class="view-toolbar">
       <div id="view-tabs" class="view-tabs" role="group" aria-label="编辑视图"></div>
-      <div id="schedule-filters" role="group" aria-label="车型与日程筛选">
-        <label>年款<select id="year"></select></label>
-        <button id="clear-schedule-filters" class="quiet" hidden>清空年款</button>
-      </div>
       <div id="actions"></div>
     </div>
     <div id="content"></div>

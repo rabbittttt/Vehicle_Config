@@ -49,7 +49,7 @@ def check(browser, url):
     expect(frame.locator('#content')).to_contain_text('standard')
     expect(frame.locator('h1')).to_have_text('车型配置')
     frame.locator('[data-tab=reporting]').click()
-    expect(frame.locator('[data-view=dailyOrders]')).to_have_text('每日小订')
+    expect(frame.locator('[data-view=dailyOrders]')).to_have_text('小订进度')
     expect(frame.locator('[data-view=stageProgress]')).to_have_count(0)
     expect(frame.locator('.report-matrix tbody tr[data-model="代理验收 2026款"]')).to_have_count(1)
     expect(frame.locator('[data-view=dailyOrders]')).to_have_attribute('aria-pressed', 'true')

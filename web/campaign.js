@@ -86,13 +86,12 @@ const campaignEditor = (() => {
     return (sheet(summaryName)?.rows.slice(1) || []).filter(r => r?.[0]);
   }
   const modelNames = () => ready() ? [...reportIndex().models.keys()] : [];
-  const modelYears = () => [...new Set(stages().flatMap(row=>[modelYear(row[0]),modelYear(row[1])]).filter(Boolean))].sort().reverse();
   function stageSelect(target) {
     if (target) {
       const key = JSON.stringify([target.model,target.secondary]);
       return `<input type="hidden" name="stage" value="${esc(key)}"><label class="wide">车型与阶段<output>${esc(stageLabel(target.model,target.secondary))}</output></label>`;
     }
-    const variants = reportStages().filter(stage=>stage.hasSummary && (!model || stage.model===model));
+    const variants = reportStages().filter(stage=>stage.hasSummary && matchesModelAndYear(stage.model,stage.secondary));
     const pairs = variants.map(v => [JSON.stringify([v.model,v.secondary]),v.label]);
     const initial = pairs.some(([key])=>key===lastModel) ? lastModel : pairs.length===1 ? pairs[0][0] : '';
     return `<label class="wide">车型与阶段${formSelect('stage', pairs, initial, true)}</label>`;
@@ -170,7 +169,7 @@ const campaignEditor = (() => {
       return `<tr data-model="${esc(stage.model)}">${reportIdentity(variants,stage)}${cells}<td class="report-actions">${action('totals','核对',`class="link" data-row="${row}"`)}</td></tr>`;
     }).join('');
     if(!body) {
-      $('#content').innerHTML=empty(query?'没有匹配的车型':'暂无可核对的车型');
+      $('#content').innerHTML=empty(query||model||year?'没有匹配的车型':'暂无可核对的车型');
       return;
     }
     const headings=totalColumns.map(i=>`<th scope="col">${reviewHeading(labels[i],i)}</th>`).join('');
@@ -300,7 +299,7 @@ const campaignEditor = (() => {
     return indexedReports;
   }
   function reportStages() {
-    return reportIndex().stageList;
+    return ready() ? reportIndex().stageList : [];
   }
   function dailyEntries(target) {
     const stage = reportIndex().models.get(target.model)?.get(target.secondary);
@@ -354,7 +353,7 @@ const campaignEditor = (() => {
   }
   function searchDates(index,query) {
     if (progressName !== dailyName || !/^\d{4}(-\d{2}){0,2}$/.test(query)) return null;
-    if (query.length===4 && index.stageList.some(stage=>(stage.hasSummary || stage.records.has(dailyName)) &&
+    if (query.length===4 && index.stageList.some(stage=>matchesModelAndYear(stage.model,stage.secondary) && (stage.hasSummary || stage.records.has(dailyName)) &&
       matched([stage.model,stage.secondary],query))) return null;
     return index.dates.filter(date=>date.startsWith(query) && index.dateStages.has(date));
   }
@@ -538,7 +537,10 @@ const campaignEditor = (() => {
     const times = timelineAxis(index,axis,filteredDates);
     const toolbar = [];
     if (daily) toolbar.push(`<label class="inline-label">横轴<select id="report-axis" ${filteredDates?'disabled':''}>${option('day','按日序',axis)}${option('date','按日期',axis)}</select></label>`);
-    if (!readonly) toolbar.push(index.stageList.some(stage=>stage.hasSummary) ? action('batch','批量粘贴') : action('new-stage','新增发布日程'));
+    if (!readonly) {
+      if (index.stageList.some(stage=>stage.hasSummary && matchesModelAndYear(stage.model,stage.secondary))) toolbar.push(action('batch','批量粘贴'));
+      else if (!index.stageList.some(stage=>stage.hasSummary)) toolbar.push(action('new-stage','新增发布日程'));
+    }
     $('#actions').innerHTML = toolbar.join('');
     if (daily && !filteredDates) $('#report-axis').onchange = e=>{
       reportAxis=e.target.value;
@@ -547,11 +549,11 @@ const campaignEditor = (() => {
     };
     const dateMatches = filteredDates && new Set(filteredDates.flatMap(key=>[...index.dateStages.get(key)]));
     const groups = Array.from(index.models.values(),variants=>[...variants.values()].filter(stage=>
-      (!model || stage.model===model) && (stage.hasSummary || stage.records.has(progressName)) &&
+      matchesModelAndYear(stage.model,stage.secondary) && (stage.hasSummary || stage.records.has(progressName)) &&
       (dateMatches ? dateMatches.has(stage) : matched([stage.model,stage.secondary],query)))).filter(variants=>variants.length);
     const window = paginator(groups.length);
     $('#count').textContent = '';
-    if (!groups.length) { $('#content').innerHTML = empty(filteredDates ? '该日期范围暂无小订记录' : query ? '没有匹配的车型' : '暂无车型'); return; }
+    if (!groups.length) { $('#content').innerHTML = empty(filteredDates ? '该日期范围暂无小订记录' : query||model||year ? '没有匹配的车型' : '暂无车型'); return; }
     showTimeline(groups.slice(...window),groups.length,axis,times,query,Boolean(filteredDates));
   }
   function renderView(view,query) {
@@ -648,7 +650,7 @@ const campaignEditor = (() => {
   function entryForm(batch, target=null) {
     const daily = progressName===dailyName;
     const info = sheet(progressName);
-    const title = daily?'每日小订':progressName;
+    const title = viewLabels[view];
     const amountName = daily?'小订量':'数量';
     const axis = target?.axis;
     const axisField = daily?'date':'day';
@@ -730,8 +732,8 @@ const campaignEditor = (() => {
   }
   function dailyDetail(target) {
     const entries=dailyEntries(target);
-    const title=stageLabel(target.model,target.secondary)+' · 每日小订';
-    if (!entries.length) return modal(title,empty('暂无每日小订记录'));
+    const title=stageLabel(target.model,target.secondary)+' · '+viewLabels.dailyOrders;
+    if (!entries.length) return modal(title,empty('暂无小订记录'));
     const fields=entries.map(({date,row,value},i)=>{
       const repeated=entries[i-1]?.date===date || entries[i+1]?.date===date;
       const source=repeated?'第 '+row+' 行':'';
@@ -797,7 +799,7 @@ const campaignEditor = (() => {
     };
     const models=modelBoxes(exportData);
     const sheetOptions=reporting ? `<fieldset><legend>工作表</legend><div class="members campaign-export-sheets">${sheetBoxes(exportData)}</div></fieldset>
-      <fieldset class="campaign-window"><legend>每日小订日期范围</legend><div class="form">
+      <fieldset class="campaign-window"><legend>小订日期范围</legend><div class="form">
         <label>开始日期<input type="date" name="dateFrom"></label><label>截止日期<input type="date" name="dateTo"></label></div></fieldset>` : '';
     modal(reporting?'导出小订与首销':'导出车型与日程',`<form class="campaign-export"><label>数据版本<select name="source">
       ${saved.publishedRevision ? '<option value="published">已发布数据</option>':''}<option value="draft">已保存草稿</option></select></label>
@@ -809,7 +811,7 @@ const campaignEditor = (() => {
       if(!reporting)selection.scope='schedule';
       if(sheets.includes(dailyName)) {
         const start=values.get('dateFrom'),end=values.get('dateTo');
-        if(start && end && start>end)throw Error('每日小订截止日期不能早于开始日期');
+        if(start && end && start>end)throw Error('小订截止日期不能早于开始日期');
         if(start)selection.dateFrom=start;
         if(end)selection.dateTo=end;
       }
@@ -892,7 +894,7 @@ const campaignEditor = (() => {
     if (current.projectionPending) return '已发布 · 下游同步待重试';
     return `小订与首销草稿 r${saved.revision} · ${saved.hasUnpublishedChanges?'待发布':'已保存'}`;
   }
-  return {ready,isDirty,reportMetrics,modelNames,modelYears,canUndoImport,selectLegacy,undoImport,canPublish:()=>isDirty()||Boolean(saved?.hasUnpublishedChanges),
+  return {ready,isDirty,reportMetrics,modelNames,reportStages,canUndoImport,selectLegacy,undoImport,canPublish:()=>isDirty()||Boolean(saved?.hasUnpublishedChanges),
     canUndo:()=>undo.length>0,canRedo:()=>redo.length>0,undo:()=>step(true),redo:()=>step(false),
     render:renderView,load,reload,status,handle,save,previewPublish,openExport,importFiles,importModule};
 })();

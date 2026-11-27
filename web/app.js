@@ -11,7 +11,7 @@ const sections = {
 };
 const viewLabels = {
   ...orderRules.titles,
-  ...campaignEditor.reportMetrics, dailyOrders:'每日小订', businessTotals:'结果核对', campaign_history:'日程与填报发布',
+  ...campaignEditor.reportMetrics, dailyOrders:'小订进度', businessTotals:'结果核对', campaign_history:'日程与填报发布',
 };
 let tab='schedule', view=sections.schedule[0], csrf='', readonly=true, busy=false, confirmAction=null;
 let sessionUser = '';
@@ -27,7 +27,7 @@ const isRuleView=()=>Object.hasOwn(orderRules.titles,view);
 const activeEditor=()=>isRuleView()?orderRules:campaignEditor;
 const modelYear=name=>String(name ?? '').match(/(?:19|20)\d{2}(?=\s*款)/)?.[0] || '';
 function matchesModelAndYear(primary,secondary) {
-  return (!model || primary===model) && (tab!=='schedule' || !year || modelYear(primary)===year || modelYear(secondary)===year);
+  return (!model || primary===model) && (!year || modelYear(primary)===year || modelYear(secondary)===year);
 }
 function newId() {
   if(crypto.randomUUID)return crypto.randomUUID();
@@ -128,18 +128,14 @@ function renderKeepingScroll() {
   if(top||left)$('#content .scroll')?.scrollTo(left,top);
 }
 function filters() {
-  const schedule=tab==='schedule';
-  $('#schedule-filters').hidden=!schedule;
   const names=[...new Set([...campaignEditor.modelNames(),...orderRules.modelNames()])];
   if(!names.includes(model))model='';
   updateOptions($('#model'),option('','全部车型','')+names.map(n=>option(n,n,'')).join(''),model);
-  if(schedule && campaignEditor.ready()) {
-    const years=campaignEditor.modelYears();
-    if(!years.includes(year))year='';
-    updateOptions($('#year'),option('','全部年款','')+years.map(y=>option(y,y+'款','')).join(''),year);
-  }
-  $('#clear-schedule-filters').hidden=!year;
-  const count=[model,searchValue()].filter(Boolean).length;
+  const yearNames=campaignEditor.reportStages().flatMap(stage=>[stage.model,stage.secondary]).concat(orderRules.yearNames());
+  const years=[...new Set(yearNames.map(modelYear).filter(Boolean))].sort().reverse();
+  if(!years.includes(year))year='';
+  updateOptions($('#year'),option('','全部年款','')+years.map(y=>option(y,y+'款','')).join(''),year);
+  const count=[model,year,searchValue()].filter(Boolean).length;
   setText(filterToggle,count?'筛选 · '+count:'筛选');
 }
 const renderedOptions=new WeakMap();
@@ -412,11 +408,6 @@ function clearSearch() {
   render();
 }
 $('#clear-filters').onclick=clearSearch;
-$('#clear-schedule-filters').onclick=()=>{
-  year='';
-  page=1;
-  render();
-};
 $('#model').onchange=e=>{model=e.target.value;page=1;render();};
 $('#year').onchange=e=>{year=e.target.value;page=1;render();};
 let searchTimer, searchFrame;

@@ -204,15 +204,16 @@ def check_quantity_progress(page):
 def check_reporting(page):
     tab(page, 'reporting')
     expect(page.locator('[data-view=dailyOrders]')).to_have_attribute('aria-pressed', 'true')
-    expect(page.locator('[data-view=dailyOrders]')).to_have_text('每日小订')
+    expect(page.locator('[data-view=dailyOrders]')).to_have_text('小订进度')
     expect(page.locator('[data-view=stageProgress]')).to_have_count(0)
     check_result_review(page)
     view(page, 'dailyOrders')
     expect(page.locator('#view-tabs button')).to_have_text([
-        '每日小订', '小订期退订进度', '小转大进度', '直接大定进度', '首销期退订进度', '结果核对',
+        '小订进度', '小订期退订进度', '小转大进度', '直接大定进度', '首销期退订进度', '结果核对',
     ])
     expect(page.get_by_role('combobox', name='指标')).to_have_count(0)
     page.get_by_role('button', name='批量粘贴').click()
+    expect(page.get_by_role('dialog')).to_have_accessible_name('批量粘贴 · 小订进度')
     page.locator('[name=rows]').fill('2026-11-01\t0\n2026-11-02\t15')
     confirm(page)
     expect(page.locator('.report-matrix tbody tr')).to_have_count(1)
@@ -254,6 +255,7 @@ def check_reporting(page):
     ready(page)
     for box in page.locator('[name=sheets]').all():
         box.set_checked(box.input_value() == '小订by天')
+    expect(page.get_by_role('group', name='小订日期范围')).to_be_visible()
     page.get_by_label('开始日期', exact=True).fill('2026-11-02')
     page.get_by_label('截止日期', exact=True).fill('2026-11-02')
     page.locator('#dialog summary').click()

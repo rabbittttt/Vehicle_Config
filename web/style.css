@@ -138,6 +138,7 @@ textarea{font:inherit;background:var(--surface);resize:vertical;border:1px solid
 .heading{gap:12px}
 .save-actions button{border-radius:var(--control-radius)}
 .view-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:6px 18px;border-bottom:1px solid var(--border)}
+.view-toolbar:has(> .view-tabs[hidden]):has(> #actions:empty){display:none}
 .view-tabs{display:flex;gap:4px;max-width:100%;min-width:0;overflow-x:auto;padding:4px;scrollbar-width:thin}
 .view-tabs button{flex:none}
 #actions{display:flex;flex-wrap:wrap;gap:6px;margin-inline-start:auto;max-width:100%}
@@ -389,22 +390,21 @@ main { padding-top: var(--dashboard-gap); }
   font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei UI", sans-serif;
 }
 
-.filters, #schedule-filters {
+.filters {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 12px;
   padding: 5px 3px;
 }
-#schedule-filters { flex-wrap: wrap; }
-.filters > label, #schedule-filters > label {
+.filters > label {
   display: flex;
   flex: none;
   align-items: center;
   gap: 5px;
   white-space: nowrap;
 }
-#model, #search, #schedule-filters select {
+#model, #year, #search {
   width: 94px;
   min-height: 34px;
   padding: 5px 8px;
@@ -412,8 +412,17 @@ main { padding-top: var(--dashboard-gap); }
 }
 #model { width: clamp(110px, 10vw, 180px); }
 #search { width: clamp(132px, 13vw, 210px); }
-#clear-filters, #clear-schedule-filters { flex:none; min-height:34px; }
+#clear-filters { flex:none; min-height:34px; }
 .mobile-filter-toggle { display: none; }
+
+@media (min-width:701px) and (max-width:900px) {
+  header .heading { gap:6px; }
+  .filters { gap:6px; align-items:end; }
+  .filters > label { display:grid; gap:1px; }
+  #model { width:102px; }
+  #search { width:114px; }
+  #clear-filters { padding-inline:6px; }
+}
 
 @media (max-width: 700px) {
   header { grid-template-columns:minmax(0,1fr) auto auto; column-gap:8px; }
@@ -442,16 +451,15 @@ main { padding-top: var(--dashboard-gap); }
   .mobile-filter-toggle[aria-expanded="true"] + .filters {
     grid-area: 3 / 1 / auto / -1;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: repeat(2,minmax(0,1fr));
     align-items: end;
     gap: 8px;
     padding: 4px 0 12px;
     overflow: visible;
   }
   .filters > label { display: grid; gap: 3px; }
-  .filters > label:first-child { grid-column: 1 / -1; }
-  #model, #search { width: 100%; }
-  #model, #search, #clear-filters, #schedule-filters select, #clear-schedule-filters { min-height: 44px; }
+  #model, #year, #search { width:100%; }
+  #model, #year, #search, #clear-filters { min-height:44px; }
 }
 
 /* Keep data changes local. Scrolling and resizing always follow native input. */
@@ -592,7 +600,7 @@ dialog:not([open]) { pointer-events: none; }
   @supports (transition-behavior: allow-discrete) {
     .filters {
       grid-area: 3 / 1 / auto / -1;
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: repeat(2,minmax(0,1fr));
       align-items: end;
       gap: 8px;
       padding: 4px 0 12px;
