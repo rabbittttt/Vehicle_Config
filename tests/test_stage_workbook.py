@@ -205,7 +205,7 @@ class CampaignWorkbookTests(unittest.TestCase):
         def observation(sheet, day, value, section=1):
             return {'sheet':sheet,'model':'甲','section':section,'day':day,'value':value}
         edits = summary(2,**{'1':'甲','19':20,'20':8})
-        edits += [observation('直接大定进度',1,2),observation('大定进度',1,10)]
+        edits += [observation('直接大定进度',1,2),observation('小转大进度',1,8)]
         result = apply_edits(empty_workbook(),edits)
         sheets = {s['name']:s for s in result['sheets']}
         self.assertNotIn('小订进度',sheets)
@@ -214,7 +214,7 @@ class CampaignWorkbookTests(unittest.TestCase):
         self.assertEqual(.2,direct['rows'][5][12])
         with self.assertRaisesRegex(ValueError,'数量计算'):
             apply_edits(result,[observation('直接大定进度',1,.3,3)])
-        corrected = apply_edits(result,[observation('大定进度',1,4)])
+        corrected = apply_edits(result,[observation('小转大进度',1,2)])
         direct = next(s for s in corrected['sheets'] if s['name']=='直接大定进度')
         self.assertEqual(.5,direct['rows'][5][12])
         cleared = apply_edits(corrected,[observation('直接大定进度',1,None)])

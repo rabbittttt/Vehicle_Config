@@ -11,7 +11,7 @@ const campaignEditor = (() => {
   const isDirty = () => edits.length > 0;
   const canUndoImport = () => Boolean(saved?.canUndoImport && !isDirty());
   const sheet = name => current?.sheets.find(item => item.name === name);
-  const reportingSheets = () => current.sheets.filter(info=>info.name!==summaryName && info.name!=='小订进度');
+  const reportingSheets = () => current.sheets.filter(info=>![summaryName,'小订进度','大定进度'].includes(info.name));
   const payload = () => ({revision:saved.revision, edits});
 
   function accept(result) {
@@ -323,45 +323,6 @@ const campaignEditor = (() => {
     const labels = s.rows[start];
     const days = labels.map((name,i)=>/^D\d+$/i.test(name)?i:-1).filter(i=>i>=0);
     return {s,start,end,labels,days};
-  }
-  function dayComparison(model,secondary) {
-    const matching=row=>row[0]===model && (row[1] || '')===secondary;
-    const stage=stages().filter(matching);
-    if(stage.length!==1)return null;
-    const starts=new Set([stage[0][10]].filter(used));
-    const observations=[];
-    for(const name of ['小转大进度','直接大定进度','大定进度']) {
-      const p=progressBlock(name);
-      const secondaryCol=p.labels.indexOf('二级代际名');
-      const rows=p.s.rows.slice(p.start+1,p.end).filter(r=>r[0]===model && (r[secondaryCol] || '')===secondary);
-      if(rows.length>1 || (!rows.length && name!=='大定进度'))return null;
-      const row=rows[0] || [];
-      const start=row[p.labels.indexOf('开始大定日期')];
-      if(used(start))starts.add(start);
-      observations.push({row,labels:p.labels});
-    }
-    if(starts.size>1)return null;
-    const [small,direct]=observations;
-    return (day,actual)=>grossDifferenceDetail(small.row[small.labels.indexOf(day)],direct.row[direct.labels.indexOf(day)],actual);
-  }
-  function dayDifferenceHint(control) {
-    const label=control.closest('label');
-    const group=document.createElement('div');
-    group.className=label.className;
-    label.replaceWith(group);
-    group.append(label);
-    const hint=document.createElement('small');
-    hint.dataset.grossDifference='';
-    hint.id='gross-difference-'+(control.name || control.getAttribute('aria-label'));
-    hint.className='campaign-discrepancy';
-    hint.setAttribute('aria-live','polite');
-    hint.hidden=true;
-    group.append(hint);
-    control.setAttribute('aria-describedby',hint.id);
-    return text=>{
-      hint.textContent=text;
-      hint.hidden=!text;
-    };
   }
   function activeVariant(variants,query='') {
     const matching = variants.filter(stage=>matched([stage.model,stage.secondary],query));
@@ -719,33 +680,6 @@ const campaignEditor = (() => {
       await apply(mapped.filter(Boolean));
     },'应用');
     const form=$('#dialog-body form');
-    let compare=null, refreshDifference=()=>{};
-    if(progressName==='大定进度') {
-      const input=batch?form.elements.rows:form.elements.amount;
-      const show=dayDifferenceHint(input);
-      refreshDifference=()=>{
-        if(!compare)return show('');
-        if(!batch)return show(compare('D'+form.elements.day.value, input.valueAsNumber));
-        const differences=[];
-        for(const line of input.value.trim().split(/\r?\n/).slice(0,1000)){
-          const [day,value]=line.trim().split('\t');
-          if(!/^(?:D)?[1-9]\d*$/i.test(day) || !value?.trim())continue;
-          const field='D'+Number(day.replace(/^D/i,''));
-          const message=compare(field,Number(value));
-          if(message)differences.push(field+' · '+message);
-        }
-        const preview=differences.slice(0,3).join('；');
-        show(differences.length>3 ? preview+'（共 '+differences.length+' 天有差额）' : preview);
-      };
-      const selectComparison=()=>{
-        const value=form.elements.stage.value;
-        compare=value?dayComparison(...JSON.parse(value)):null;
-        refreshDifference();
-      };
-      form.elements.stage.addEventListener('change',selectComparison);
-      input.addEventListener('input',refreshDifference);
-      selectComparison();
-    }
     if (!batch) {
       const control=form.elements[axisField], amount=form.elements.amount;
       function syncAmount() {
@@ -758,7 +692,6 @@ const campaignEditor = (() => {
         sourceCell=found.length===1?found[0]:null;
         amount.value=sourceCell?.value ?? '';
         amount.required=!used(sourceCell?.value);
-        refreshDifference();
       }
       function syncStage() {
         const selection=form.elements.stage.value;
@@ -825,20 +758,6 @@ const campaignEditor = (() => {
       const independentEnd=p.labels.indexOf('小转大结束日期');
       const columns=independentEnd<0?p.days:[independentEnd,...p.days];
       rowForm(p.s,row,columns,subject+' · '+progressName);
-      if(progressName==='大定进度') {
-        const compare=dayComparison(record[0],secondary);
-        if(!compare)return;
-        const form=$('#dialog-body form');
-        for(const index of p.days) {
-          const day=p.labels[index];
-          const control=form.elements['f'+index] || form.querySelector('output[aria-label="'+day+'"]');
-          if(!control)continue;
-          const show=dayDifferenceHint(control);
-          const update=()=>show(compare(day,readonly?record[index]:control.valueAsNumber));
-          control.addEventListener('input',update);
-          update();
-        }
-      }
       return;
     }
     if(['identity','stage','totals'].includes(kind)){

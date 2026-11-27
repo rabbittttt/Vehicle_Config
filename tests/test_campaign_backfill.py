@@ -32,9 +32,9 @@ def review(data,col):
 
 class BackfillTests(unittest.TestCase):
     def test_quantity_series_write_preview_totals_but_never_assume_missing_days(self):
-        names = ['小转大进度','大定进度','直接大定进度']
+        names = ['小转大进度','直接大定进度']
         base = apply_edits(empty_workbook(),schedule()+[header_edit(16,10)])
-        partial = apply_edits(base,[observation(name,1,qty) for name,qty in zip(names,[3,7,4])])
+        partial = apply_edits(base,[observation(name,1,qty) for name,qty in zip(names,[3,4])])
         self.assertEqual([review(partial,col) for col in (17,19,20)], [None]*3)
         full = apply_edits(partial,[observation(name,2,0) for name in names])
         self.assertEqual([review(full,col) for col in (17,19,20,18,21)], [3,7,4,.3,4/7])
@@ -43,8 +43,8 @@ class BackfillTests(unittest.TestCase):
         col = direct['rows'][0].index('D1')+1
         correction = dict(sheet='直接大定进度',row=2,col=col,value=0)
         self.assertEqual(review(apply_edits(full,[correction]),20),0)
-        self.assertIsNone(review(apply_edits(full,[observation('大定进度',2,None)]),19))
-        self.assertIsNone(review(apply_edits(full,[observation('大定进度',3,4)]),19))
+        self.assertIsNone(review(apply_edits(full,[observation('直接大定进度',2,None)]),19))
+        self.assertIsNone(review(apply_edits(full,[observation(name,3,4) for name in names]),19))
         extended = apply_edits(full,[header_edit(12,'2026-02-03')])
         self.assertIsNone(review(extended,17))
         self.assertEqual(review(apply_edits(extended,[observation('小转大进度',3,0)]),17),3)
@@ -65,7 +65,9 @@ class BackfillTests(unittest.TestCase):
 
     def test_rates_follow_the_backfilled_denominator_and_preserve_independent_values(self):
         name = '大定进度'
-        initial = apply_edits(empty_workbook(),schedule()+[observation(name,1,5),observation(name,2,0)])
+        source = '小转大进度'
+        initial = apply_edits(empty_workbook(),schedule()+[observation(source,1,5),observation(source,2,0),
+                              observation('直接大定进度',1,0),observation('直接大定进度',2,0)])
         def read(data,section,field):
             progress = sheet(data,name)
             header = progress['headerRows'][section-1]-1
@@ -73,22 +75,28 @@ class BackfillTests(unittest.TestCase):
         for section in (1,2):
             self.assertEqual(read(initial,section,'大定'),5)
         self.assertEqual(read(initial,2,'D1'),1)
-        corrected = apply_edits(initial,[observation(name,2,3)])
+        corrected = apply_edits(initial,[observation(source,2,3)])
         self.assertEqual([read(corrected,2,key) for key in ['大定','D1','D2']],[8,5/8,1])
         progress = sheet(corrected,name)
         header = progress['headerRows'][1]-1
         progress['rows'][header+1][progress['rows'][header].index('D1')]=.4
-        corrected = apply_edits(corrected,[observation(name,1,3)])
+        corrected = apply_edits(corrected,[observation(source,1,3)])
         self.assertEqual(read(corrected,2,'D1'),.4)
         self.assertEqual(read(corrected,2,'D2'),1)
         pos = sheet(corrected,name)['rows'][0].index('大定')+1
-        custom = apply_edits(corrected,[dict(sheet=name,row=2,col=pos,value=20),observation(name,2,9)])
+        sheet(corrected,name)['rows'][1][pos-1] = 20  # Independent imported denominator.
+        progress = sheet(corrected,name)
+        head = progress['headerRows'][1]-1
+        progress['rows'][head+1][progress['rows'][head].index('D2')] = 6/20
+        custom = apply_edits(corrected,[observation(source,2,9)])
         self.assertEqual(read(custom,1,'大定'),20)
         self.assertEqual(read(custom,2,'D2'),12/20)
 
     def test_legacy_import_or_existing_draft_fills_blanks_only_for_unique_rows(self):
         name = '大定进度'
-        complete = apply_edits(empty_workbook(),schedule()+[observation(name,1,5),observation(name,2,1)])
+        source = '直接大定进度'
+        complete = apply_edits(empty_workbook(),schedule()+[observation(source,1,5),observation(source,2,1),
+                               observation('小转大进度',1,0),observation('小转大进度',2,0)])
         sheet(complete,SUMMARY)['rows'][1][18] = None
         self.assertEqual(review(import_workbook(export_workbook(complete)),19),6)
         self.assertEqual(review(backfill_totals(complete),19),6)
@@ -103,9 +111,49 @@ class BackfillTests(unittest.TestCase):
         book.close()
         self.assertIsNone(review(import_workbook(output.getvalue()),19))
         sheet(complete,SUMMARY)['rows'][1][18]=14
-        self.assertEqual(review(apply_edits(complete,[observation(name,2,9)]),19),14)
-        matched=apply_edits(complete,[observation(name,2,9)])
-        self.assertEqual(review(apply_edits(matched,[observation(name,2,10)]),19),14)
+        self.assertEqual(review(apply_edits(complete,[observation(source,2,9)]),19),14)
+        matched=apply_edits(complete,[observation(source,2,9)])
+        self.assertEqual(review(apply_edits(matched,[observation(source,2,10)]),19),14)
+
+    def test_gross_is_read_only_and_missing_legacy_sheet_is_generated(self):
+        base = apply_edits(empty_workbook(),schedule()+[
+            observation('直接大定进度',1,3),observation('小转大进度',1,2),
+            observation('直接大定进度',2,0),observation('小转大进度',2,0)])
+        with self.assertRaisesRegex(ValueError,'数量计算'):
+            apply_edits(base,[observation('大定进度',1,10)])
+        with self.assertRaisesRegex(ValueError,'数量计算'):
+            apply_edits(base,[{'sheet':'大定进度','row':2,'col':13,'value':10}])
+        with self.assertRaisesRegex(ValueError,'数量计算'):
+            apply_edits(base,[{**observation('大定进度',1,.5),'section':2}])
+        book = load_workbook(BytesIO(export_workbook(base)))
+        del book['大定进度']
+        stream = BytesIO()
+        book.save(stream)
+        book.close()
+        projected = sheet(import_workbook(stream.getvalue()),'大定进度')
+        for field,value in [('D1',5),('D2',0)]:
+            self.assertEqual(projected['rows'][1][projected['rows'][0].index(field)],value)
+
+    def test_gross_joins_calendar_dates_and_preserves_historical_actuals(self):
+        base = apply_edits(empty_workbook(),schedule()+[
+            observation('小转大进度',1,2),observation('小转大进度',2,7),
+            observation('直接大定进度',1,3),observation('直接大定进度',2,0)])
+        direct = sheet(base,'直接大定进度')
+        col = direct['rows'][0].index('开始大定日期')+1
+        shifted = apply_edits(base,[dict(sheet='直接大定进度',row=2,col=col,value='2026-02-02')])
+        gross = sheet(shifted,'大定进度')
+        self.assertIsNone(gross['rows'][1][gross['rows'][0].index('D1')])
+        self.assertEqual(gross['rows'][1][gross['rows'][0].index('D2')],10)
+        direct = sheet(shifted,'直接大定进度')
+        rate_head = direct['headerRows'][2]-1
+        self.assertEqual(direct['rows'][rate_head+1][direct['rows'][rate_head].index('D1')],.3)
+        # A pre-existing independent gross observation remains visible in exports.
+        gross['rows'][1][gross['rows'][0].index('D2')] = 12
+        imported = import_workbook(export_workbook(shifted))
+        changed = apply_edits(imported,[observation('小转大进度',2,9)])
+        gross = sheet(changed,'大定进度')
+        self.assertIn('2:D2',gross['reportedQuantities'])
+        self.assertEqual(gross['rows'][1][gross['rows'][0].index('D2')],12)
 
     def test_cancellations_require_corroboration_and_are_never_added_twice(self):
         small,launch = '小订期退订进度','首销期退订进度'

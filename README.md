@@ -56,7 +56,7 @@ $releaseVersion = Read-Host '输入新发布版本'
 
 「车型与日程」导出车型汇总的 A–N 列。需要完整旧表格式时，在「小订首销填报」导出，可选草稿或发布版本、工作表、车型及逐日小订的日期范围。车型汇总仍包含「小订待转单」和「小订待转单占比」，进度表仍包含原有比例分区。生成的 Excel 通过浏览器下载。服务不在共享目录生成或维护工作簿。
 
-业务数据保存在数据目录的 `campaigns/campaigns.sqlite3`。发布产生带修订号的 `campaigns/published.json`，下游随报表批次读取此快照。经工作台身份验证也可读取 `GET api/campaign/published`，查询历史版本时附上 `?revision=版本号`。Excel 迁入后先核对历史阶段、实际零值、每日数量以及各进度区段，再切换下游数据源。
+业务数据保存在数据目录的 `campaigns/campaigns.sqlite3`。发布时将该版数据写入同库的 `publications` 表，同时生成 `campaigns/published.json` 供文件方式接入。订单分析和销量预测默认从数据库读取当前已发布版本，各报表批次固定使用同一修订号；首次发布前会提示先在车型配置发布。经工作台身份验证也可读取 `GET api/campaign/published`，查询历史版本时附上 `?revision=版本号`。Excel 迁入后先核对历史阶段、实际零值、每日数量以及各进度区段，再切换下游数据源。
 
 ### 订单配置规则
 

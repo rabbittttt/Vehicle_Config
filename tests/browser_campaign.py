@@ -173,25 +173,7 @@ def check_quantity_progress(page):
     page.get_by_label('日序').fill('1')
     page.get_by_label('数量', exact=True).fill('0')
     confirm(page)
-    metric.select_option('大定进度')
-    action(page, 'report-add').click()
-    expect(page.get_by_label('百分比')).to_have_count(0)
-    day = page.get_by_label('日序')
-    amount = page.get_by_label('数量', exact=True)
-    difference = page.locator('[data-gross-difference]')
-    day.fill('1')
-    amount.fill('11')
-    expect(difference).to_contain_text('+3')
-    amount.fill('8')
-    expect(difference).to_be_hidden()
-    day.fill('2')
-    amount.fill('12')
-    expect(difference).to_be_hidden()
-    confirm(page)
-    action(page, 'report-detail').click()
-    expect(page.locator('#dialog')).not_to_contain_text('占比')
-    expect(page.get_by_label('D2', exact=True)).to_have_value('12')
-    page.locator('#cancel').click()
+    expect(metric.locator('option[value="大定进度"]')).to_have_count(0)
 
 
 def check_reporting(page):
@@ -202,7 +184,7 @@ def check_reporting(page):
     check_result_review(page)
     view(page, 'dailyOrders')
     expect(page.locator('#campaign-progress option')).to_have_text([
-        '每日小订', '小订期退订进度', '小转大进度', '直接大定进度', '大定进度', '首销期退订进度',
+        '每日小订', '小订期退订进度', '小转大进度', '直接大定进度', '首销期退订进度',
     ])
     page.get_by_role('button', name='批量粘贴').click()
     page.locator('[name=rows]').fill('2026-11-01\t0\n2026-11-02\t15')
@@ -534,11 +516,12 @@ def check_review_backfill(browser):
         view(page, 'businessTotals')
         action(page, 'totals').click()
         expect(page.get_by_label('直接大定量', exact=True)).to_have_value('4')
+        expect(page.get_by_label('大定量', exact=True)).to_have_value('7')
         page.locator('.campaign-rates summary').click()
         expect(page.get_by_label('小订转化率', exact=True)).to_have_text('25%')
         page.locator('#cancel').click()
         published = campaign.published()['sheets']
-        assert len(published) == 7 and published[0]['rows'][1][19] == 4
+        assert len(published) == 7 and published[0]['rows'][1][18:20] == [7, 4]
         campaign.import_legacy(campaign.get()['revision'], legacy_file(model), '迁入旧表', confirm_replace=True)
         page.reload()
         ready(page)

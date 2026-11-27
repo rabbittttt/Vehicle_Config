@@ -36,7 +36,9 @@ class CampaignApiTests(unittest.TestCase):
     def test_publish_versions_and_custom_export_without_excel_source(self):
         edits = [{'sheet':'车型汇总','row':2,'col':1,'value':'测试车型'},
                  {'sheet':'小订by天','model':'测试车型','date':'2026-11-25','value':0},
-                 {'sheet':'小订by天','model':'测试车型','date':'2026-11-26','value':12}]
+                 {'sheet':'小订by天','model':'测试车型','date':'2026-11-26','value':12},
+                 {'sheet':'小转大进度','model':'测试车型','day':1,'value':0},
+                 {'sheet':'直接大定进度','model':'测试车型','day':1,'value':4}]
         with self.post('save', {'revision':0,'edits':edits,'owner':'测试编辑'}) as response:
             draft = json.load(response)
         with urlopen(self.base + 'campaign/published') as response:
@@ -44,7 +46,10 @@ class CampaignApiTests(unittest.TestCase):
         with self.post('publish', {'revision':draft['revision'],'edits':[],'owner':'测试发布'}) as response:
             self.assertEqual(json.load(response)['publishedRevision'], 1)
         with urlopen(self.base + 'campaign/published?revision=1') as response:
-            self.assertEqual(json.load(response)['sheets'][0]['rows'][1][0], '测试车型')
+            edition = json.load(response)
+            self.assertEqual(edition['sheets'][0]['rows'][1][0], '测试车型')
+            gross = next(sheet for sheet in edition['sheets'] if sheet['name'] == '大定进度')
+            self.assertEqual(gross['rows'][1][gross['rows'][0].index('D1')], 4)
         with self.post('export', {'sheets':['小订by天'],'models':['测试车型'],
                                   'dateFrom':'2026-11-25','dateTo':'2026-11-25'}) as response:
             book = load_workbook(BytesIO(response.read()), data_only=True)

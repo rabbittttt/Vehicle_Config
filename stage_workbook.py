@@ -20,6 +20,9 @@ from xlsx_input import MAX_BYTES, WorkbookBatch
 SUMMARY = '车型汇总'
 DAILY = '小订by天'
 LEGACY_PROGRESS = '小订进度'
+GROSS = '大定进度'
+CONVERTED = '小转大进度'
+DIRECT = '直接大定进度'
 PRIMARY = '代际名'
 SECONDARY = '二级代际名'
 SUMMARY_FIELDS = [PRIMARY, SECONDARY, '产品档位', '能源类型', '发布类型', '小订发布时间',
@@ -210,7 +213,7 @@ def _sheet_sources(names):
             raise ValueError(f'{sources[canonical]} 与 {raw} 同时对应 {canonical}，请核对工作表')
         else:
             sources[canonical] = raw
-    missing = [name for name in SHEETS if name not in sources]
+    missing = [name for name in SHEETS if name != GROSS and name not in sources]
     issues = (['缺少工作表：'+'、'.join(missing)] if missing else []) + (['无法映射工作表：'+'、'.join(unknown)] if unknown else [])
     if issues:
         raise ValueError('；'.join(issues))
@@ -457,8 +460,9 @@ def import_workbook(path_or_bytes):
                            and any(isinstance(v,(int,float)) for v in row[1:])]
                 if footers:
                     sheet['totalRows'] = footers
-        _mark_derived({s['name']:s for s in result})
-        return backfill_totals({'sheets': result})
+        data = backfill_totals({'sheets': result})
+        _mark_derived({s['name']:s for s in data['sheets']})
+        return data
     finally:
         book.close()
         if cached:
@@ -688,11 +692,29 @@ def _reconcile_totals(sheets, previous, manual):
 def backfill_totals(data):
     """Fill previously empty draft totals without changing a published edition."""
     sheets = {s['name']:s for s in data['sheets']}
+    if GROSS not in sheets:
+        progress = next(sheet for sheet in empty_workbook()['sheets'] if sheet['name'] == GROSS)
+        data['sheets'].insert(data['sheets'].index(sheets[DIRECT])+1,progress)
+        sheets[GROSS] = progress
     summary = sheets[SUMMARY]
     before = _summary_refs(summary)
     curves = {}
+    _sync_gross(sheets,curves,identify_reported=True)
     _reconcile_totals(sheets,None,set(summary.get('reportedTotals',[])))
     _refresh_progress_totals(sheets,before,curves)
+    # Old quantity rows may have had no corresponding progress curve. Fill
+    # only missing rates; independently recorded history remains in its cells.
+    for name,section in ((GROSS,2),(DIRECT,3)):
+        for key,row in _quantity_records(sheets[name]).items():
+            if row is None:
+                continue
+            actual = _section_record(sheets[name],key,section)
+            ratios = _ratios(sheets,name,key,section)
+            missing = [day for day in ratios if actual.get(f'D{day}') is None]
+            if missing:
+                prior = curves.setdefault((name,section,key),ratios.copy())
+                for day in missing:
+                    prior.pop(day,None)
     if curves:
         _finish_curves(sheets,curves)
         _mark_derived(sheets)
@@ -807,11 +829,77 @@ def _section_record(sheet, key, section):
     return {}
 
 
+def _day_offset(start, reference):
+    # D1 belongs to the row's own launch date. Two undated rows share the
+    # stage-relative axis; a dated row cannot be joined to an undated one.
+    if start == reference:
+        return 0
+    if start and reference:
+        return (date.fromisoformat(start) - date.fromisoformat(reference)).days
+    return None
+
+
+def _stage_starts(sheets):
+    return {_key(row,1):_get(row,10) for row in sheets[SUMMARY]['rows'][1:]}
+
+
+def _sync_gross(sheets, pending, *, identify_reported=False):
+    """Materialize daily gross from matched stage/dates, retaining independent imported observations."""
+    gross = sheets[GROSS]
+    records = [_quantity_records(sheets[name]) for name in (CONVERTED,DIRECT,GROSS)]
+    stages = _stage_starts(sheets)
+    reported = set(gross.get('reportedQuantities',[]))
+    # Positions in this block remain stable when new stages/days are appended;
+    # day labels, unlike physical column numbers, survive axis expansion.
+    row_numbers = {_key(row,idx):n for n,row,_,idx in _detail_rows(gross)
+                   if n < gross['headerRows'][1]}
+    for key in sorted(set(records[2]) | (records[0].keys() & records[1].keys())):
+        if key in records[2] and records[2][key] is None:
+            continue  # Ambiguous historical stage; never overwrite either record.
+        converted,direct,current = [dict(zip(*records_by_key[key])) if records_by_key.get(key) else {}
+                                    for records_by_key in records]
+        start = stages.get(key)
+        axis = current.get('开始大定日期') or start
+        if not axis:
+            anchors = [source.get('开始大定日期') for source in (converted,direct)]
+            if all(anchors) and (not current or anchors[0] == anchors[1]):
+                axis = min(anchors)
+        aligned = []
+        for source in (converted,direct):
+            offset = _day_offset(source.get('开始大定日期') or start,axis)
+            aligned.append({int(field[1:])+offset:value for field,value in source.items()
+                            if offset is not None and _whole_count(value) and re.fullmatch(r'D[1-9]\d*',str(field))})
+        combined = {day:aligned[0][day]+aligned[1][day] for day in aligned[0].keys() & aligned[1].keys()
+                    if 1 <= day <= MAX_COLUMNS-20}
+        existing = {int(k[1:]):v for k,v in current.items() if v is not None and re.fullmatch(r'D[1-9]\d*',str(k))}
+        for day in sorted(combined.keys() | existing.keys()):
+            old, new = existing.get(day), combined.get(day)
+            if old == new:
+                continue
+            coord = f'{row_numbers.get(key)}:D{day}'
+            if identify_reported and old is not None:
+                reported.add(coord)
+            if coord in reported:
+                continue
+            _remember_curves(sheets,GROSS,key,pending)
+            _series_edit(sheets,gross,dict(model=key[0],secondary=key[1],day=day,value=new))
+            if not current.get('开始大定日期') and axis and not start:
+                index,first,_ = next(_locations(gross,*key,1))
+                _put(gross['rows'][index],gross['rows'][first-1].index('开始大定日期'),axis)
+                current['开始大定日期'] = axis
+        if key not in stages and combined and list(key) not in gross.get('historicalIdentities',[]):
+            gross.setdefault('historicalIdentities',[]).append(list(key))
+    if reported:
+        gross['reportedQuantities'] = sorted(reported)
+
+
 def _ratios(sheets, name, key, section):
     source = _section_record(sheets[name],key,1)
     days = sorted(int(h[1:]) for h in source if isinstance(h,str) and re.fullmatch(r'D\d+',h))
     if section == 3:
         totals = _section_record(sheets['大定进度'],key,1)
+        stage_start = _stage_starts(sheets).get(key)
+        offset = _day_offset(source.get('开始大定日期') or stage_start,totals.get('开始大定日期') or stage_start)
     else:
         denominator = source.get(DENOMINATORS[name])
     result, cumulative, contiguous = {}, 0, True
@@ -824,7 +912,7 @@ def _ratios(sheets, name, key, section):
             continue
         cumulative += qty
         if section == 3:
-            denominator = totals.get(field)
+            denominator = totals.get(f'D{day+offset}') if offset is not None else None
         if isinstance(denominator,(int,float)) and denominator > 0:
             if section == 3:
                 result[day] = qty/denominator
@@ -940,11 +1028,10 @@ def _progress_before(sheets, name, key, section, field, pending):
 def apply_edits(data, edits):
     if not isinstance(edits,list) or len(edits)>20000:
         raise ValueError('单次最多修改 20000 个单元格')
-    result = deepcopy(data)
-    sheets = {s['name']:s for s in result['sheets']}
-    backfill_totals(result)
+    result = backfill_totals(deepcopy(data))
     if not edits:
         return result
+    sheets = {s['name']:s for s in result['sheets']}
     previous = _observed_totals(sheets)
     before_refs = _summary_refs(sheets[SUMMARY])
     # Grid pastes address quantity rows by stage/day. Recalculate their curves
@@ -956,6 +1043,8 @@ def apply_edits(data, edits):
         if not isinstance(edit,dict) or not isinstance(edit.get('sheet'),str) or edit['sheet'] not in sheets or 'value' not in edit:
             raise ValueError('修改记录缺少表名或值')
         sheet = sheets[edit['sheet']]
+        if sheet['name'] == GROSS:
+            raise ValueError('大定进度由小转大与直接大定数量计算，不可手工修改')
         if 'model' in edit:
             if sheet['name'] == SUMMARY:
                 raise ValueError('车型汇总使用行和列定位')
@@ -1003,6 +1092,7 @@ def apply_edits(data, edits):
             _block_totals(sheet,n)
         elif curves:
             _finish_curves(sheets,curves)
+    _sync_gross(sheets,pending)
     _reconcile_totals(sheets, previous, manual)
     _refresh_progress_totals(sheets,before_refs,pending)
     _finish_curves(sheets,pending)
