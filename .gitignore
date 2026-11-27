@@ -25,3 +25,6 @@ logs/
 
 # Offline storage migration recovery copies.
 *.pre-central-*/
+
+# Local audit reports and dated asset snapshots.
+/audit/
