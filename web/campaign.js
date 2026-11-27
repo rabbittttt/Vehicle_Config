@@ -863,14 +863,15 @@ const campaignEditor = (() => {
     if(!ready())return;
     const reporting=isReportingView();
     const check=(name,value,label)=>`<label><input type="checkbox" name="${name}" value="${esc(value)}" ${name==='sheets'?'checked':''}>${esc(label)}</label>`;
-    const sheetList=current.sheets.map(s=>check('sheets',s.name,s.name)).join('');
     const publishedData=saved.publishedRevision?await api('campaign/published'):null;
+    const exportData=publishedData||saved;
+    const sheetBoxes=dataset=>dataset.sheets.map(s=>check('sheets',s.name,s.name)).join('');
     const modelBoxes=dataset=>{
       const rows=dataset.sheets.find(s=>s.name===summaryName).rows.slice(1);
       return [...new Set(rows.filter(r=>r[0]).map(r=>reporting ? r[1]||r[0] : r[0]))].map(m=>check('models',m,m)).join('');
     };
-    const models=modelBoxes(publishedData||saved);
-    const sheetOptions=reporting ? `<fieldset><legend>工作表</legend><div class="members">${sheetList}</div></fieldset>
+    const models=modelBoxes(exportData);
+    const sheetOptions=reporting ? `<fieldset><legend>工作表</legend><div class="members campaign-export-sheets">${sheetBoxes(exportData)}</div></fieldset>
       <fieldset class="campaign-window"><legend>每日小订日期范围</legend><div class="form">
         <label>开始日期<input type="date" name="dateFrom"></label><label>截止日期<input type="date" name="dateTo"></label></div></fieldset>` : '';
     modal(reporting?'导出小订与首销':'导出车型与日程',`<form class="campaign-export"><label>数据版本<select name="source">
@@ -889,11 +890,19 @@ const campaignEditor = (() => {
       }
       await download('campaign/export',selection,reporting?'小订与首销.xlsx':'车型与日程.xlsx');
     },'下载 Excel');
-    const dailyBox=$('[name="sheets"][value="小订by天"]');
-    if(dailyBox)dailyBox.onchange=()=>{$('.campaign-window').hidden=!dailyBox.checked;};
+    const sheetArea=$('.campaign-export-sheets');
+    const updateWindow=()=>{$('.campaign-window').hidden=!sheetArea.querySelector('[value="小订by天"]').checked;};
+    if(sheetArea)sheetArea.onchange=updateWindow;
     $('[name="source"]').onchange=e=>{
       const area=$('.campaign-export-models');
-      const names=modelBoxes(e.target.value==='published'?publishedData:saved);
+      const selected=e.target.value==='published'?publishedData:saved;
+      if(sheetArea) {
+        const unchecked=new Set([...sheetArea.querySelectorAll('input:not(:checked)')].map(input=>input.value));
+        sheetArea.innerHTML=sheetBoxes(selected);
+        for(const input of sheetArea.querySelectorAll('input'))input.checked=!unchecked.has(input.value);
+        updateWindow();
+      }
+      const names=modelBoxes(selected);
       area.querySelector('.members').innerHTML=names;
       area.hidden=!names;
     };

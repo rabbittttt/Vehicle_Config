@@ -47,8 +47,6 @@ def legacy_file(model):
              for col, value in fields.items()]
     edits.append({'sheet': '小转大进度', 'model': model, 'secondary': '纯电版',
                   'section': 1, 'day': 1, 'value': 6})
-    edits.append({'sheet': '小订进度', 'model': model, 'secondary': '纯电版',
-                  'section': 1, 'day': 1, 'value': 63})
     book = load_workbook(BytesIO(export_workbook(apply_edits(empty_workbook(), edits))))
     # These independently maintained legacy values must survive a trip through the editor.
     summary = book['车型汇总']
@@ -56,9 +54,10 @@ def legacy_file(model):
     curve = book['小转大进度']
     d1 = next(cell.column for cell in curve[1] if cell.value == 'D1')
     curve.cell(curve.max_row, d1).value = .18
-    history = book['小订进度']
-    history_d1 = next(cell.column for cell in history[1] if cell.value == 'D1')
-    history.cell(history.max_row, history_d1).value = .37
+    history = book.create_sheet('小订进度')
+    for value in (63, .37):
+        history.append(['代际名', 'D1', '二级代际名'])
+        history.append([model, value, '纯电版'])
     output = BytesIO()
     book.save(output)
     book.close()
@@ -499,6 +498,65 @@ def check_readonly(browser):
         page.close()
 
 
+def check_review_backfill(browser):
+    with TemporaryDirectory() as directory, isolated_server(directory) as (url, store, *_):
+        campaign = CampaignStore(store.root)
+        model = '逐日回填车型'
+        fields = {1: model, 9: '2026-11-01', 10: '2026-11-02', 11: '2026-11-03', 12: '2026-11-04'}
+        campaign.save(0, [{'sheet': '车型汇总', 'row': 2, 'col': col, 'value': value}
+                          for col, value in fields.items()], '测试')
+        page = browser.new_page()
+        page.goto(url)
+        ready(page)
+        fill_owner(page)
+        tab(page, 'reporting')
+        metric = page.locator('#campaign-progress')
+        for sheet_name, values in [('小订by天', '2026-11-01\t12\n2026-11-02\t0'),
+                                   ('小转大进度', 'D1\t2\nD2\t1'), ('直接大定进度', 'D1\t0')]:
+            metric.select_option(sheet_name)
+            page.get_by_role('button', name='批量粘贴').click()
+            page.locator('[name=rows]').fill(values)
+            confirm(page)
+        view(page, 'businessTotals')
+        action(page, 'totals').click()
+        for label, expected in [('总小订', '12'), ('小订转大定量', '3'), ('直接大定量', ''),
+                                ('大定量', ''), ('小订后退定', ''), ('首销期净大定', ''), ('首销期锁单', '')]:
+            expect(page.get_by_label(label, exact=True)).to_have_value(expected)
+        page.locator('#cancel').click()
+        view(page, 'dailyOrders')
+        metric.select_option('直接大定进度')
+        action(page, 'report-add').click()
+        page.get_by_label('日序').fill('2')
+        page.get_by_label('数量', exact=True).fill('4')
+        confirm(page)
+        page.locator('#publish').click()
+        confirm(page)
+        view(page, 'businessTotals')
+        action(page, 'totals').click()
+        expect(page.get_by_label('直接大定量', exact=True)).to_have_value('4')
+        page.locator('.campaign-rates summary').click()
+        expect(page.get_by_label('小订转化率', exact=True)).to_have_text('25%')
+        page.locator('#cancel').click()
+        published = campaign.published()['sheets']
+        assert len(published) == 7 and published[0]['rows'][1][19] == 4
+        campaign.import_legacy(campaign.get()['revision'], legacy_file(model), '迁入旧表', confirm_replace=True)
+        page.reload()
+        ready(page)
+        tab(page, 'reporting')
+        page.locator('#export').click()
+        expect(page.locator('[name=sheets]')).to_have_count(7)
+        source = page.locator('[name=source]')
+        daily = page.get_by_role('checkbox', name='小订by天', exact=True)
+        daily.uncheck()
+        source.select_option('draft')
+        expect(page.get_by_role('checkbox', name='小订进度', exact=True)).to_be_checked()
+        expect(daily).not_to_be_checked()
+        source.select_option('published')
+        expect(page.get_by_role('checkbox', name='小订进度', exact=True)).to_have_count(0)
+        assert len(download(page)) == 6
+        page.close()
+
+
 def check_running_previous_backend(browser):
     with TemporaryDirectory() as directory, isolated_server(directory) as (url, store, *_):
         CampaignStore(store.root).import_legacy(0, legacy_file('已导入车型'), '测试迁入')
@@ -524,6 +582,7 @@ if __name__ == '__main__':
         browser = pw.chromium.launch(channel='msedge')
         check(browser)
         check_stage_matrix(browser)
+        check_review_backfill(browser)
         check_readonly(browser)
         check_running_previous_backend(browser)
         browser.close()

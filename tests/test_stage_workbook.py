@@ -128,13 +128,13 @@ class CampaignWorkbookTests(unittest.TestCase):
 
     def test_progress_section_insert_and_extend(self):
         def entry(section,value):
-            return {'sheet':'小订进度','section':section,'day':62,'model':'=原样文本',
+            return {'sheet':'小订期退订进度','section':section,'day':72,'model':'=原样文本',
                     'secondary':'二期','value':value}
         edits = summary(2,**{'1':'=原样文本','2':'二期'}) + [entry(2,'2%'),entry(1,15)]
         data = apply_edits(empty_workbook(),edits)
         sheet = data['sheets'][2]
         self.assertEqual([1,3],sheet['headerRows'])
-        self.assertEqual(['D62','二级代际名'],sheet['rows'][0][-2:])
+        self.assertEqual(['D72','二级代际名'],sheet['rows'][0][-2:])
         self.assertEqual([15,'二期'],sheet['rows'][1][-2:])
         self.assertEqual([.02,'二期'],sheet['rows'][3][-2:])
         raw = export_workbook(data)
@@ -205,22 +205,21 @@ class CampaignWorkbookTests(unittest.TestCase):
         def observation(sheet, day, value, section=1):
             return {'sheet':sheet,'model':'甲','section':section,'day':day,'value':value}
         edits = summary(2,**{'1':'甲','19':20,'20':8})
-        edits += [observation('小订进度',1,10), observation('小订进度',2,4),
-                  observation('直接大定进度',1,2),observation('大定进度',1,10)]
+        edits += [observation('直接大定进度',1,2),observation('大定进度',1,10)]
         result = apply_edits(empty_workbook(),edits)
         sheets = {s['name']:s for s in result['sheets']}
-        s = sheets['小订进度']
-        self.assertEqual([1,.4],s['rows'][3][1:3])
-        self.assertIn('4:3',s['derivedCells'])
+        self.assertNotIn('小订进度',sheets)
         direct = sheets['直接大定进度']
         self.assertEqual(.25,direct['rows'][3][12])
         self.assertEqual(.2,direct['rows'][5][12])
         with self.assertRaisesRegex(ValueError,'数量计算'):
             apply_edits(result,[observation('直接大定进度',1,.3,3)])
-        corrected = apply_edits(result,[observation('大定进度',1,4),observation('小订进度',2,None)])
+        corrected = apply_edits(result,[observation('大定进度',1,4)])
         direct = next(s for s in corrected['sheets'] if s['name']=='直接大定进度')
         self.assertEqual(.5,direct['rows'][5][12])
-        self.assertIsNone(corrected['sheets'][2]['rows'][3][2])
+        cleared = apply_edits(corrected,[observation('直接大定进度',1,None)])
+        direct = next(s for s in cleared['sheets'] if s['name']=='直接大定进度')
+        self.assertIsNone(direct['rows'][5][12])
 
     def test_daily_block_footer_aggregates_if_previously_numeric(self):
         base = empty_workbook()

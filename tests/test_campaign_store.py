@@ -1,12 +1,15 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Barrier
 import unittest
 from unittest.mock import patch
 
-from campaign_store import CampaignStore
+from openpyxl import load_workbook
+
+from campaign_store import CampaignStore, encode
 from catalog import Conflict
 from stage_workbook import export_workbook
 
@@ -49,6 +52,39 @@ class CampaignStoreTests(unittest.TestCase):
                 self.store.save(before['revision'], [], '甲', publish=True)
         self.assertEqual(self.store.get(), before)
         self.assertFalse(self.store.snapshot.exists())
+
+    def test_existing_draft_backfills_without_changing_published_history(self):
+        schedule = [*self.edits, edit(12, '2026-01-09'), edit(16, 20)]
+        summary_before = self.store.preview(0, schedule)['sheets'][0]
+        quantities = [{'sheet': '小转大进度', 'model': '测试车型 2026款', 'day': day, 'value': qty}
+                      for day, qty in [(1, 0), (2, 5)]]
+        self.store.save(0, schedule + quantities, '甲', publish=True)
+        # Simulate the previous release: complete daily detail and an empty review field.
+        old_data = {'sheets': self.store.published()['sheets']}
+        old_data['sheets'][0] = summary_before
+        with self.store._write() as db:
+            db.execute('UPDATE draft SET data=?', (encode(old_data),))
+            db.execute('UPDATE publications SET data=? WHERE revision=1', (encode(old_data),))
+        store = CampaignStore(self.temp.name)
+        old_snapshot = store.snapshot.read_bytes()
+        draft = store.get()
+        self.assertTrue(draft['hasUnpublishedChanges'])
+        self.assertEqual(draft['sheets'][0]['rows'][1][16:18], [5, .25])
+        self.assertEqual(store.preview(draft['revision'], [])['sheets'], draft['sheets'])
+        for source, expected in [('published', None), ('draft', 5)]:
+            file = BytesIO(store.export({'sheets': ['车型汇总']}, source))
+            book = load_workbook(file, read_only=True, data_only=True)
+            try:
+                self.assertEqual(book['车型汇总']['Q2'].value, expected)
+            finally:
+                book.close()
+        self.assertEqual(store.snapshot.read_bytes(), old_snapshot)
+        state = store.save(draft['revision'], [], '乙', publish=True)
+        self.assertEqual(state['publishedRevision'], 2)
+        self.assertFalse(state['hasUnpublishedChanges'])
+        self.assertEqual(store.published(1)['sheets'], old_data['sheets'])
+        self.assertEqual(store.published(2)['sheets'], draft['sheets'])
+        self.assertEqual(CampaignStore(self.temp.name).get(), state)
 
     def test_projection_failure_retains_old_snapshot_and_recovers(self):
         state = self.store.save(0, self.edits, '甲', publish=True)

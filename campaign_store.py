@@ -8,7 +8,7 @@ from tempfile import NamedTemporaryFile
 
 from catalog import Conflict, now, read_history_page
 from stage_workbook import (
-    apply_edits, empty_workbook, export_workbook, import_workbook, validate_publication,
+    apply_edits, backfill_totals, empty_workbook, export_workbook, import_workbook, validate_publication,
 )
 
 
@@ -34,9 +34,9 @@ def _stage_list(keys):
 def import_comparison(current, incoming):
     before = {s['name']: s for s in current['sheets']}
     after = {s['name']: s for s in incoming['sheets']}
-    tables = [{'name': name, 'before': sum(1 for _ in _data_rows(before[name])),
-               'after': sum(1 for _ in _data_rows(sheet)), 'changed': before[name] != sheet}
-              for name, sheet in after.items()]
+    tables = [{'name': name, 'before': sum(1 for _ in _data_rows(before[name])) if name in before else 0,
+               'after': sum(1 for _ in _data_rows(after[name])) if name in after else 0,
+               'changed': before.get(name) != after.get(name)} for name in dict.fromkeys([*after,*before])]
     previous = _stages(before['车型汇总'])
     imported = _stages(after['车型汇总'])
     return {'tables': tables, 'addedStages': _stage_list(imported - previous),
@@ -138,12 +138,14 @@ class CampaignStore:
 
     @staticmethod
     def _response(row, data=None, error=''):
+        if data is None:
+            data = backfill_totals(json.loads(row['data']))
         return {
-            **(data if data is not None else json.loads(row['data'])),
+            **data,
             'available': True,
             'revision': row['revision'],
             'publishedRevision': row['published_revision'],
-            'hasUnpublishedChanges': row['data'] != row['published_data'],
+            'hasUnpublishedChanges': encode(data) != row['published_data'],
             'canImportLegacy': True,
             'canUndoImport': row['undo_revision'] is not None,
             'projectionPending': bool(error),
@@ -188,9 +190,7 @@ class CampaignStore:
             row = self._current(db)
         self._check(row, revision)
         data = apply_edits(json.loads(row['data']), edits)
-        result = self._response(row, data)
-        result['hasUnpublishedChanges'] = encode(data) != row['published_data']
-        return result
+        return self._response(row, data)
 
     @staticmethod
     def _update(db, row, data, action, actor):
@@ -223,7 +223,7 @@ class CampaignStore:
         with closing(self.connect()) as db:
             row = self._current(db)
         self._check(row, revision)
-        current = json.loads(row['data'])
+        current = backfill_totals(json.loads(row['data']))
         incoming = import_workbook(path)
         changes = import_comparison(current, incoming)
         identical = current == incoming
@@ -238,7 +238,7 @@ class CampaignStore:
         with self._write() as db:
             row = self._current(db)
             self._check(row, revision)
-            current = json.loads(row['data'])
+            current = backfill_totals(json.loads(row['data']))
             if current != incoming:
                 if current != empty_workbook() and confirm_replace is not True:
                     raise ValueError('请预览差异并确认替换现有草稿')
@@ -264,5 +264,5 @@ class CampaignStore:
             raise ValueError('小订与首销尚未发布')
         if source not in ('draft', 'published'):
             raise ValueError('未知的导出来源')
-        data = row['data'] if source == 'draft' else row['published_data']
-        return export_workbook(json.loads(data), selection)
+        data = backfill_totals(json.loads(row['data'])) if source == 'draft' else json.loads(row['published_data'])
+        return export_workbook(data, selection)

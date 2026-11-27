@@ -5,6 +5,7 @@ from datetime import date, datetime, time
 from io import BytesIO
 import math
 from pathlib import Path
+from typing import NamedTuple
 import re
 from zipfile import BadZipFile
 
@@ -18,6 +19,7 @@ from xlsx_input import MAX_BYTES, WorkbookBatch
 
 SUMMARY = '车型汇总'
 DAILY = '小订by天'
+LEGACY_PROGRESS = '小订进度'
 PRIMARY = '代际名'
 SECONDARY = '二级代际名'
 SUMMARY_FIELDS = [PRIMARY, SECONDARY, '产品档位', '能源类型', '发布类型', '小订发布时间',
@@ -27,7 +29,6 @@ SUMMARY_FIELDS = [PRIMARY, SECONDARY, '产品档位', '能源类型', '发布类
                   '小订待转单', '小订待转单占比', '首销期净大定', '净大定率', '首销期锁单',
                   '留存大定到锁单率', '大定到锁单率']
 PROGRESS_FIELDS = {
-    '小订进度': [],
     '小订期退订进度': ['总小订', '退订', '小订期期结束日退订率'],
     '小转大进度': ['总小订', '小订转大定', '小订转化率'],
     '直接大定进度': ['大定', '直接大定量', '直接大定占比'],
@@ -44,6 +45,7 @@ MAX_COLUMNS = 1024
 MAX_ROWS = 10000
 MAX_CELLS = 1200000
 SHEETS = [SUMMARY, DAILY, *PROGRESS_FIELDS]
+IMPORT_ORDER = [SUMMARY, DAILY, LEGACY_PROGRESS, *PROGRESS_FIELDS]
 SHEET_ALIASES = {'传播名汇总':SUMMARY, '小订按天':DAILY, '小订期退定进度':'小订期退订进度',
                  '小订转大定进度':'小转大进度', '总大定进度':'大定进度',
                  '首销期退定进度':'首销期退订进度'}
@@ -74,9 +76,8 @@ def empty_workbook():
     sheets = [_sheet(SUMMARY, [SUMMARY_FIELDS.copy()]), _sheet(DAILY, [[PRIMARY, '合计', SECONDARY]])]
     for name, metrics in PROGRESS_FIELDS.items():
         head = [PRIMARY]
-        if metrics:
-            head += PROGRESS_DATES + ['小订天数', '首销期天数', None] + metrics
-        head += [f'D{i}' for i in range(1, 71 if metrics else 53)] + [SECONDARY]
+        head += PROGRESS_DATES + ['小订天数', '首销期天数', None] + metrics
+        head += [f'D{i}' for i in range(1, 71)] + [SECONDARY]
         blocks = 3 if name == '直接大定进度' else 2
         sheets.append(_sheet(name, [head.copy() for _ in range(blocks)]))
     return {'sheets': sheets}
@@ -203,7 +204,7 @@ def _sheet_sources(names):
     for raw in names:
         name = raw.strip()
         canonical = SHEET_ALIASES.get(name,name)
-        if canonical not in SHEETS:
+        if canonical not in IMPORT_ORDER:
             unknown.append(raw)
         elif canonical in sources:
             raise ValueError(f'{sources[canonical]} 与 {raw} 同时对应 {canonical}，请核对工作表')
@@ -330,9 +331,9 @@ def _detail_head(name,cells,epoch):
             day = re.fullmatch(r'(?:[dD]|第)?0*(\d+)天?',str(value))
             if day and int(day[1])>0:
                 value = 'D'+str(int(day[1]))
-            elif value not in PROGRESS_DATES+PROGRESS_FIELDS[name]+['小订天数','首销期天数']:
+            elif value not in PROGRESS_DATES+PROGRESS_FIELDS.get(name,[])+['小订天数','首销期天数']:
                 alias = ALIAS_TO_HEADER.get(value,value)
-                if alias not in PROGRESS_DATES+PROGRESS_FIELDS[name]+['小订天数','首销期天数']:
+                if alias not in PROGRESS_DATES+PROGRESS_FIELDS.get(name,[])+['小订天数','首销期天数']:
                     raise ValueError(f'{cell.coordinate} 的进度字段「{value}」无法识别')
                 value = alias
         if value is not None and value in head:
@@ -391,7 +392,9 @@ def import_workbook(path_or_bytes):
         cached = load_workbook(BytesIO(raw), data_only=True, read_only=True, keep_links=False)
         result = []
         footprint = 0
-        for name in SHEETS:
+        for name in IMPORT_ORDER:
+            if name not in sources:
+                continue
             ws = book[sources[name]]
             footprint += (ws.max_row or 0) * (ws.max_column or 0)
             if not ws.max_row or not ws.max_column or ws.max_row > MAX_ROWS or ws.max_column > MAX_COLUMNS or footprint > MAX_CELLS:
@@ -455,7 +458,7 @@ def import_workbook(path_or_bytes):
                 if footers:
                     sheet['totalRows'] = footers
         _mark_derived({s['name']:s for s in result})
-        return {'sheets': result}
+        return backfill_totals({'sheets': result})
     finally:
         book.close()
         if cached:
@@ -551,44 +554,149 @@ def _block_totals(sheet, n):
                 _put(total,idx,sum(vals) if vals and all(isinstance(v,(int,float)) for v in vals) else None)
 
 
-def _daily_observation(sheets, key):
-    summary = sheets[SUMMARY]
-    stages = [(n,row) for n,row in enumerate(summary['rows'][1:],2) if _key(row,1) == key]
-    series = list(_locations(sheets[DAILY],*key))
-    if len(stages) != 1 or len(series) > 1:
+# One-based columns of the review sheet backed by reported quantities.
+PROGRESS_TOTALS = {'小转大进度':17, '大定进度':19, '直接大定进度':20}
+CANCEL_SHEETS = ('小订期退订进度', '首销期退订进度')
+BACKFILLED = {16, 22, *PROGRESS_TOTALS.values()}
+
+
+def _quantity_records(sheet):
+    """Only one physical quantity row may own a total for each stage."""
+    records = {}
+    for n,row,head,secondary in _detail_rows(sheet):
+        if sheet['name'] != DAILY and len(sheet['headerRows']) > 1 and n >= sheet['headerRows'][1]:
+            break
+        key = _key(row,secondary)
+        records[key] = None if key in records else (head,row)
+    return records
+
+
+def _whole_count(value):
+    return type(value) is int and value >= 0 or type(value) is float and value >= 0 and value.is_integer()
+
+
+def _daily_sum(record, stage):
+    if record is None:
         return None
-    n,stage = stages[0]
-    total,complete = None,False
-    if series:
-        idx,start,_ = series[0]
-        header,row = sheets[DAILY]['rows'][start-1],sheets[DAILY]['rows'][idx]
-        total = _get(row,header.index('合计'))
-        dates = {field for j,field in enumerate(header) if _is_date(field) and _get(row,j) is not None}
-        first,last = _get(stage,8),_get(stage,9)
-        if first and last:
-            complete = bool(dates and min(dates)==first and max(dates)==last and len(dates)==_days(first,last))
-        elif not first and not last:
-            complete = bool(dates and len(dates)==sum(_is_date(field) for field in header))
-    return n,total,complete
+    head,row = record
+    columns = [(day, _get(row,j)) for j,day in enumerate(head) if _is_date(day)]
+    filled = {day:amount for day,amount in columns if amount is not None}
+    if not filled or not all(_whole_count(amount) for amount in filled.values()):
+        return None
+    first,last = _get(stage,8),_get(stage,9)
+    if first and last:
+        complete = min(filled)==first and max(filled)==last and len(filled)==_days(first,last)
+    else:
+        complete = not first and not last and len(filled)==len(columns)
+    return sum(filled.values()) if complete else None
 
 
-def _sync_daily_observation(sheets, key, previous):
-    if previous is None:
-        return
-    n,old_total,was_complete = previous
+class _ProgressQuantity(NamedTuple):
+    start: str | None
+    end: str | None
+    quantities: dict
+    complete: bool
+    reported_cancellations: int | None
+
+
+def _progress_observation(record, stage, name):
+    if record is None:
+        return None
+    head,row = record
+    fields = dict(zip(head,row))
+    small = name == CANCEL_SHEETS[0]
+    first = fields.get('小订开始日期' if small else '开始大定日期') or _get(stage,8 if small else 10)
+    last = fields.get('小订结束日期' if small else '小转大结束日期') or _get(stage,9 if small else 11)
+    length = _days(first,last)
+    quantities = {int(k[1:]):v for k,v in fields.items()
+                  if v is not None and isinstance(k,str) and re.fullmatch(r'D[1-9]\d*',k)}
+    complete = bool(quantities and length == len(quantities) and max(quantities) == length
+                    and all(_whole_count(amount) for amount in quantities.values()))
+    return _ProgressQuantity(first,last,quantities,complete,fields.get('退订'))
+
+
+def _cancel_sum(small, launch):
+    if small is None or launch is None:
+        return None
+    # Older workbooks often repeat the same overall cancellation count in both
+    # progress tables. Do not add it twice or trust a stale copied total.
+    if small.reported_cancellations is not None or launch.reported_cancellations is not None:
+        reported = small.reported_cancellations
+        if not _whole_count(reported) or reported != launch.reported_cancellations:
+            return None
+        for obs in (small,launch):
+            counted = sum(obs.quantities.values())
+            if (not all(_whole_count(amount) for amount in obs.quantities.values())
+                    or counted > reported or (obs.complete and counted != reported)):
+                return None
+        return reported
+    if small.complete and launch.complete and small == launch:
+        return sum(small.quantities.values())
+    return None
+
+
+def _observed_totals(sheets):
+    sources = {name:_quantity_records(sheets[name]) for name in (DAILY,*PROGRESS_TOTALS,*CANCEL_SHEETS)}
+    stages = {}
+    for n,row in enumerate(sheets[SUMMARY]['rows'][1:],2):
+        key = _key(row,1)
+        if key[0]:
+            stages[key] = None if key in stages else (n,row)
+    totals = {}
+    for key,stage in stages.items():
+        if stage is None:
+            continue
+        n,row = stage
+        amounts = {16:_daily_sum(sources[DAILY].get(key),row)}
+        for name,col in PROGRESS_TOTALS.items():
+            observation = _progress_observation(sources[name].get(key),row,name)
+            if (observation and observation.complete and
+                    (observation.start, observation.end) == (_get(row,10), _get(row,11))):
+                amounts[col] = sum(observation.quantities.values())
+        amounts[22] = _cancel_sum(*(_progress_observation(sources[name].get(key),row,name) for name in CANCEL_SHEETS))
+        totals[n] = {col:value for col,value in amounts.items() if value is not None}
+    return totals
+
+
+def _reconcile_totals(sheets, previous, manual):
     summary = sheets[SUMMARY]
-    row = summary['rows'][n-1]
-    current = _get(row,15)
-    if current is not None and (not was_complete or current != old_total):
-        return  # Separately reported totals take precedence over incomplete day detail.
-    observation = _daily_observation(sheets,key)
-    if observation is None:
-        return
-    _,total,complete = observation
-    if current is None and not complete:
-        return
-    _put(row,15,total if complete else None)
-    _summary_calculate(summary,n,{16})
+    current = _observed_totals(sheets)
+    if previous is None:
+        previous = current  # On initial backfill, only empty summary cells can change.
+    for n in previous.keys() | current.keys():
+        row = summary['rows'][n-1]
+        changed = set()
+        before,after = previous.get(n,{}),current.get(n,{})
+        for col in before.keys() | after.keys():
+            coord = f'{n}:{col}'
+            value = _get(row,col-1)
+            if coord in manual or (value is not None and value != before.get(col)):
+                # Preserve an independent total even if a later detail edit happens to match it.
+                if value is not None and value == after.get(col) and value != before.get(col):
+                    manual.add(coord)
+                continue
+            if value != after.get(col):
+                _put(row,col-1,after.get(col))
+                changed.add(col)
+        _summary_calculate(summary,n,changed)
+    if manual:
+        summary['reportedTotals'] = sorted(manual)
+    else:
+        summary.pop('reportedTotals',None)
+
+
+def backfill_totals(data):
+    """Fill previously empty draft totals without changing a published edition."""
+    sheets = {s['name']:s for s in data['sheets']}
+    summary = sheets[SUMMARY]
+    before = _summary_refs(summary)
+    curves = {}
+    _reconcile_totals(sheets,None,set(summary.get('reportedTotals',[])))
+    _refresh_progress_totals(sheets,before,curves)
+    if curves:
+        _finish_curves(sheets,curves)
+        _mark_derived(sheets)
+    return data
 
 
 STAGE_FIELDS = {8:'留资', 9:'小订开始日期', 10:'小订结束日期', 11:'开始大定日期',
@@ -687,7 +795,7 @@ def _update_dependents(sheets, source, n, before):
                     _put(row,position,new)
 
 
-DENOMINATORS = {'小订进度':'D1', '小订期退订进度':'总小订', '小转大进度':'小订转大定',
+DENOMINATORS = {'小订期退订进度':'总小订', '小转大进度':'小订转大定',
                 '直接大定进度':'直接大定量', '大定进度':'大定', '首销期退订进度':'总小订'}
 
 
@@ -718,33 +826,80 @@ def _ratios(sheets, name, key, section):
         if section == 3:
             denominator = totals.get(field)
         if isinstance(denominator,(int,float)) and denominator > 0:
-            if section == 3 or name == '小订进度':
+            if section == 3:
                 result[day] = qty/denominator
             elif contiguous:
                 result[day] = cumulative/denominator
     return result
 
 
-def _linked_curves(sheets, name, key):
-    targets = [(name,2)]
+def _curve_targets(name):
+    yield name,2
     if name in ('直接大定进度','大定进度'):
-        targets.append(('直接大定进度',3))
-    return {target:_ratios(sheets,target[0],key,target[1]) for target in targets}
+        yield '直接大定进度',3
 
 
-def _update_curves(sheets, name, key, previous):
-    for (target,section),current in _linked_curves(sheets,name,key).items():
-        before = previous[target,section]
+def _remember_curves(sheets,name,key,pending):
+    for target,section in _curve_targets(name):
+        coord = target,section,key
+        if coord not in pending:
+            pending[coord] = _ratios(sheets,target,key,section)
+
+
+def _finish_curves(sheets,pending):
+    for (target,section,key),before in pending.items():
+        current = _ratios(sheets,target,key,section)
         sheet = sheets[target]
+        if len(list(_locations(sheet,*key,section))) > 1:
+            continue  # Ambiguous imported ratio rows retain their original values.
         recorded = _section_record(sheet,key,section)
         for day in sorted(current.keys() | before.keys()):
             old,new = before.get(day),current.get(day)
             if old == new:
                 continue
             actual = recorded.get(f'D{day}')
-            if actual is not None and old is not None and not math.isclose(old,actual,rel_tol=1e-9,abs_tol=1e-12):
-                continue  # Keep a historical adjustment that differs from this rule.
+            if actual is not None and (old is None or not math.isclose(old,actual,rel_tol=1e-9,abs_tol=1e-12)):
+                continue  # Keep an independent historical ratio.
             _series_edit(sheets,sheet,{'model':key[0],'secondary':key[1],'section':section,'day':day,'value':new})
+
+
+def _summary_refs(summary):
+    return {n:tuple(_get(row,col-1) for col in TOTAL_FIELDS)
+            for n,row in enumerate(summary['rows'][1:],2)}
+
+
+def _refresh_progress_totals(sheets,before,curves):
+    # Rates may be imported independently. Change a reference only when it was
+    # blank or still agreed with the summary before this group of edits.
+    changes = {}
+    seen = set()
+    for n,row in enumerate(sheets[SUMMARY]['rows'][1:],2):
+        key = _key(row,1)
+        if key in seen:
+            changes.pop(key,None)
+            continue
+        seen.add(key)
+        old = before.get(n,(None,)*len(TOTAL_FIELDS))
+        fields = {field:(prior,_get(row,col-1)) for (col,field),prior in zip(TOTAL_FIELDS.items(),old)
+                  if prior != _get(row,col-1)}
+        if fields:
+            changes[key] = fields
+    if not changes:
+        return
+    for name,denominator in DENOMINATORS.items():
+        progress = sheets[name]
+        for n,row,head,idx in _detail_rows(progress):
+            key = _key(row,idx)
+            for field,(old,new) in changes.get(key,{}).items():
+                if field not in head:
+                    continue
+                col = head.index(field)
+                actual = _get(row,col)
+                if actual == new or (actual is not None and actual != old):
+                    continue
+                if field == denominator and bisect_right(progress['headerRows'],n) == 1:
+                    _remember_curves(sheets,name,key,curves)
+                _put(row,col,new)
 
 
 def _mark_derived(sheets):
@@ -768,11 +923,12 @@ def _mark_derived(sheets):
             sheet.pop('derivedCells',None)
 
 
-def _progress_before(sheets, name, key, section, field):
+def _progress_before(sheets, name, key, section, field, pending):
     if name not in PROGRESS_FIELDS or not key[0]:
         return None
     if section == 1:
-        return _linked_curves(sheets,name,key)
+        _remember_curves(sheets,name,key,pending)
+        return
     if isinstance(field,str) and re.fullmatch(r'D\d+',field):
         expected = _ratios(sheets,name,key,section).get(int(field[1:]))
         actual = _section_record(sheets[name],key,section).get(field)
@@ -786,6 +942,16 @@ def apply_edits(data, edits):
         raise ValueError('单次最多修改 20000 个单元格')
     result = deepcopy(data)
     sheets = {s['name']:s for s in result['sheets']}
+    backfill_totals(result)
+    if not edits:
+        return result
+    previous = _observed_totals(sheets)
+    before_refs = _summary_refs(sheets[SUMMARY])
+    # Grid pastes address quantity rows by stage/day. Recalculate their curves
+    # once per stage, while mixed/raw edits keep their original order.
+    defer = all(isinstance(edit,dict) and 'model' in edit and edit.get('section',1)==1 for edit in edits)
+    pending = {}
+    manual = set(sheets[SUMMARY].get('reportedTotals',[]))
     for edit in edits:
         if not isinstance(edit,dict) or not isinstance(edit.get('sheet'),str) or edit['sheet'] not in sheets or 'value' not in edit:
             raise ValueError('修改记录缺少表名或值')
@@ -793,13 +959,12 @@ def apply_edits(data, edits):
         if 'model' in edit:
             if sheet['name'] == SUMMARY:
                 raise ValueError('车型汇总使用行和列定位')
-            key = (edit.get('model'),edit.get('secondary') or '')
-            before = _progress_before(sheets,sheet['name'],key,edit.get('section',1),f'D{edit.get("day")}')
-            daily_before = _daily_observation(sheets,key) if sheet['name']==DAILY else None
+            key = (_text(edit.get('model')),_text(edit.get('secondary') or '') or '')
+            curves = pending if defer else {}
+            _progress_before(sheets,sheet['name'],key,edit.get('section',1),f'D{edit.get("day")}',curves)
             _series_edit(sheets,sheet,edit)
-            _sync_daily_observation(sheets,key,daily_before)
-            if before is not None:
-                _update_curves(sheets,sheet['name'],key,before)
+            if not defer:
+                _finish_curves(sheets,curves)
             continue
         n,col = edit.get('row'),edit.get('col')
         rows = sheet['rows']
@@ -819,25 +984,32 @@ def apply_edits(data, edits):
         if col==1 and edit['value'] in (PRIMARY,'合计'):
             raise ValueError('该名称为保留表头')
         key = _key(rows[n-1],header.index(SECONDARY))
-        curves = _progress_before(sheets,sheet['name'],key,bisect_right(sheet['headerRows'],n),header[col-1])
-        daily_before = _daily_observation(sheets,key) if sheet['name']==DAILY else None
+        curves = {}
+        _progress_before(sheets,sheet['name'],key,bisect_right(sheet['headerRows'],n),header[col-1],curves)
         before = list(rows[n-1]) if sheet['name']==SUMMARY and col<=14 else []
         _put(rows[n-1],col-1,_normalize_input(sheet,n,col,edit['value']))
         if sheet['name'] == SUMMARY:
+            if col in BACKFILLED:
+                coord = f'{n}:{col}'
+                if _get(rows[n-1],col-1) is None:
+                    manual.discard(coord)
+                else:
+                    manual.add(coord)
             _summary_calculate(sheet,n,{col})
             if before:
                 _update_dependents(sheets,sheet,n,before)
         elif sheet['name'] == DAILY:
             _daily_total(rows[n-1],header)
             _block_totals(sheet,n)
-            _sync_daily_observation(sheets,key,daily_before)
-        elif curves is not None:
-            _update_curves(sheets,sheet['name'],key,curves)
+        elif curves:
+            _finish_curves(sheets,curves)
+    _reconcile_totals(sheets, previous, manual)
+    _refresh_progress_totals(sheets,before_refs,pending)
+    _finish_curves(sheets,pending)
     size = sum(len(row) for s in result['sheets'] for row in s['rows'])
     if size > MAX_CELLS or any(len(s['rows'])>MAX_ROWS for s in result['sheets']):
         raise ValueError('数据表超出大小限制')
-    if edits:
-        _mark_derived(sheets)
+    _mark_derived(sheets)
     return result
 
 
@@ -910,9 +1082,10 @@ def export_workbook(data, selection=None):
     scope = selection.get('scope', 'full')
     if scope not in ('full', 'schedule'):
         raise ValueError('未知的导出范围')
-    sheets = [SUMMARY] if scope == 'schedule' else selection.get('sheets', SHEETS)
+    available = [sheet['name'] for sheet in data['sheets']]
+    sheets = [SUMMARY] if scope == 'schedule' else selection.get('sheets', available)
     models = selection.get('models', [])
-    if not isinstance(sheets,list) or not sheets or any(not isinstance(v,str) or v not in SHEETS for v in sheets):
+    if not isinstance(sheets,list) or not sheets or any(not isinstance(v,str) or v not in available for v in sheets):
         raise ValueError('请至少选择一张有效的数据表')
     if not isinstance(models,list) or any(not isinstance(v,str) or not v for v in models):
         raise ValueError('导出车型条件无效')
@@ -947,7 +1120,7 @@ def export_workbook(data, selection=None):
                     cell.value = v
                     if isinstance(v,str):
                         cell.data_type = 's'
-                    elif title in RATE_FIELDS or (sheet['name'] in PROGRESS_FIELDS and bisect_right(sheet['headerRows'],n)>1 and re.fullmatch(r'D\d+',str(title))):
+                    elif title in RATE_FIELDS or (sheet['name'] not in (SUMMARY, DAILY) and bisect_right(sheet['headerRows'],n)>1 and re.fullmatch(r'D\d+',str(title))):
                         cell.number_format = '0.00%'
                 if is_head:
                     cell.font = Font(bold=True,color='FFFFFF')
