@@ -255,15 +255,15 @@ class CampaignStore:
                 return self._edition(row['published_revision'], json.loads(row['published_data']))
             row = db.execute('SELECT data FROM publications WHERE revision = ?', (revision,)).fetchone()
             if row is None:
-                raise ValueError('找不到指定的小订与首销发布版本')
+                raise ValueError('找不到指定的车型日程与填报发布版本')
             return self._edition(revision, json.loads(row['data']))
 
     @staticmethod
     def _check(row, revision):
         if type(revision) is not int or revision < 0:
-            raise ValueError('缺少有效的小订与首销草稿版本')
+            raise ValueError('缺少有效的车型日程与填报草稿版本')
         if row['revision'] != revision:
-            raise Conflict('小订与首销草稿已被其他人修改，请重新载入后核对')
+            raise Conflict('车型日程与填报草稿已被其他人修改，请重新载入后核对')
 
     def preview(self, revision, edits):
         with closing(self.connect()) as db:
@@ -309,7 +309,7 @@ class CampaignStore:
             if publish:
                 validate_publication(data)
                 if data == decode_workbook(row['published_data']):
-                    raise ValueError('没有需要发布的小订与首销变更')
+                    raise ValueError('没有需要发布的车型日程与填报变更')
             if publish or data != draft:
                 self._update(db, row, payload, '发布' if publish else '草稿', actor)
         return self.get()
@@ -356,7 +356,7 @@ class CampaignStore:
         with closing(self.connect()) as db:
             row = self._current(db)
         if source == 'published' and not row['published_revision']:
-            raise ValueError('小订与首销尚未发布')
+            raise ValueError('车型日程与填报数据尚未发布')
         if source not in ('draft', 'published'):
             raise ValueError('未知的导出来源')
         data = backfill_totals(decode_workbook(row['data'])) if source == 'draft' else decode_workbook(row['published_data'])

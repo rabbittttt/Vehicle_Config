@@ -1,6 +1,7 @@
 'use strict';
 
 const campaignEditor = (() => {
+  const draftName = '车型日程与填报草稿';
   const summaryName = '车型汇总';
   const dailyName = '小订by天';
   const reportMetrics = {
@@ -28,7 +29,7 @@ const campaignEditor = (() => {
   }
   async function load() { accept(await api('campaign/state')); }
   function reload() {
-    if (isDirty()) modal('放弃未保存的小订与首销修改？','<p>将重新读取已保存的草稿。</p>', load, '重新载入草稿');
+    if (isDirty()) modal('放弃未保存的车型日程与填报修改？','<p>将重新读取已保存的草稿。</p>', load, '重新载入草稿');
     else run(load);
   }
   async function apply(changes) {
@@ -54,7 +55,7 @@ const campaignEditor = (() => {
   }
   async function save() {
     accept(await writeApi('campaign/save',payload()));
-    notice('小订与首销草稿已保存');
+    notice(draftName+'已保存');
   }
   const hasPendingPublish = () => Boolean(current?.hasUnpublishedChanges);
   async function preparePublish() {
@@ -69,7 +70,7 @@ const campaignEditor = (() => {
         }
       }
       if (attempt && latest.revision !== saved.revision) {
-        throw Error('小订与首销草稿已被其他人修改，请重新载入后核对');
+        throw Error(draftName+'已被其他人修改，请重新载入后核对');
       }
       if (!isDirty() && (!saved || latest.revision !== saved.revision)) accept(latest);
     }
@@ -604,7 +605,7 @@ const campaignEditor = (() => {
     if (!ready()) {
       $('#count').textContent = '';
       $('#pagination').innerHTML = $('#actions').innerHTML = '';
-      $('#content').innerHTML = empty(current?.reason || '正在读取小订与首销…');
+      $('#content').innerHTML = empty(current?.reason || '正在读取车型日程与填报数据…');
       return;
     }
     if (Object.hasOwn(reportMetrics,view)) {
@@ -913,29 +914,29 @@ const campaignEditor = (() => {
     const rows=changes.tables.map(t=>`<tr><td>${esc(t.name)}</td><td>${esc(t.before)}</td><td>${esc(t.after)}</td><td>${t.changed?'有变更':'相同'}</td></tr>`).join('');
     const comparison=table(['工作表','现有草稿行数','旧表行数','内容'],rows);
     const description=result.identical?'旧表与当前草稿相同。':result.requiresConfirmation
-      ? '确认后，整份小订与首销草稿将替换为旧表内容。核对后可另行发布。'
-      : '旧表将导入为小订与首销草稿。';
+      ? `确认后，整份${draftName}将替换为旧表内容。核对后可另行发布。`
+      : `旧表将导入为${draftName}。`;
     writeModal('旧表导入预览',`<div class="file-list"><span>${esc(file.name)}</span></div><p>${description}</p>${comparison}
       <div class="campaign-import-stages">${stageList('新增车型阶段',changes.addedStages)}${stageList('移出车型阶段',changes.removedStages)}</div>`,
       result.identical ? null : async()=>{
         const imported=await writeApi('campaign/import',{revision:result.revision,content,confirmReplace:true});
-        accept(imported); notice('旧表已导入小订与首销草稿');
+        accept(imported); notice(`旧表已导入${draftName}`);
       }, result.requiresConfirmation?'替换草稿':'导入草稿');
     if(result.identical)$('#cancel').textContent='关闭';
   }
   function undoImport() {
     if (readonly || busy || !canUndoImport()) return;
     const revision=saved.revision;
-    writeModal('撤销旧表导入','<p>恢复导入前的小订与首销草稿。</p>',async()=>{
+    writeModal('撤销旧表导入',`<p>恢复导入前的${draftName}。</p>`,async()=>{
       accept(await writeApi('campaign/undo-import',{revision}));
       notice('已恢复导入前的草稿');
     },'恢复草稿');
   }
   function status() {
-    if (!ready()) return current?.reason || '小订与首销尚未载入';
-    if (isDirty()) return '小订与首销有未保存修改';
+    if (!ready()) return current?.reason || draftName+'尚未载入';
+    if (isDirty()) return draftName+'有未保存修改';
     if (current.projectionPending) return '已发布 · 下游同步待重试';
-    return `小订与首销草稿 r${saved.revision} · ${saved.hasUnpublishedChanges?'待发布':'已保存'}`;
+    return `${draftName} r${saved.revision} · ${saved.hasUnpublishedChanges?'待发布':'已保存'}`;
   }
   return {ready,isDirty,reportMetrics,modelNames,reportStages,canUndoImport,selectLegacy,undoImport,hasPendingPublish,
     canUndo:()=>undo.length>0,canRedo:()=>redo.length>0,undo:()=>step(true),redo:()=>step(false),

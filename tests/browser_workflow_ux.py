@@ -89,7 +89,7 @@ def test_editor(browser):
         page.locator("#close").click()
         expect(page.locator("#dialog")).to_be_hidden()
         expect(page.locator("#save")).to_be_disabled()
-        expect(page.locator("#status")).to_contain_text("小订与首销有未保存修改")
+        expect(page.locator("#status")).to_contain_text("车型日程与填报草稿有未保存修改")
 
         switch_view(page, "options", "battery_rules")
         page.set_viewport_size({"width": 420, "height": 780})
