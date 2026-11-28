@@ -8,6 +8,8 @@ const campaignEditor = (() => {
     dailyOrders:dailyName, smallOrderCancellations:'小订期退订进度', conversions:'小转大进度',
     directOrders:'直接大定进度', launchCancellations:'首销期退订进度',
   };
+  const configSheetNames = new Set([summaryName, ...Object.values(reportMetrics)]);
+  const isConfigSheet = sheet => configSheetNames.has(sheet.name);
   const smallOrderMetrics = new Set([dailyName, reportMetrics.smallOrderCancellations, reportMetrics.conversions]);
   const noSmallOrders = row => row[8]==='NA' && row[9]==='NA';
   const acceptsMetric = stage => !(stage.noSmallOrders && smallOrderMetrics.has(progressName));
@@ -86,7 +88,7 @@ const campaignEditor = (() => {
     function sample(values, total, unit) {
       return esc(values.join('、') + (values.length < total ? `等 ${total} ${unit}` : ''));
     }
-    const summary = preview.changes.map(change => {
+    const summary = preview.changes.filter(isConfigSheet).map(change => {
       const stages = change.stages.map(([primary, secondary]) => stageLabel(primary, secondary));
       const counts = [['新增', change.added], ['修改', change.updated], ['移出', change.removed]]
         .filter(([,count])=>count).map(([label,count])=>`${label} ${count} 行`).join('、');
@@ -96,7 +98,8 @@ const campaignEditor = (() => {
         : '表结构、行序或计算设置有变更';
       return `<dt>${esc(change.name)}</dt><dd>${details}</dd>`;
     }).join('');
-    const html = `<p>草稿 r${preview.revision} → 发布 v${preview.publishedRevision+1}</p><dl>${summary}</dl>`;
+    const version = `<p>草稿 r${preview.revision} → 发布 v${preview.publishedRevision+1}</p>`;
+    const html = summary ? version + `<dl>${summary}</dl>` : version;
     if (preview.error) return {html:html+`<p class="error">${esc(preview.error)}</p>`, publish:null};
     return {html, publish:async () => {
       let result;
@@ -865,7 +868,7 @@ const campaignEditor = (() => {
     const check=(name,value,label)=>`<label><input type="checkbox" name="${name}" value="${esc(value)}" ${name==='sheets'?'checked':''}>${esc(label)}</label>`;
     const publishedData=saved.publishedRevision?await api('campaign/published'):null;
     const exportData=publishedData||saved;
-    const sheetBoxes=dataset=>dataset.sheets.map(s=>check('sheets',s.name,s.name)).join('');
+    const sheetBoxes=dataset=>dataset.sheets.filter(isConfigSheet).map(s=>check('sheets',s.name,s.name)).join('');
     const modelBoxes=dataset=>{
       const rows=dataset.sheets.find(s=>s.name===summaryName).rows.slice(1);
       return [...new Set(rows.filter(r=>r[0]).map(r=>reporting ? r[1]||r[0] : r[0]))].map(m=>check('models',m,m)).join('');
@@ -880,8 +883,10 @@ const campaignEditor = (() => {
       <details class="campaign-export-models" ${models?'':'hidden'}><summary>筛选车型（默认全部）</summary><div class="members">${models}</div></details></form>`,async values=>{
       const sheets=reporting?values.getAll('sheets'):[summaryName];
       if(!sheets.length)throw Error('请至少选择一个工作表');
-      const selection={sheets,models:values.getAll('models'),source:values.get('source')};
+      const selection={models:values.getAll('models'),source:values.get('source')};
       if(!reporting)selection.scope='schedule';
+      // A full export includes the derived sheets used by downstream reports.
+      else if(sheetArea.querySelector('input:not(:checked)'))selection.sheets=sheets;
       if(sheets.includes(dailyName)) {
         const start=values.get('dateFrom'),end=values.get('dateTo');
         if(start && end && start>end)throw Error('小订截止日期不能早于开始日期');
@@ -940,7 +945,7 @@ const campaignEditor = (() => {
     const content=await fileBase64(file);
     const result=await api('campaign/import-preview',{revision:latest.revision,content});
     const changes=result.changes;
-    const rows=changes.tables.map(t=>`<tr><td>${esc(t.name)}${t.name==='大定进度'?'（计算结果）':''}</td><td>${esc(t.before)}</td><td>${esc(t.after)}</td><td>${t.changed?'有变更':'相同'}</td></tr>`).join('');
+    const rows=changes.tables.filter(isConfigSheet).map(t=>`<tr><td>${esc(t.name)}</td><td>${esc(t.before)}</td><td>${esc(t.after)}</td><td>${t.changed?'有变更':'相同'}</td></tr>`).join('');
     const comparison=table(['工作表','导入前记录数','导入后记录数','内容'],rows);
     const description=result.identical?'旧表与当前草稿相同。':result.requiresConfirmation
       ? `确认后，整份${draftName}将替换为旧表内容。核对后可另行发布。`

@@ -88,7 +88,9 @@ def legacy_preview(page):
                            'buffer': legacy_file('替换车型')})
     expect(page.get_by_role('heading', name='旧表导入预览')).to_be_visible()
     expect(page.get_by_role('columnheader', name='导入后记录数')).to_be_visible()
-    expect(page.get_by_role('cell', name='大定进度（计算结果）', exact=True)).to_be_visible()
+    expect(page.locator('#dialog-body tbody tr td:first-child')).to_have_text([
+        '车型汇总', '小订by天', '小订期退订进度', '小转大进度', '直接大定进度', '首销期退订进度',
+    ])
     expect(page.locator('#dialog-body')).to_contain_text('移出车型阶段')
     expect(page.locator('#confirm')).to_have_text('替换草稿')
 
@@ -265,8 +267,9 @@ def check_reporting(page):
     expect(page.locator('#status')).to_have_text('配置草稿 · 无待发布变更')
     page.locator('#export').click()
     ready(page)
-    expect(page.locator('[name=sheets]')).to_have_count(7)
+    expect(page.locator('[name=sheets]')).to_have_count(6)
     complete = download(page)
+    assert len(complete) == 7 and '大定进度' in complete
     assert '小订进度' not in complete and '小订by天' in complete
     headers, row = complete['车型汇总']
     result = dict(zip(headers, row))
@@ -571,6 +574,9 @@ def check_review_backfill(browser):
         page.get_by_label('数量', exact=True).fill('4')
         confirm(page)
         page.locator('#publish').click()
+        details = page.locator('#dialog-body')
+        expect(details.get_by_text('直接大定进度', exact=True)).to_be_visible()
+        expect(details.get_by_text('大定进度', exact=True)).to_have_count(0)
         confirm(page)
         view(page, 'businessTotals')
         action(page, 'totals').click()
@@ -586,16 +592,17 @@ def check_review_backfill(browser):
         ready(page)
         tab(page, 'reporting')
         page.locator('#export').click()
-        expect(page.locator('[name=sheets]')).to_have_count(7)
+        expect(page.locator('[name=sheets]')).to_have_count(6)
         source = page.locator('[name=source]')
         daily = page.get_by_role('checkbox', name='小订by天', exact=True)
         daily.uncheck()
-        source.select_option('draft')
-        expect(page.get_by_role('checkbox', name='小订进度', exact=True)).to_have_count(0)
-        expect(daily).not_to_be_checked()
-        source.select_option('published')
-        expect(page.get_by_role('checkbox', name='小订进度', exact=True)).to_have_count(0)
-        assert len(download(page)) == 6
+        for version in ('draft', 'published'):
+            source.select_option(version)
+            expect(page.get_by_role('checkbox', name='小订进度', exact=True)).to_have_count(0)
+            expect(page.get_by_role('checkbox', name='大定进度', exact=True)).to_have_count(0)
+            expect(page.get_by_role('checkbox', name='直接大定进度', exact=True)).to_be_checked()
+            expect(daily).not_to_be_checked()
+        assert set(download(page)) == {'车型汇总', '小订期退订进度', '小转大进度', '直接大定进度', '首销期退订进度'}
         page.close()
 
 
