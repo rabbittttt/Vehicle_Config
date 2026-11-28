@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from threading import Barrier
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 from openpyxl import load_workbook
 
@@ -26,6 +27,29 @@ class CampaignStoreTests(unittest.TestCase):
         self.edits = [edit(1, '测试车型 2026款'), edit(5, '标准发布'),
                       edit(9, '2026-01-01'), edit(10, '2026-01-07'),
                       edit(11, '2026-01-08'), edit(12, '2026-01-31')]
+
+    def test_legacy_preview_and_import_never_open_unused_worksheets(self):
+        data = self.store.preview(0, self.edits)
+        workbook = load_workbook(BytesIO(export_workbook(data)))
+        ignored_paths = set()
+        for title in ('小订进度', '比武参考'):
+            workbook.create_sheet(title)['A1'] = '#REF!'
+            ignored_paths.add(f'xl/worksheets/sheet{len(workbook.worksheets)}.xml')
+        stream = BytesIO()
+        workbook.save(stream)
+        workbook.close()
+        raw = stream.getvalue()
+        open_member = ZipFile.open
+
+        def check_member(archive, name, *args, **kwargs):
+            self.assertNotIn(getattr(name, 'filename', name), ignored_paths)
+            return open_member(archive, name, *args, **kwargs)
+
+        with patch.object(ZipFile, 'open', check_member):
+            preview = self.store.preview_import(0, raw)
+            self.assertFalse(preview['identical'])
+            result = self.store.import_legacy(0, raw, '测试')
+        self.assertEqual(result['sheets'][0]['rows'][1][0], '测试车型 2026款')
 
     def test_preview_draft_then_publish(self):
         initial = self.store.get()

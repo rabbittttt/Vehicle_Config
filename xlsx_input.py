@@ -3,12 +3,36 @@ import base64
 import io
 import zipfile
 from openpyxl import load_workbook
+from openpyxl.reader.excel import ExcelReader
 
 MAX_FILES = 10
 MAX_ROWS = 10_000
 MAX_TOTAL_ROWS = 20_000
 MAX_BYTES = 8_000_000
 MAX_EXPANDED = 40_000_000
+
+
+class _SelectedWorksheetReader(ExcelReader):
+    """Filter the workbook directory before openpyxl opens each sheet for its dimensions."""
+
+    def __init__(self, raw, include_sheet, *, data_only):
+        super().__init__(io.BytesIO(raw), read_only=True, data_only=data_only, keep_links=False)
+        self.include_sheet = include_sheet
+
+    def read_workbook(self):
+        super().read_workbook()
+        self.parser.sheets = [sheet for sheet in self.parser.sheets if self.include_sheet(sheet.name)]
+        # Local defined names use original sheet positions. Cell imports use values and
+        # cached formula results, so do not bind those names to the filtered workbook.
+        self.parser.defined_names.definedName = []
+
+    def open(self):
+        try:
+            self.read()
+            return self.wb
+        except Exception:
+            self.archive.close()
+            raise
 
 
 class WorkbookBatch:
@@ -33,13 +57,26 @@ class WorkbookBatch:
         if self.size>MAX_BYTES:raise ValueError('文件总大小超过 8MB')
         return name,raw
 
-    def open(self,raw):
+    def _check_archive(self,raw):
         if not isinstance(raw,bytes) or not raw or len(raw)>MAX_BYTES:
             raise ValueError('文件大小须在 1–8MB 内')
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             self.expanded+=sum(entry.file_size for entry in archive.infolist())
         if self.expanded>MAX_EXPANDED:raise ValueError('Excel 解压后合计超过 40MB')
+
+    def open(self,raw):
+        self._check_archive(raw)
         return load_workbook(io.BytesIO(raw),read_only=True,data_only=False)
+
+    def open_selected(self, raw, include_sheet):
+        self._check_archive(raw)
+        book = _SelectedWorksheetReader(raw, include_sheet, data_only=False).open()
+        try:
+            cached = _SelectedWorksheetReader(raw, include_sheet, data_only=True).open()
+        except Exception:
+            book.close()
+            raise
+        return book, cached
 
     def count_row(self,number):
         self.rows+=1

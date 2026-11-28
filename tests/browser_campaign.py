@@ -72,6 +72,7 @@ def legacy_file(model):
     for value in (63, .37):
         history.append(['代际名', 'D1', '二级代际名'])
         history.append([model, value, '纯电版'])
+    history['B2'] = '#REF!'
     output = BytesIO()
     book.save(output)
     book.close()
@@ -262,16 +263,14 @@ def check_reporting(page):
     expect(page.locator('#status')).to_have_text('配置草稿 · 无待发布变更')
     page.locator('#export').click()
     ready(page)
-    expect(page.locator('[name=sheets]')).to_have_count(8)
+    expect(page.locator('[name=sheets]')).to_have_count(7)
     complete = download(page)
-    assert len(complete) == 8
+    assert '小订进度' not in complete and '小订by天' in complete
     headers, row = complete['车型汇总']
     result = dict(zip(headers, row))
     assert (result['小订待转单'], result['小订待转单占比'], result['净大定率']) == (91, .59, .46)
     curve = complete['小转大进度']
     assert curve[-1][curve[0].index('D1')] == .18
-    history = complete['小订进度']
-    assert [r[history[0].index('D1')] for r in history if r[0] == '历史车型'] == [63, .37]
     page.locator('#export').click()
     ready(page)
     for box in page.locator('[name=sheets]').all():
@@ -590,7 +589,7 @@ def check_review_backfill(browser):
         daily = page.get_by_role('checkbox', name='小订by天', exact=True)
         daily.uncheck()
         source.select_option('draft')
-        expect(page.get_by_role('checkbox', name='小订进度', exact=True)).to_be_checked()
+        expect(page.get_by_role('checkbox', name='小订进度', exact=True)).to_have_count(0)
         expect(daily).not_to_be_checked()
         source.select_option('published')
         expect(page.get_by_role('checkbox', name='小订进度', exact=True)).to_have_count(0)

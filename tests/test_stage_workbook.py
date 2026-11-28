@@ -217,8 +217,39 @@ class CampaignWorkbookTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'B2'):
             import_workbook(raw)
         raw=self.legacy(['代际名'],['甲'],configure=lambda b:setattr(b[DAILY],'title','其他汇总'))
-        with self.assertRaisesRegex(ValueError,'小订by天.*其他汇总'):
+        with self.assertRaisesRegex(ValueError,'缺少工作表：小订by天'):
             import_workbook(raw)
+
+    def test_full_import_only_reads_used_sheets(self):
+        def configure(book):
+            book[DAILY].delete_rows(1)
+            book[DAILY].append(['代际名', '二级代际名', '2026-06-01'])
+            book[DAILY].append(['甲', '首发', 7])
+            for title in ('小订进度', ' 小订进度 ', '临时对照'):
+                sheet = book.create_sheet(title)
+                sheet['XFD1'] = '=NA()'
+        raw = self.legacy(['代际名', '二级代际名'], ['甲', '首发'], configure=configure)
+        data = import_workbook(raw)
+        sheets = {sheet['name']: sheet for sheet in data['sheets']}
+        self.assertEqual(set(sheets), {sheet['name'] for sheet in empty_workbook()['sheets']})
+        self.assertEqual(sheets[DAILY]['rows'][1], ['甲', '首发', 7, 7])
+        self.assertEqual(sheets[SUMMARY]['rows'][1][15], 7)
+
+        duplicate = self.legacy(['代际名'], ['甲'], configure=lambda book: book.create_sheet('小订按天'))
+        with self.assertRaisesRegex(ValueError, '同时对应 小订by天'):
+            import_workbook(duplicate)
+
+    def test_export_keeps_previously_stored_progress_sheet(self):
+        historical = empty_workbook()
+        historical['sheets'].append({
+            'name':'小订进度', 'rows':[['代际名','二级代际名','D1'], ['甲','首发',7]],
+            'headerRows':[1], 'computed':[], 'literalCells':[],
+        })
+        book = load_workbook(BytesIO(export_workbook(historical)), read_only=True, data_only=True)
+        try:
+            self.assertEqual(list(book['小订进度'].values)[1], ('甲','首发',7))
+        finally:
+            book.close()
 
     def test_inclusive_windows_calculated_and_guarded(self):
         base = empty_workbook()
