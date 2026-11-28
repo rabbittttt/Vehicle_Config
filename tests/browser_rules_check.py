@@ -106,10 +106,123 @@ def add_vehicle(page):
     ready(page)
 
 
+def expect_rule_match(content, view, value):
+    if view == 'option_prices':
+        expect(content.locator('.price-name').first).to_have_value(value)
+    else:
+        expect(content).to_contain_text(value)
+
+
+def check_grouped_price_entry(browser):
+    with tempfile.TemporaryDirectory() as tmp, isolated_server(tmp) as (url, _, rules, source):
+        page = browser.new_page(viewport={'width': 1440, 'height': 900})
+        page.emulate_media(reduced_motion='reduce')
+        page.goto(url)
+        ready(page)
+        fill_owner(page)
+        switch_view(page, 'options', 'option_prices')
+        model, year = page.locator('#model'), page.locator('#year')
+        model.select_option('车型甲 2026款')
+        year.select_option('2026')
+        content = page.locator('#content')
+        groups = content.locator('.price-group')
+        original = rules.get()['draft']['data']['option_prices'][0]
+        expect(groups).to_have_count(1)
+        expect(groups.locator('.price-group-toggle')).to_contain_text('舒适/功能选配')
+        expect(groups.locator('tbody input[value="车型甲 2026款"], tbody input[value="舒适/功能选配"]')).to_have_count(0)
+
+        # Only the category and model context are shared. Changing an amount preserves all restrictions.
+        groups.locator('.price-amount').fill('3200')
+        groups.locator('.price-amount').press('Tab')
+        groups.locator('.price-add').click()
+        new_row = groups.locator('.price-new')
+        name = new_row.locator('.price-name')
+        amount = new_row.locator('.price-amount')
+        for label, value in [('座椅通风', '1800'), ('免费踏板', '0')]:
+            expect(name).to_be_focused()
+            name.fill(label)
+            name.press('Tab')
+            expect(amount).to_be_focused()
+            amount.fill(value)
+            amount.press('Enter')
+        expect(name).to_be_focused()
+        expect(name).to_have_value('')
+        page.locator('#save').click()
+        expect(page.locator('#save')).to_be_disabled()
+        saved = rules.get()['draft']['data']['option_prices']
+        assert saved[0] == dict(original, price=3200)
+        assert [(r['generation'], r['category'], r['name'], r['price']) for r in saved[1:]] == [
+            ('车型甲 2026款', '舒适/功能选配', '座椅通风', 1800),
+            ('车型甲 2026款', '舒适/功能选配', '免费踏板', 0),
+        ]
+
+        page.locator('[data-price-category]').click()
+        page.locator('#dialog [name=category]').fill('外观选配')
+        page.locator('#confirm').click()
+        expect(name).to_be_focused()
+        expect(groups).to_have_count(2)
+        out = ROOT / 'artifacts'
+        out.mkdir(exist_ok=True)
+        for width, height in [(1440, 900), (390, 844), (320, 740)]:
+            page.set_viewport_size({'width': width, 'height': height})
+            expect(groups.locator('.price-amount').first).to_be_visible()
+            expect(groups.locator('.price-add').last).to_be_visible()
+            assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), width
+            page.screenshot(path=str(out / f'price-entry-{width}.png'), full_page=True)
+        page.set_viewport_size({'width': 1440, 'height': 900})
+
+        # A second vehicle may have the same category name and no prices yet.
+        model.select_option('车型乙 2026款')
+        expect(groups).to_have_count(0)
+        page.locator('[data-price-category]').click()
+        expect(page.locator('#dialog [name=generation]:visible')).to_have_count(0)
+        page.locator('#dialog [name=category]').fill('舒适/功能选配')
+        page.locator('#confirm').click()
+        expect(name).to_be_focused()
+        name.fill('座椅通风')
+        page.locator('#save').click()
+        expect(page.locator('#error-notice')).to_contain_text('金额')
+        assert rules.get()['draft']['data']['option_prices'] == saved
+        expect(name).to_have_value('座椅通风')
+        amount.fill('1200')
+        page.locator('#save').click()
+        expect(page.locator('#save')).to_be_disabled()
+        rows = rules.get()['draft']['data']['option_prices']
+        assert len(rows) == 4
+        assert rows[:3] == saved
+        assert (rows[-1]['generation'], rows[-1]['category'], rows[-1]['price']) == ('车型乙 2026款', '舒适/功能选配', 1200)
+        assert assignments(source)['OPTION_CONFIG']['车型甲 2026款']['舒适/功能选配'][0][1] == 3000
+
+        page.reload()
+        ready(page)
+        switch_view(page, 'options', 'option_prices')
+        model.select_option('车型乙 2026款')
+        expect(groups).to_have_count(1)
+        expect(groups.locator('.price-name')).to_have_value('座椅通风')
+        expect(groups.locator('.price-amount')).to_have_value('1200')
+        groups.locator('.price-add').click()
+        name.fill('轮毂')
+        new_row.locator('summary').click()
+        new_row.get_by_role('button', name='编辑条件与价格').click()
+        form = page.locator('#rule-form')
+        expect(form.locator('[name=name]')).to_have_value('轮毂')
+        expect(form.locator('[name=price_mode]')).to_have_value('conditional')
+        form.locator('[name=price_condition]').fill('长续航')
+        form.locator('[name=price_amount]').fill('2100')
+        page.locator('#confirm').click()
+        expect(page.locator('#dialog')).to_be_hidden()
+        expect(groups.get_by_role('button', name='编辑条件价')).to_contain_text('长续航 2100 元')
+        page.locator('#save').click()
+        expect(page.locator('#save')).to_be_disabled()
+        last = rules.get()['draft']['data']['option_prices'][-1]
+        assert (last['generation'], last['category'], last['price']) == ('车型乙 2026款', '舒适/功能选配', {'长续航': 2100})
+        page.close()
+
+
 def check_conditional_prices(browser):
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / 'shared_config.py'
-        source.write_text(SOURCE.replace('"天窗", 3000', '"天窗", {"条件乙": 21, "条件甲": 12}'), encoding='utf-8')
+        source.write_text(SOURCE.replace('"天窗", 3000, False', '"天窗", {"条件乙": 21, "条件甲": 12}, True'), encoding='utf-8')
         with isolated_server(tmp, source=source) as (url, store, rules, _):
             CampaignStore(store.root).save(0, [dict(sheet='车型汇总', row=2, col=1, value='车型甲 2026款')], '测试', publish=True)
             page = browser.new_page()
@@ -121,15 +234,16 @@ def check_conditional_prices(browser):
             for group, view, match in [('generation', 'gen_names', '车型甲旧名'), ('generation', 'merge_groups', '车型甲&乙'),
                                        ('options', 'battery_rules', '80度'), ('options', 'option_prices', '天窗')]:
                 switch_view(page, group, view)
-                expect(content).to_contain_text(match)
+                expect_rule_match(content, view, match)
             page.locator('#search').fill('条件甲')
             expect(content).to_contain_text('条件乙 21 元 / 条件甲 12 元')
-            edit = content.get_by_role('button', name='编辑', exact=True)
+            edit = content.get_by_role('button', name='编辑条件价', exact=True)
             edit.click()
             form = page.locator('#rule-form')
             mode = form.locator('[name=price_mode]')
             amounts = form.locator('[name=price_amount]')
             keys = form.locator('[name=price_condition]')
+            expect(form.locator('[name=default]')).to_have_value('true')
             expect(mode).to_have_value('conditional')
             form.locator('[name=price_mode]').select_option('fixed')
             form.locator('[name=price]').fill('99')
@@ -159,7 +273,9 @@ def check_conditional_prices(browser):
             expect(page.locator('#dialog')).to_be_hidden()
             ready(page)
             expected = [('条件乙', 21), ('条件甲', 12), ('default', 0), ('条件丙', 9)]
-            assert list(rules.get()['published']['data']['option_prices'][0]['price'].items()) == expected
+            published = rules.get()['published']['data']['option_prices'][0]
+            assert list(published['price'].items()) == expected
+            assert published['default'] is True
             script_prices = assignments(source)['OPTION_CONFIG']['车型甲 2026款']['舒适/功能选配'][0][1]
             assert list(script_prices.items()) == expected
             edit.click()
@@ -250,7 +366,7 @@ def main():
             expect(year).to_have_value('2028')
             expect(content.locator('tbody tr')).to_have_count(0)
             year.select_option('2026')
-            expect(content).to_contain_text(match)
+            expect_rule_match(content, view, match)
             year.select_option('2028')
         switch_view(page, 'options', 'option_names')
         expect(content).to_contain_text('旧选配名称')
@@ -349,9 +465,8 @@ def main():
         switch_view(page, 'options', 'battery_rules')
         content.get_by_role('button', name='下移', exact=True).first.click()
         switch_view(page, 'options', 'option_prices')
-        content.get_by_role('button', name='编辑', exact=True).click()
-        page.locator('[name=price]').fill('4500')
-        page.locator('#confirm').click()
+        content.locator('.price-amount').fill('4500')
+        content.locator('.price-amount').press('Tab')
         ready(page)
         page.get_by_role('button', name='发布', exact=True).click()
         for group in ('车型与日程、小订首销填报', '代际规则、电池与选配'):
@@ -381,9 +496,8 @@ def main():
         header.locator('#search').fill('')
         switch_view(page, 'options', 'option_prices')
         source.write_text(source.read_text(encoding='utf-8') + '\n# external\n', encoding='utf-8')
-        content.get_by_role('button', name='编辑', exact=True).click()
-        page.locator('[name=price]').fill('5000')
-        page.locator('#confirm').click()
+        content.locator('.price-amount').fill('5000')
+        content.locator('.price-amount').press('Tab')
         ready(page)
         page.locator('#publish').click()
         ready(page)
@@ -432,6 +546,7 @@ def main():
         page.set_viewport_size({'width': 1440, 'height': 1000})
         expect(header.locator('[data-tab="generation"]')).to_have_attribute('aria-current', 'page')
         assert not errors, errors
+        check_grouped_price_entry(browser)
         check_conditional_prices(browser)
         browser.close()
     print('Rules browser checks passed: shared navigation, header filters, isolated drafts, publishing, history, and external change conflicts.')
