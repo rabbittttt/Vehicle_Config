@@ -96,8 +96,10 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     scope=parse_qs(urlsplit(self.path).query).get('scope',[''])[0]
                     return self.send(200,module_template(scope),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 if path=='/api/campaign/published':
-                    requested=parse_qs(urlsplit(self.path).query).get('revision')
-                    return self.send(200,campaigns.published(int(requested[0]) if requested else None))
+                    params=parse_qs(urlsplit(self.path).query)
+                    requested=params.get('revision')
+                    editor=params.get('view')==['editor']
+                    return self.send(200,campaigns.published(int(requested[0]) if requested else None,editor=editor))
                 if path in ('/api/history','/api/rules/history','/api/campaign/history'):
                     params=parse_qs(urlsplit(self.path).query)
                     page=int(params.get('page',['1'])[0])

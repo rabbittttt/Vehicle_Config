@@ -22,6 +22,7 @@ def main():
         commit+=' (working tree changes)'
     run(sys.executable,'-B','-m','unittest','discover','-s','tests','-q')
     run(sys.executable,'-B','tests/browser_campaign.py')
+    run(sys.executable,'-B','tests/browser_no_preorder.py')
     if args.full:
         for name in ['browser_rules_check','browser_workflow_ux','browser_header_check','browser_motion_check']:
             run(sys.executable,'-B','tests/'+name+'.py')

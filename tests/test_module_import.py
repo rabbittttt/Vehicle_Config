@@ -64,7 +64,7 @@ class ModuleImportTests(unittest.TestCase):
             out = BytesIO()
             book.save(out)
             self.assert_import_matches_edits(out.getvalue(), 'schedule', [summary_cell(2, 3, '增配')])
-            summary['I2'] = '=NA()'
+            summary['I2'] = '=1/0'
             out = BytesIO()
             book.save(out)
             with self.assertRaisesRegex(ValueError, '车型汇总 I2'):

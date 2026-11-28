@@ -9,7 +9,7 @@ from tempfile import NamedTemporaryFile
 
 from catalog import Conflict, now, read_history_page
 from stage_workbook import (
-    DAILY, SECONDARY, SUMMARY_FIELDS, apply_edits, backfill_totals, empty_workbook, export_workbook, import_workbook, validate_publication,
+    DAILY, NO_PREORDER, PREORDER_DATES, SECONDARY, SUMMARY, SUMMARY_FIELDS, apply_edits, backfill_totals, empty_workbook, export_workbook, import_workbook, validate_publication,
 )
 
 
@@ -17,11 +17,71 @@ def encode(data):
     return json.dumps(data, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
 
 
+def _preorder_date_rows(sheet):
+    header_rows = set(sheet['headerRows'])
+    columns = []
+    for number, row in enumerate(sheet['rows'], 1):
+        if number in header_rows:
+            columns = [i for i, field in enumerate(row) if field in PREORDER_DATES]
+        elif columns:
+            yield number, row, columns
+
+
+def _report_payload(editor_payload):
+    """Existing report readers accept only ISO dates or null in date columns."""
+    data = json.loads(editor_payload)
+    for sheet in data['sheets']:
+        marked = []
+        for number, row, columns in _preorder_date_rows(sheet):
+            if any(i < len(row) and row[i] == NO_PREORDER for i in columns):
+                marked.append(number)
+                for i in columns:
+                    if i < len(row):
+                        row[i] = None
+        if not marked:
+            continue
+        sheet['noPreorderRows'] = marked
+        if sheet['name'] == SUMMARY:
+            head = sheet['rows'][0]
+            head.append('有小订')
+            for number in marked:
+                row = sheet['rows'][number-1]
+                row.extend([None] * (len(head)-1-len(row)))
+                row.append(False)
+    return encode(data)
+
+
 def decode_workbook(payload):
     data = json.loads(payload)
+    for sheet in data['sheets']:
+        marked = set(sheet.pop('noPreorderRows', []))
+        if not marked:
+            continue
+        summary = sheet['name'] == SUMMARY
+        if summary:
+            sheet['rows'][0].pop()  # Report-only 有小订 column.
+        for number, row, columns in _preorder_date_rows(sheet):
+            if number not in marked:
+                continue
+            for i in columns:
+                row[i] = NO_PREORDER
+            if summary:
+                row.pop()
+                while row and row[-1] is None:
+                    row.pop()
     header = data['sheets'][0]['rows'][0]
     if header[5] == '小订发布时间':
         header[5] = SUMMARY_FIELDS[5]
+    return data
+
+
+def _edited_workbook(draft, edits):
+    data = apply_edits(draft, edits)
+    # Keep editor previews and restored editions identical after report padding.
+    for row in data['sheets'][0]['rows'][1:]:
+        if NO_PREORDER in row[8:10]:
+            while row and row[-1] is None:
+                row.pop()
     return data
 
 
@@ -249,15 +309,17 @@ class CampaignStore:
         with closing(self.connect()) as db:
             return read_history_page(db, page, query)
 
-    def published(self, revision=None):
+    def published(self, revision=None, *, editor=False):
         with closing(self.connect()) as db:
             if revision is None:
                 row = self._current(db)
-                return self._edition(row['published_revision'], json.loads(row['published_data']))
-            row = db.execute('SELECT data FROM publications WHERE revision = ?', (revision,)).fetchone()
-            if row is None:
-                raise ValueError('找不到指定的车型日程与填报发布版本')
-            return self._edition(revision, json.loads(row['data']))
+                revision, payload = row['published_revision'], row['published_data']
+            else:
+                row = db.execute('SELECT data FROM publications WHERE revision = ?', (revision,)).fetchone()
+                if row is None:
+                    raise ValueError('找不到指定的车型日程与填报发布版本')
+                payload = row['data']
+        return self._edition(revision, decode_workbook(payload) if editor else json.loads(payload))
 
     @staticmethod
     def _check(row, revision):
@@ -270,14 +332,14 @@ class CampaignStore:
         with closing(self.connect()) as db:
             row = self._current(db)
         self._check(row, revision)
-        data = apply_edits(decode_workbook(row['data']), edits)
+        data = _edited_workbook(decode_workbook(row['data']), edits)
         return self._response(row, data)
 
     def publish_preview(self, revision, edits):
         with closing(self.connect()) as db:
             row = self._current(db)
         self._check(row, revision)
-        data = apply_edits(decode_workbook(row['data']), edits)
+        data = _edited_workbook(decode_workbook(row['data']), edits)
         changes = publication_changes(decode_workbook(row['published_data']), data)
         error = ''
         if changes:
@@ -295,7 +357,7 @@ class CampaignStore:
         db.execute('DELETE FROM import_backup')
         if action == '发布':
             edition += 1
-            db.execute('INSERT INTO publications VALUES (?, ?, ?, ?)', (edition, data, actor, timestamp))
+            db.execute('INSERT INTO publications VALUES (?, ?, ?, ?)', (edition, _report_payload(data), actor, timestamp))
         db.execute('UPDATE draft SET revision=?, published_revision=?, data=? WHERE id=1',
                    (revision, edition, data))
         db.execute('INSERT INTO activity VALUES (?, ?, ?, ?)', (revision, action, actor, timestamp))
@@ -305,7 +367,7 @@ class CampaignStore:
             row = self._current(db)
             self._check(row, revision)
             draft = decode_workbook(row['data'])
-            data = apply_edits(draft, edits)
+            data = _edited_workbook(draft, edits)
             payload = encode(data)
             if publish:
                 validate_publication(data)

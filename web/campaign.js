@@ -8,6 +8,9 @@ const campaignEditor = (() => {
     dailyOrders:dailyName, smallOrderCancellations:'小订期退订进度', conversions:'小转大进度',
     directOrders:'直接大定进度', launchCancellations:'首销期退订进度',
   };
+  const smallOrderMetrics = new Set([dailyName, reportMetrics.smallOrderCancellations, reportMetrics.conversions]);
+  const noSmallOrders = row => row[8]==='NA' && row[9]==='NA';
+  const acceptsMetric = stage => !(stage.noSmallOrders && smallOrderMetrics.has(progressName));
   let saved, current;
   let edits = [], undo = [], redo = [];
   let uncertainPublish = null;
@@ -64,7 +67,7 @@ const campaignEditor = (() => {
     if (!isDirty() || attempt) {
       const latest = await api('campaign/state');
       if (attempt && latest.publishedRevision >= attempt.edition) {
-        const edition = await api('campaign/published?revision='+attempt.edition);
+        const edition = await api('campaign/published?view=editor&revision='+attempt.edition);
         if (JSON.stringify(edition.sheets) === JSON.stringify(current.sheets)) {
           accept(latest);
           return null;
@@ -136,7 +139,7 @@ const campaignEditor = (() => {
       const key = JSON.stringify([target.model,target.secondary]);
       return `<input type="hidden" name="stage" value="${esc(key)}"><label class="wide">车型与阶段<output>${esc(stageLabel(target.model,target.secondary))}</output></label>`;
     }
-    const variants = reportStages().filter(stage=>stage.hasSummary && matchesModelAndYear(stage.model,stage.secondary));
+    const variants = reportStages().filter(stage=>stage.hasSummary && acceptsMetric(stage) && matchesModelAndYear(stage.model,stage.secondary));
     const pairs = variants.map(v => [JSON.stringify([v.model,v.secondary]),v.label]);
     const initial = pairs.some(([key])=>key===lastModel) ? lastModel : pairs.length===1 ? pairs[0][0] : '';
     return `<label class="wide">车型与阶段${formSelect('stage', pairs, initial, true)}</label>`;
@@ -145,8 +148,9 @@ const campaignEditor = (() => {
     ['车型资料',[0,1,2,3]], ['发布信息',[4,7]], ['小订期',[5,8,9,12]], ['首销期',[6,10,11,13]],
   ];
   const scheduleColumns = scheduleGroups.flatMap(([,columns])=>columns);
+  const smallOrderTotals = [15,16,21];
   const totalsGroups = [
-    ['小订与转化',[15,16,21]],
+    ['小订与转化',smallOrderTotals],
     ['大定与留存',[18,19,25]],
     ['锁单',[27]],
   ];
@@ -162,7 +166,8 @@ const campaignEditor = (() => {
   function summaryRows(query, columns) {
     const info = sheet(summaryName);
     return info.rows.map((r,i)=>({r,row:i+1})).slice(1)
-      .filter(({r})=>r[0] && matchesModelAndYear(r[0],r[1]) && matched(columns.map(index=>r[index]),query));
+      .filter(({r})=>r[0] && matchesModelAndYear(r[0],r[1]) &&
+        (matched(columns.map(index=>r[index]),query) || (columns.includes(8) && noSmallOrders(r) && matched(['无小订'],query))));
   }
   function stageLabel(primary,secondary) {
     return secondary && !String(secondary).startsWith(primary) ? primary+' · '+secondary : secondary || primary;
@@ -180,7 +185,7 @@ const campaignEditor = (() => {
       <td><dl class="vehicle-specs"><div><dt>产品档位</dt><dd>${esc(displayValue(r[2]))}</dd></div>
         <div><dt>能源类型</dt><dd>${esc(displayValue(r[3]))}</dd></div></dl></td>
       <td data-label="发布信息">${esc(displayValue(r[4]))}${r[7] ? `<small>留资 ${esc(r[7])}</small>` : ''}</td>
-      <td data-label="小订期">${periodSummary(r[8],r[9],r[5],r[12])}</td>
+      <td data-label="小订期">${noSmallOrders(r) ? '无小订' : periodSummary(r[8],r[9],r[5],r[12])}</td>
       <td data-label="首销期">${periodSummary(r[10],r[11],r[6],r[13])}</td>
       <td class="operation">${action('stage',readonly?'查看':'编辑',`class="link" data-row="${row}"`)}</td>
       </tr>`).join('');
@@ -211,7 +216,7 @@ const campaignEditor = (() => {
       const {r,row}=stage;
       const difference=grossDifference(r[16],r[19],r[18]);
       const cells=totalColumns.map(index=>`<td>${esc(numericText(r[index]))}${index===18 && difference ? `<small class="campaign-discrepancy">${esc(difference)}</small>` : ''}</td>`).join('');
-      return `<tr data-model="${esc(stage.model)}">${reportIdentity(variants,stage)}${cells}<td class="report-actions">${action('totals','核对',`class="link" data-row="${row}"`)}</td></tr>`;
+      return `<tr data-model="${esc(stage.model)}">${reportIdentity(variants,stage,noSmallOrders(r)?'<small>无小订</small>':'')}${cells}<td class="report-actions">${action('totals','核对',`class="link" data-row="${row}"`)}</td></tr>`;
     }).join('');
     if(!body) {
       $('#content').innerHTML=empty(query||model||year?'没有匹配的车型':'暂无可核对的车型');
@@ -224,9 +229,12 @@ const campaignEditor = (() => {
     wireReportStages();
   }
   function reviewTotals(info,row,subject) {
-    rowForm(info,row,totalColumns,subject+' · 结果核对',totalsGroups);
-    const form=$('#dialog-body form');
     const labels=info.rows[0], record=info.rows[row-1];
+    const noOrders=noSmallOrders(record);
+    const groups=noOrders ? totalsGroups.map(([name,cols])=>[name,cols.filter(i=>!smallOrderTotals.includes(i) || used(record[i]))])
+      .filter(([,cols])=>cols.length) : totalsGroups;
+    rowForm(info,row,totalColumns,subject+' · 结果核对',groups);
+    const form=$('#dialog-body form');
     const historical=new Set(info.literalCells || []);
     for(const input of form.querySelectorAll('input[type="number"]')) input.step='1';
     const grossControl=form.elements.f18 || form.querySelector('output[aria-label="大定量"]');
@@ -246,7 +254,8 @@ const campaignEditor = (() => {
       return input.validity.valid && Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : null;
     }
     function renderRates() {
-      details.querySelector('dl').innerHTML=reviewRates.map(([rate,numerator,denominator])=>{
+      const applicable=reviewRates.filter(([rate,,denominator])=>!noOrders || denominator!==15 || used(record[rate]));
+      details.querySelector('dl').innerHTML=applicable.map(([rate,numerator,denominator])=>{
         const top=quantity(numerator), bottom=quantity(denominator);
         const computed=Number.isFinite(top) && bottom>0 ? top/bottom : null;
         const stored=record[rate];
@@ -295,6 +304,7 @@ const campaignEditor = (() => {
       const stage = findStage(row[0], row[1] || '');
       // Duplicate summary identities do not unambiguously specify an anchor.
       stage.start = stage.hasSummary ? '' : dateKey(row[8]);
+      stage.noSmallOrders = noSmallOrders(row) && (!stage.hasSummary || stage.noSmallOrders);
       stage.hasSummary = true;
       const end = dateKey(row[9]);
       if (stage.start && end) lastDailyDay = Math.max(lastDailyDay,dayNumber(end)-dayNumber(stage.start)+1);
@@ -435,7 +445,7 @@ const campaignEditor = (() => {
       const value = record?.values[col-1];
       const text = esc(numericText(value));
       const cls = 'report-value'+(used(value) ? '' : ' missing');
-      if (readonly || (!record && (!stage.hasSummary || records.length > 1))) return `<span class="${cls}">${text}</span>`;
+      if (readonly || !acceptsMetric(stage) || (!record && (!stage.hasSummary || records.length > 1))) return `<span class="${cls}">${text}</span>`;
       const attributes = `data-model="${esc(stage.model)}" data-secondary="${esc(stage.secondary)}" data-axis="${esc(target)}" data-key="${esc(key)}"`;
       const location = record ? `data-row="${record.row}" data-col="${col}"` : '';
       const label = [stage.label, key, target !== key ? target : '', matches.length > 1 ? '第 '+record.row+' 行' : '',
@@ -454,7 +464,7 @@ const campaignEditor = (() => {
       const stage = variants[i], entries = records[i];
       const attrs = `class="link" data-model="${esc(stage.model)}" data-secondary="${esc(stage.secondary)}"`;
       const actions = [];
-      if (!readonly && stage.hasSummary && entries.length<=1) actions.push(action('report-add','填报',attrs));
+      if (!readonly && stage.hasSummary && acceptsMetric(stage) && entries.length<=1) actions.push(action('report-add','填报',attrs));
       if (progressName!==dailyName) entries.forEach((entry,n)=>actions.push(action('report-detail',entries.length>1?'明细 '+(n+1):'明细',`${attrs} data-row="${entry.row}"`)));
       else if (entries.length) actions.push(action('report-detail','明细',attrs));
       const calendarLink = needsCalendar(stage) ? `<button type="button" class="link" data-report-calendar="${esc(stage.lastDate)}" aria-label="${esc(stage.label+' · 按日期查看')}">按日期查看</button>` : '';
@@ -583,7 +593,7 @@ const campaignEditor = (() => {
     const toolbar = [];
     if (daily) toolbar.push(`<label class="inline-label">横轴<select id="report-axis" ${filteredDates?'disabled':''}>${option('day','按日序',axis)}${option('date','按日期',axis)}</select></label>`);
     if (!readonly) {
-      if (index.stageList.some(stage=>stage.hasSummary && matchesModelAndYear(stage.model,stage.secondary))) toolbar.push(action('batch','批量粘贴'));
+      if (index.stageList.some(stage=>stage.hasSummary && acceptsMetric(stage) && matchesModelAndYear(stage.model,stage.secondary))) toolbar.push(action('batch','批量粘贴'));
       else if (!index.stageList.some(stage=>stage.hasSummary)) toolbar.push(action('new-stage','新增发布日程'));
     }
     $('#actions').innerHTML = toolbar.join('');
@@ -594,7 +604,8 @@ const campaignEditor = (() => {
     };
     const dateMatches = filteredDates && new Set(filteredDates.flatMap(key=>[...index.dateStages.get(key)]));
     const groups = Array.from(index.models.values(),variants=>[...variants.values()].filter(stage=>
-      matchesModelAndYear(stage.model,stage.secondary) && (stage.hasSummary || stage.records.has(progressName)) &&
+      matchesModelAndYear(stage.model,stage.secondary) && (acceptsMetric(stage) || stage.observed.has(progressName)) &&
+      (stage.hasSummary || stage.records.has(progressName)) &&
       (dateMatches ? dateMatches.has(stage) : matched([stage.model,stage.secondary],query)))).filter(variants=>variants.length);
     const window = paginator(groups.length);
     $('#count').textContent = '';
@@ -625,7 +636,7 @@ const campaignEditor = (() => {
     return percent || text.endsWith('%') ? amount/100 : amount;
   }
   function dateField(label) { return label==='留资' || String(label).includes('日期'); }
-  function rowForm(info,row,indexes,title,groups=null) {
+  function rowForm(info,row,indexes,title,groups=null,readOnly=readonly) {
     const r = info.rows[row-1] || [];
     const head = (info.headerRows || [1]).filter(x=>x<=row).at(-1) || 1;
     const labels = info.rows[head-1];
@@ -645,30 +656,44 @@ const campaignEditor = (() => {
       const unit = percent?'（%）':'';
       const label = field==='留资'?'留资日期':field;
       const noteId = info.name===summaryName && totalColumns.includes(i) ? 'review-mode-'+i : '';
-      const heading = noteId ? reviewHeading(label,i,noteId) : esc(label)+unit;
+      const historicSmallTotal = info.name===summaryName && noSmallOrders(r) && smallOrderTotals.includes(i);
+      const heading = historicSmallTotal ? `<span class="review-heading">${esc(label)}<span class="review-mode" id="${noteId}">历史值</span></span>`
+        : noteId ? reviewHeading(label,i,noteId) : esc(label)+unit;
       const description = noteId ? ` aria-describedby="${noteId}"` : '';
-      if (readonly || computed || scheduleReferences.includes(field)) return `<label>${heading}<output aria-label="${esc(label)}${unit}"${description}>${esc(displayValue(val))}</output></label>`;
+      if (readOnly || computed || historicSmallTotal || scheduleReferences.includes(field)) return `<label>${heading}<output aria-label="${esc(label)}${unit}"${description}>${esc(val==='NA' && date ? '无小订' : displayValue(val))}</output></label>`;
       const type = date?'date':number?'number':'text';
       const opts = number?'min="0" step="any"':'maxlength="256"';
       changes.push({i,number,percent,original:String(val)});
       const accessibleLabel = noteId ? ` aria-label="${esc(label)}"${description}` : '';
       const list = i===0 ? 'required list="campaign-models"' : field==='小订发布时段' ? 'list="small-order-periods"' : '';
-      return `<label>${heading}<input name="f${i}" type="${type}"${accessibleLabel} ${opts} value="${esc(val)}" ${list}></label>`;
+      return `<label>${heading}<input name="f${i}" type="${type}"${accessibleLabel} ${opts} value="${esc(date && val==='NA' ? '' : val)}" ${list}></label>`;
     }
     const renderFields = columns => columns.filter(i=>used(labels[i])).map(control).join('');
-    const controls = groups ? groups.map(([name,columns])=>`<fieldset class="wide campaign-field-group"><legend>${esc(name)}</legend><div class="form">${renderFields(columns)}</div></fieldset>`).join('') : renderFields(indexes);
+    const controls = groups ? groups.map(([name,columns])=>{
+      const smallPeriod=groups===scheduleGroups && columns.includes(8);
+      if (smallPeriod && readOnly && noSmallOrders(r)) return '<fieldset class="wide campaign-field-group"><legend>小订期</legend>无小订</fieldset>';
+      const toggle=smallPeriod && !readOnly ? `<label class="check-label"><input type="checkbox" name="noSmallOrders" aria-controls="small-order-dates"${noSmallOrders(r)?' checked':''}>无小订</label>` : '';
+      const attrs=toggle ? ` id="small-order-dates"${noSmallOrders(r)?' hidden':''}` : '';
+      return `<fieldset class="wide campaign-field-group"><legend>${esc(name)}</legend>${toggle}<div class="form"${attrs}>${renderFields(columns)}</div></fieldset>`;
+    }).join('') : renderFields(indexes);
     const suggestions = indexes.includes(0) ? `<datalist id="campaign-models">${modelNames().map(name=>option(name,name,'')).join('')}</datalist>` : '';
     const periods = !readonly && info.name===summaryName && indexes.includes(5)
       ? '<datalist id="small-order-periods"><option value="上午"></option><option value="下午"></option><option value="晚上"></option></datalist>' : '';
-    modal(title,`<form class="form campaign-form">${controls}${suggestions}${periods}</form>`, readonly?null:async values=>{
+    modal(title,`<form class="form campaign-form">${controls}${suggestions}${periods}</form>`, readOnly?null:async values=>{
       const pending = [];
       for (const {i,number,percent,original} of changes) {
-        const raw = String(values.get('f'+i)).trim();
+        const noOrders = groups===scheduleGroups && values.has('noSmallOrders');
+        if (noOrders && (i===5 || i===12)) continue;
+        const raw = noOrders && (i===8 || i===9) ? 'NA' : String(values.get('f'+i)).trim();
         if (raw===original) continue;
         pending.push({sheet:info.name,row,col:i+1,value:number?numericValue(raw,percent):raw||null});
       }
       await apply(pending);
     },'应用');
+    const switchSmallOrders=$('#dialog-body [name=noSmallOrders]');
+    if (switchSmallOrders) switchSmallOrders.onchange=()=>{
+      $('#small-order-dates').hidden=switchSmallOrders.checked;
+    };
     if(info.name===summaryName && row>info.rows.length) {
       const form=$('#dialog-body form');
       const manual=new Set();
@@ -777,6 +802,8 @@ const campaignEditor = (() => {
   }
   function dailyDetail(target) {
     const entries=dailyEntries(target);
+    const stage=reportIndex().models.get(target.model)?.get(target.secondary);
+    const readOnly=readonly || stage?.noSmallOrders;
     const title=stageLabel(target.model,target.secondary)+' · '+viewLabels.dailyOrders;
     if (!entries.length) return modal(title,empty('暂无小订记录'));
     const fields=entries.map(({date,row,value},i)=>{
@@ -784,9 +811,9 @@ const campaignEditor = (() => {
       const source=repeated?'第 '+row+' 行':'';
       const dateCell=esc(date)+(repeated?`<small>${source}</small>`:'');
       const input=`<input type="number" name="n${i}" aria-label="${esc([date,source,'小订量'].filter(Boolean).join(' '))}" min="0" step="1" value="${esc(value)}">`;
-      return `<tr><td>${dateCell}</td><td>${readonly?esc(numericText(value)):input}</td></tr>`;
+      return `<tr><td>${dateCell}</td><td>${readOnly?esc(numericText(value)):input}</td></tr>`;
     }).join('');
-    modal(title,`<form class="campaign-form">${table(['日期','小订量'],fields)}</form>`,readonly?null:async values=>{
+    modal(title,`<form class="campaign-form">${table(['日期','小订量'],fields)}</form>`,readOnly?null:async values=>{
       const changes=[];
       entries.forEach(({row,col,value},i)=>{
         const raw=values.get('n'+i);
@@ -812,7 +839,8 @@ const campaignEditor = (() => {
       const subject=stageLabel(record[0],secondary);
       const independentEnd=p.labels.indexOf('小转大结束日期');
       const columns=independentEnd<0?p.days:[independentEnd,...p.days];
-      rowForm(p.s,row,columns,subject+' · '+progressName);
+      const stage=reportIndex().models.get(record[0])?.get(secondary);
+      rowForm(p.s,row,columns,subject+' · '+progressName,null,readonly || (stage && !acceptsMetric(stage)));
       return;
     }
     if(kind==='stage'||kind==='totals'){

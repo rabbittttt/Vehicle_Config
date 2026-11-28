@@ -41,6 +41,8 @@ PROGRESS_FIELDS = {
 }
 PROGRESS_DATES = ['留资', '小订开始日期', '小订结束日期', '开始大定日期', '小转大结束日期']
 DATE_FIELDS = set(PROGRESS_DATES + ['首销结束日期'])
+PREORDER_DATES = ('小订开始日期', '小订结束日期')
+NO_PREORDER = 'NA'
 RATIOS = {18:(17,16), 21:(20,19), 23:(22,16), 27:(26,16), 29:(28,26), 30:(28,19)}
 SUMMARY_INPUTS = {13:(9,10), 14:(11,12), 24:(16,17,22), 25:(24,16), **RATIOS}
 COMPUTED = sorted(SUMMARY_INPUTS)
@@ -170,6 +172,8 @@ def _normalize_input(sheet, number, col, value):
     if title in (PRIMARY, SECONDARY) or (name == SUMMARY and col <= 7):
         return _text(value)
     if title in DATE_FIELDS:
+        if title in PREORDER_DATES and _is_na(value):
+            return NO_PREORDER
         return _date(value)
     if title is None:
         raise ValueError('分隔列不可填写')
@@ -180,6 +184,32 @@ def _normalize_input(sheet, number, col, value):
             return _num(value.strip()[:-1])/100
         return _num(value)
     return _num(value, integer=True)
+
+
+def _is_na(value):
+    return isinstance(value, str) and value.strip().upper() in ('NA', 'N/A', '#N/A')
+
+
+def _na_date_columns(cells, caches, columns):
+    marked = set()
+    for j in columns:
+        cell = cells[j]
+        if cell.data_type == 'f':
+            value = caches[j].value
+            if value is None and re.fullmatch(r'=\s*NA\s*\(\s*\)\s*', str(cell.value), re.I):
+                value = NO_PREORDER
+        else:
+            value = cell.value
+        if _is_na(value):
+            marked.add(j)
+    return marked
+
+
+def _mark_no_preorder(row, dates, location):
+    if any(_get(row,j) not in (None,NO_PREORDER) for j in dates):
+        raise ValueError(f'{location}的小订日期同时包含实际日期和 NA，请核对小订开始、结束日期')
+    for j in dates:
+        _put(row,j,NO_PREORDER)
 
 
 def _import_scalar(cell, field, epoch):
@@ -329,6 +359,7 @@ def _summary_row(cells, caches, mapping, ignored, n, epoch, infer_days=True):
     zero_fallback = set()
     pending = {}
     template_only = True
+    na_dates = _na_date_columns(cells,caches,(j for j,idx in mapping.items() if idx in (8,9)))
     for j,cell in enumerate(cells):
         if cell.value is None or j in ignored:
             continue
@@ -337,6 +368,8 @@ def _summary_row(cells, caches, mapping, ignored, n, epoch, infer_days=True):
         idx = mapping[j]
         col = idx+1
         field = SUMMARY_FIELDS[idx]
+        if na_dates and field=='小订天数':
+            continue  # No duration applies, including stale Excel formula results.
         cache = caches[j]
         kind = _summary_formula(cell.value,col,n,mapping) if cell.data_type=='f' and col in COMPUTED else None
         division_error = (col in RATIOS or col==25) and cache.data_type=='e' and cache.value=='#DIV/0!'
@@ -358,9 +391,9 @@ def _summary_row(cells, caches, mapping, ignored, n, epoch, infer_days=True):
         if kind and missing_result:
             pending[col] = kind
             continue
-        resolved = _cached(cell,cache,SUMMARY,field in DATE_FIELDS or idx>=12)
+        resolved = None if j in na_dates else _cached(cell,cache,SUMMARY,field in DATE_FIELDS or idx>=12)
         try:
-            value = _import_scalar(resolved,field,epoch)
+            value = NO_PREORDER if resolved is None else _import_scalar(resolved,field,epoch)
             if field in (PRIMARY,SECONDARY) and value is not None:
                 value = _text(value)
             if idx>=12 and value is not None:
@@ -383,6 +416,8 @@ def _summary_row(cells, caches, mapping, ignored, n, epoch, infer_days=True):
             override.add(col)
     if template_only:
         return [],[],[]
+    if na_dates:
+        _mark_no_preorder(row,(8,9),f'车型汇总第 {n} 行')
     for col,kind in sorted(pending.items()):
         row[col-1] = _calculated_summary_value(row,col,zero_fallback=kind=='zero')
     for col,(a,b) in RATIOS.items():
@@ -458,9 +493,16 @@ def _read_detail(name,cells,caches,headers,epoch,daily_block=None,columns=None):
     sums = []
     if columns is None:
         columns = range(len(cells))
+    date_columns = [j for j,field in enumerate(headers) if field in PREORDER_DATES and j in columns]
+    na_dates = _na_date_columns(cells,caches,date_columns)
     for j in columns:
         cell,cache_cell = cells[j],caches[j]
         field = _get(headers,j)
+        if j in na_dates:
+            row[j] = NO_PREORDER
+            continue
+        if na_dates and field=='小订天数':
+            continue
         numeric = field not in (None,PRIMARY,SECONDARY)
         if daily_block is not None and numeric and cell.data_type=='f' and cache_cell.value is None:
             sums.append(j)
@@ -487,6 +529,8 @@ def _read_detail(name,cells,caches,headers,epoch,daily_block=None,columns=None):
         if value is NotImplemented:
             _cached(cell,caches[j],name,True)
         row[j] = value
+    if na_dates:
+        _mark_no_preorder(row,date_columns,name)
     if _get(row,0)=='总计':
         row[0] = '合计'
     return _trim(row)
@@ -629,7 +673,7 @@ def import_workbook(path_or_bytes):
 
 
 def _days(start, end):
-    if not start or not end:
+    if not start or not end or NO_PREORDER in (start,end):
         return None
     count = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
     return count
@@ -849,7 +893,7 @@ def _whole_count(value):
 
 
 def _daily_sum(record, stage):
-    if record is None:
+    if record is None or NO_PREORDER in stage[8:10]:
         return None
     head,row = record
     columns = [(day, _get(row,j)) for j,day in enumerate(head) if _is_date(day)]
@@ -920,13 +964,17 @@ def _observed_totals(sheets):
         if stage is None:
             continue
         n,row = stage
+        no_preorder = NO_PREORDER in row[8:10]
         amounts = {16:_daily_sum(sources[DAILY].get(key),row)}
         for name,col in PROGRESS_TOTALS.items():
+            if no_preorder and name==CONVERTED:
+                continue
             observation = _progress_observation(sources[name].get(key),row,name)
             if (observation and observation.complete and
                     (observation.start, observation.end) == (_get(row,10), _get(row,11))):
                 amounts[col] = sum(observation.quantities.values())
-        amounts[22] = _cancel_sum(*(_progress_observation(sources[name].get(key),row,name) for name in CANCEL_SHEETS))
+        if not no_preorder:
+            amounts[22] = _cancel_sum(*(_progress_observation(sources[name].get(key),row,name) for name in CANCEL_SHEETS))
         totals[n] = {col:value for col,value in amounts.items() if value is not None}
     return totals
 
@@ -1075,11 +1123,25 @@ def _update_dependents(sheets, source, n, before):
     competing_keys = {_key(row,1) for j,row in enumerate(source['rows'][1:],2) if j != n}
     if old_key in competing_keys or (renaming and (not new_key[0] or new_key in competing_keys)):
         raise ValueError('该车型已有每日记录，无法清空或改为重复的代际与二级代际')
+    changed_applicability = (NO_PREORDER in before[8:10]) != (NO_PREORDER in after[8:10])
     for row,head,idx in matches:
         if renaming:
             _put(row,0,new_key[0])
             _put(row,idx,new_key[1] or None)
+        # A historical progress row can use its own preorder window. Switching
+        # applicability must never leave half that window as a date and half NA.
+        if changed_applicability:
+            follows_schedule = all(_get(row,head.index(field)) in (None,_get(before,j))
+                                   for j,field in enumerate(PREORDER_DATES,8) if field in head)
+            if follows_schedule:
+                for j,field in enumerate(PREORDER_DATES,8):
+                    if field in head:
+                        _put(row,head.index(field),_get(after,j))
+                if '小订天数' in head:
+                    _put(row,head.index('小订天数'),_get(after,12))
         for field,(old,new) in updates.items():
+            if changed_applicability and (field in PREORDER_DATES or field=='小订天数'):
+                continue
             if field in head:
                 position = head.index(field)
                 if _get(row,position) == old:
@@ -1117,18 +1179,26 @@ def _sync_gross(sheets, pending, *, identify_reported=False):
     gross = sheets[GROSS]
     records = [_quantity_records(sheets[name]) for name in (CONVERTED,DIRECT,GROSS)]
     stages = _stage_starts(sheets)
+    no_preorder = {_key(row,1) for row in sheets[SUMMARY]['rows'][1:] if NO_PREORDER in row[8:10]}
     reported = set(gross.get('reportedQuantities',[]))
     # Positions in this block remain stable when new stages/days are appended;
     # day labels, unlike physical column numbers, survive axis expansion.
     row_numbers = {_key(row,idx):n for n,row,_,idx in _detail_rows(gross)
                    if n < gross['headerRows'][1]}
-    for key in sorted(set(records[2]) | (records[0].keys() & records[1].keys())):
+    candidates = records[2].keys() | ((records[0].keys() | no_preorder) & records[1].keys())
+    for key in sorted(candidates):
         if key in records[2] and records[2][key] is None:
             continue  # Ambiguous historical stage; never overwrite either record.
         converted,direct,current = [dict(zip(*records_by_key[key])) if records_by_key.get(key) else {}
                                     for records_by_key in records]
+        # A stage without preorders has only direct orders unless the workbook
+        # contains an independent conversion series that must be reconciled.
+        direct_only = (key in no_preorder and (key not in records[0] or records[0][key] is not None)
+                       and not any(v not in (None,0) and re.fullmatch(r'D[1-9]\d*',str(k)) for k,v in converted.items()))
         start = stages.get(key)
         axis = current.get('开始大定日期') or start
+        if not axis and direct_only:
+            axis = direct.get('开始大定日期')
         if not axis:
             anchors = [source.get('开始大定日期') for source in (converted,direct)]
             if all(anchors) and (not current or anchors[0] == anchors[1]):
@@ -1138,8 +1208,11 @@ def _sync_gross(sheets, pending, *, identify_reported=False):
             offset = _day_offset(source.get('开始大定日期') or start,axis)
             aligned.append({int(field[1:])+offset:value for field,value in source.items()
                             if offset is not None and _whole_count(value) and re.fullmatch(r'D[1-9]\d*',str(field))})
-        combined = {day:aligned[0][day]+aligned[1][day] for day in aligned[0].keys() & aligned[1].keys()
-                    if 1 <= day <= MAX_COLUMNS-20}
+        if direct_only:
+            combined = {day:count for day,count in aligned[1].items() if 1 <= day <= MAX_COLUMNS-20}
+        else:
+            combined = {day:aligned[0][day]+aligned[1][day] for day in aligned[0].keys() & aligned[1].keys()
+                        if 1 <= day <= MAX_COLUMNS-20}
         existing = {int(k[1:]):v for k,v in current.items() if v is not None and re.fullmatch(r'D[1-9]\d*',str(k))}
         for day in sorted(combined.keys() | existing.keys()):
             old, new = existing.get(day), combined.get(day)
@@ -1345,7 +1418,21 @@ def apply_edits(data, edits):
         curves = {}
         _progress_before(sheets,sheet['name'],key,bisect_right(sheet['headerRows'],n),header[col-1],curves)
         before = list(rows[n-1]) if sheet['name']==SUMMARY and col<=14 else []
-        _put(rows[n-1],col-1,_normalize_input(sheet,n,col,edit['value']))
+        row = rows[n-1]
+        value = _normalize_input(sheet,n,col,edit['value'])
+        if header[col-1] in PREORDER_DATES:
+            # The two cells describe one period. Reopening it with just a start
+            # date leaves the end unknown; opting out clears its duration.
+            for j,field in enumerate(header):
+                if field in PREORDER_DATES and (value==NO_PREORDER or _get(row,j)==NO_PREORDER):
+                    _put(row,j,NO_PREORDER if value==NO_PREORDER else None)
+            if value==NO_PREORDER and '小订天数' in header:
+                duration = header.index('小订天数')
+                _put(row,duration,None)
+                address = f'{n}:{duration+1}'
+                if address in sheet['literalCells']:
+                    sheet['literalCells'].remove(address)
+        _put(row,col-1,value)
         if sheet['name'] == SUMMARY:
             if col in BACKFILLED:
                 coord = f'{n}:{col}'
@@ -1382,7 +1469,8 @@ def validate_publication(data):
             raise ValueError(f'车型汇总第 {n} 行缺少代际名或车型与二级代际重复')
         seen.add(key)
         for a,b in ((8,9),(10,11)):
-            if _get(row,a) and _get(row,b) and _days(row[a],row[b]) < 1:
+            duration = _days(_get(row,a),_get(row,b))
+            if duration is not None and duration < 1:
                 raise ValueError(f'车型汇总第 {n} 行结束日期早于开始日期')
     for sheet in data['sheets'][1:]:
         allowed = seen | {tuple(key) for key in sheet.get('historicalIdentities',[])}
