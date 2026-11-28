@@ -18,5 +18,12 @@ def build(destination,version):
         target=destination/'payload'/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(raw)
     (destination/'app-release.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
     return manifest
-if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--destination',type=Path,required=True);p.add_argument('--version',required=True);a=p.parse_args();print(json.dumps(build(a.destination,a.version),ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--destination", type=Path, required=True)
+    parser.add_argument("--version", required=True)
+    args = parser.parse_args()
+    manifest = build(args.destination, args.version)
+    print(f"{args.destination.resolve()} ({manifest['version']}, {len(manifest['files'])} payload files)")
