@@ -15,7 +15,7 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.datetime import from_excel
 
-from daily_import import daily_sum_value
+from daily_import import daily_footer_sum
 from xlsx_input import MAX_BYTES, WorkbookBatch
 
 
@@ -480,7 +480,7 @@ def _detail_head(name,cells,epoch,scope=None):
         if name != DAILY and scope == 'reporting' and value not in (PRIMARY,SECONDARY) and not _quantity_axis(name,value):
             value = None
         if value is not None and value in head:
-            if name == DAILY and scope == 'reporting' and value == '合计':
+            if name == DAILY and value == '合计':
                 value = '备注'
             elif name != DAILY and (value in RATE_FIELDS or value in ('小订天数','首销期天数')):
                 value = None
@@ -492,20 +492,19 @@ def _detail_head(name,cells,epoch,scope=None):
     # Reserve the input column positions before adding an implicit stage key.
     if name == DAILY or SECONDARY in head:
         _trim(head)
-    add_total = name==DAILY and '合计' not in head
-    if add_total:
+    if name==DAILY and '合计' not in head:
         head.append('合计')
     if SECONDARY not in head:
         head.append(SECONDARY)
-    return head,add_total
+    return head
 
 
-def _daily_note(cells,label,before_header,note_columns):
+def _daily_note(cells,label,headers):
     note = isinstance(label,str) and re.match(r'^(?:备注|说明|注)\s*(?:[:：]|$)',label)
-    if not (note or label in (None,'') or before_header and label in (DAILY,'小订按天','每日小订','小订')):
+    if not (note or label in (None,'') or not headers and label in (DAILY,'小订按天','每日小订','小订')):
         return False
     for j,cell in enumerate(cells[1:],1):
-        if j in note_columns or cell.value is None:
+        if _get(headers,j) in ('备注','合计') or cell.value is None:
             continue
         if not note or cell.data_type not in ('s','inlineStr'):
             return False
@@ -529,7 +528,6 @@ def _quantity_axis(name, field):
 
 def _read_detail(name,cells,caches,headers,epoch,daily_block=None,columns=None):
     row = [None] * len(cells)
-    sums = []
     if columns is None:
         columns = range(len(cells))
     date_columns = [j for j,field in enumerate(headers) if field in PREORDER_DATES and j in columns]
@@ -538,7 +536,7 @@ def _read_detail(name,cells,caches,headers,epoch,daily_block=None,columns=None):
         if j >= len(cells):
             continue
         field = _get(headers,j)
-        if name == DAILY and field == '备注':
+        if name == DAILY and field in ('备注','合计'):
             continue
         cell,cache_cell = cells[j],caches[j]
         if j in na_dates:
@@ -547,9 +545,11 @@ def _read_detail(name,cells,caches,headers,epoch,daily_block=None,columns=None):
         if na_dates and field=='小订天数':
             continue
         numeric = field not in (None,PRIMARY,SECONDARY)
-        if daily_block is not None and numeric and cell.data_type=='f' and cache_cell.value is None:
-            sums.append(j)
-            continue
+        if daily_block is not None and cell.data_type=='f' and cache_cell.value is None and _is_date(field):
+            subtotal = daily_footer_sum(cell, cells[0].value, *daily_block)
+            if subtotal is not NotImplemented:
+                row[j] = subtotal
+                continue
         cell = _cached(cell,cache_cell,name,numeric)
         value = _import_scalar(cell,field,epoch)
         if field in (PRIMARY,SECONDARY) and value is not None:
@@ -564,13 +564,6 @@ def _read_detail(name,cells,caches,headers,epoch,daily_block=None,columns=None):
                 value = _num(value[:-1])/100
             else:
                 value = _num(value, integer=name in PROGRESS_FIELDS)
-        row[j] = value
-    # Resolve vertical footer sums before a row total which may reference them.
-    for j in sorted(sums,key=lambda index: headers[index]=='合计'):
-        cell = cells[j]
-        value = daily_sum_value(cell,cells,caches,headers,*daily_block,row)
-        if value is NotImplemented:
-            _cached(cell,caches[j],name,True)
         row[j] = value
     if na_dates:
         _mark_no_preorder(row,date_columns,name)
@@ -587,7 +580,7 @@ def _read_summary(row_pairs, epoch, scope, other_sources, schedule_days):
         quantities = [j for j,cell in enumerate(head) if _summary_title(cell) in fields]
         if not quantities:
             if not other_sources:
-                raise ValueError('填报导入需要结果核对字段或逐日数量工作表')
+                raise ValueError('填报导入需要阶段汇总字段或逐日数量工作表')
             return result
         # An accompanying schedule with no reported quantities contributes no stage keys.
         mapping = None
@@ -650,6 +643,7 @@ def _read_workbook_sheets(path_or_bytes, scope=None, schedule_days=None):
                 result.append(_read_summary(row_pairs,book.epoch,scope,len(sources)>1,schedule_days))
                 continue
             rows, headers = [], []
+            source_headers = []
             daily_block = None
             quantity_axes = None
             quantity_columns = None
@@ -658,7 +652,7 @@ def _read_workbook_sheets(path_or_bytes, scope=None, schedule_days=None):
                 raw_label = cells[0].value if cells else None
                 label = raw_label.strip() if isinstance(raw_label,str) else raw_label
                 is_head = label in (PRIMARY,*HEADER_ALIASES[PRIMARY]) or (label=='小订' and name==DAILY)
-                if ((name==DAILY and _daily_note(cells,label,not headers,note_columns)) or
+                if ((name==DAILY and _daily_note(cells,label,source_headers)) or
                         ((progress or scope=='reporting') and headers and label in ('合计','总计'))):
                     if daily_block is not None:
                         # Preserve physical offsets for formula references in this block.
@@ -667,15 +661,16 @@ def _read_workbook_sheets(path_or_bytes, scope=None, schedule_days=None):
                     continue
                 try:
                     if is_head:
-                        headers,add_total = _detail_head(name,cells,book.epoch,scope)
+                        headers = _detail_head(name,cells,book.epoch,scope)
                         width = max((j+1 for j,c in enumerate(cells) if c.value is not None),default=0)
+                        source_headers = headers[:width]
                         if name == DAILY:
                             note_columns = {j for j,title in enumerate(headers) if title == '备注'}
                         if scope=='reporting':
-                            quantity_axes = [j for j,title in enumerate(headers[:width]) if _quantity_axis(name,title)]
+                            quantity_axes = [j for j,title in enumerate(source_headers) if _quantity_axis(name,title)]
                             quantity_columns = [0,headers.index(SECONDARY),*quantity_axes]
                         elif progress:
-                            quantity_columns = [j for j,field in enumerate(headers[:width])
+                            quantity_columns = [j for j,field in enumerate(source_headers)
                                                 if field is not None and field not in RATE_FIELDS
                                                 and field not in ('小订天数','首销期天数')]
                         rows.append(_without_note_columns(headers,note_columns))
@@ -687,9 +682,10 @@ def _read_workbook_sheets(path_or_bytes, scope=None, schedule_days=None):
                         if quantity_axes is not None and not any(j < len(cells) and cells[j].value not in (None,'') for j in quantity_axes):
                             row = []
                         else:
-                            row = _read_detail(name,cells,cache_cells,headers[:width],book.epoch,daily_block,quantity_columns)
-                        if add_total and scope!='reporting' and _get(row,0) not in ('合计',None):
+                            row = _read_detail(name,cells,cache_cells,source_headers,book.epoch,daily_block,quantity_columns)
+                        if name == DAILY and not scope and _get(row,0):
                             _daily_total(row,headers)
+                            _trim(row)
                         rows.append(_without_note_columns(row,note_columns))
                         if daily_block is not None:
                             daily_block[0].append(row)
@@ -1650,9 +1646,7 @@ def _within_dates(sheet, start_date, end_date):
             primary = _get(row,0)
             if not primary or primary == '合计':
                 continue
-            selected = [primary, *(_get(row,j) for j in dates), None, _get(row,secondary)]
-            _daily_total(selected,selected_head)
-            projected.append(selected)
+            projected.append([primary, *(_get(row,j) for j in dates), None, _get(row,secondary)])
     return _sheet(DAILY,projected or [[PRIMARY,'合计',SECONDARY]])
 
 
@@ -1705,6 +1699,9 @@ def export_workbook(data, selection=None):
         for target,(n,row) in enumerate(_selected_rows(sheet,set(models)),1):
             head = _header(sheet,n)
             is_head = n in sheet['headerRows']
+            if sheet['name'] == DAILY and not is_head and _get(row,0) and '合计' in head:
+                row = row.copy()
+                _daily_total(row,head)
             for j,v in enumerate(row,1):
                 if v is None:
                     continue

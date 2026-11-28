@@ -1,3 +1,4 @@
+from copy import deepcopy
 from io import BytesIO
 import unittest
 
@@ -111,7 +112,7 @@ class DailyLayoutTests(unittest.TestCase):
         data = import_workbook(legacy_workbook(rows,['车型甲','车型乙']))
         daily = data['sheets'][1]
         self.assertEqual([row for row in daily['rows'] if row], [
-            HEADER, ['车型甲',0,3,3,'首销'], ['车型乙',1,5,13,'首销'], ['合计',1,8,16]])
+            HEADER, ['车型甲',0,3,3,'首销'], ['车型乙',1,5,6,'首销'], ['合计',1,8,9]])
         current = apply_edits(empty_workbook(), [
             dict(sheet=SUMMARY,row=n,col=col,value=value)
             for n,model in enumerate(['车型甲','车型乙'],2)
@@ -122,6 +123,50 @@ class DailyLayoutTests(unittest.TestCase):
         edits = module_import_edits(current,legacy_workbook(rows,daily_only=True),'reporting')
         self.assertEqual([(e['model'],e['date'],e['value']) for e in edits], [
             ('车型甲',DAYS[0],0), ('车型甲',DAYS[1],3), ('车型乙',DAYS[0],1), ('车型乙',DAYS[1],5)])
+
+    def test_only_dated_cells_supply_daily_counts_with_or_without_total_columns(self):
+        models = ['零单', '未填', '已填']
+        current = apply_edits(empty_workbook(), [
+            dict(sheet=SUMMARY, row=n, col=col, value=value)
+            for n, model in enumerate(models, 2)
+            for col, value in ((1, model), (2, '首销'))
+        ])
+        reordered = [[PRIMARY, '总计', DAYS[1], SECONDARY, '合计', DAYS[0]],
+                     ['零单', '#REF!', 0, '首销', '=BAD()'],
+                     ['未填', '=NA()', None, '首销', 99],
+                     ['已填', 123, 2, '首销', '未核对', 3],
+                     ['总计', '=BAD()', '=SUM(C2:C4)', None, '#VALUE!', '=SUM(F2:F4)']]
+        no_totals = [[PRIMARY, SECONDARY, *DAYS],
+                     ['零单', '首销', None, 0], ['未填', '首销'], ['已填', '首销', 3, 2],
+                     ['合计', None, '=SUM(C2:C4)', '=SUM(D2:D4)']]
+        for rows in (reordered, no_totals):
+            with self.subTest(header=rows[0]):
+                data = import_workbook(legacy_workbook(rows, models))
+                validate_publication(data)
+                head, *records = data['sheets'][1]['rows']
+                self.assertEqual(head.count('合计'), 1)
+                records = {row[0]: dict(zip(head, row)) for row in records}
+                for model, counts in {'零单': (None, 0, 0), '未填': (None, None, None),
+                                      '已填': (3, 2, 5), '合计': (3, 2, 5)}.items():
+                    self.assertEqual(tuple(records[model].get(key) for key in (*DAYS, '合计')), counts)
+                edits = module_import_edits(current, legacy_workbook(rows, daily_only=True), 'reporting')
+                self.assertCountEqual([(e['model'], e['date'], e['value']) for e in edits],
+                                      [('零单', DAYS[1], 0), ('已填', DAYS[0], 3), ('已填', DAYS[1], 2)])
+
+    def test_full_export_recalculates_stored_totals_without_changing_the_edition(self):
+        data = empty_workbook()
+        daily = data['sheets'][1]
+        daily['rows'] = [HEADER.copy(), ['零单', 0, None, 100, '首销'],
+                         ['未填', None, None, 123, '首销'], ['已填', 2, 3, 999, '首销'],
+                         ['合计', 8, 9, 77]]
+        original = deepcopy(data)
+        book = load_workbook(BytesIO(export_workbook(data)), data_only=True)
+        try:
+            self.assertEqual([book[DAILY].cell(row, 4).value for row in range(2, 6)], [0, None, 5, 17])
+            self.assertEqual([book[DAILY].cell(5, col).value for col in (2, 3)], [8, 9])
+        finally:
+            book.close()
+        self.assertEqual(data, original)
 
     def test_note_handling_preserves_validation_of_dates_and_misplaced_quantities(self):
         for rows in ([[PRIMARY,'2026-05-32','说明',SECONDARY],['车型甲',4,'备注','首销']],
@@ -161,6 +206,8 @@ class DailyLayoutTests(unittest.TestCase):
                 raw = legacy_workbook([HEADER, [], row], ['车型甲'])
                 with self.assertRaisesRegex(ValueError, '小订by天.*(第 3 行|B3)'):
                     import_workbook(raw)
+                with self.assertRaisesRegex(ValueError, '小订by天.*(第 3 行|B3)'):
+                    module_import_edits(empty_workbook(), raw, 'reporting')
         raw = legacy_workbook([HEADER, [], [None, 0, 1]])
         with self.assertRaisesRegex(ValueError, '小订by天.*(第 3 行|B3)'):
             validate_publication(import_workbook(raw))
