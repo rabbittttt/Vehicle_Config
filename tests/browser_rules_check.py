@@ -198,7 +198,8 @@ def main():
         title = header.get_by_role('heading', level=1)
         expect(title).to_have_text('车型配置')
         primary_nav = header.locator('nav [data-tab]')
-        expect(primary_nav).to_have_text(['车型与日程', '代际规则', '电池与选配', '小订首销填报', '变更记录'])
+        nav_labels = ['车型与日程', '小订首销填报', '代际规则', '电池与选配', '变更记录']
+        expect(primary_nav).to_have_text(nav_labels)
         expect(header.get_by_role('link', name='订单配置规则')).to_have_count(0)
         title_box = title.bounding_box()
         title_mid_y = title_box['y'] + title_box['height'] / 2
@@ -308,7 +309,7 @@ def main():
         switch_view(page, 'generation', 'gen_names')
         expect(page).to_have_url(url)
         expect(page.locator('h1')).to_have_text('车型配置')
-        expect(primary_nav).to_have_text(['车型与日程', '代际规则', '电池与选配', '小订首销填报', '变更记录'])
+        expect(primary_nav).to_have_text(nav_labels)
         expect(year).to_be_visible()
         header.locator('#search').fill('不存在的旧名')
         expect(content).not_to_contain_text('车型甲旧名')
