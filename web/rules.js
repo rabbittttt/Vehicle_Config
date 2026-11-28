@@ -24,18 +24,12 @@ const orderRules = (() => {
   let state, draft, saved = '', published = '', modified = false, pendingPublish = false;
   let publishAttempted = false;
   let undoStack = [], redoStack = [];
-  const prices = createPriceEntry({
-    getRows: () => draft.option_prices,
-    commit: (rows, redraw = true) => change({...draft, option_prices: rows}, redraw),
-    formatPrice: text,
-    editNew: preset => edit('option_prices', null, false, preset),
-  });
 
   const ready = () => Boolean(state);
-  const isDirty = () => modified || prices.hasPending();
-  const hasPendingPublish = () => pendingPublish || prices.hasPending();
-  const canUndo = () => undoStack.length > 0 || prices.hasPending();
-  const canRedo = () => redoStack.length > 0 && !prices.hasPending();
+  const isDirty = () => modified;
+  const hasPendingPublish = () => pendingPublish;
+  const canUndo = () => undoStack.length > 0;
+  const canRedo = () => redoStack.length > 0;
   const list = (table, field) => ['members', 'version', 'sku', 'versions', 'match_versions'].includes(field) ||
     (table === 'battery_rules' && field === 'generation');
   function text(value) {
@@ -110,7 +104,6 @@ const orderRules = (() => {
   }
 
   function accept(next) {
-    prices.reset();
     state = next;
     publishAttempted = false;
     draft = structuredClone(next.draft.data);
@@ -156,11 +149,6 @@ const orderRules = (() => {
 
   function undo() {
     if (busy || readonly || !canUndo()) return;
-    if (prices.discardPending()) {
-      renderKeepingScroll();
-      notice('已撤销选配输入');
-      return;
-    }
     redoStack.push(JSON.stringify(draft));
     const previous = undoStack.pop();
     draft = JSON.parse(previous);
@@ -207,19 +195,6 @@ const orderRules = (() => {
     const rows = draft[table]
       .map((row, index) => ({row, index}))
       .filter(({row}) => matchesModel(table,row,names) && Object.values(row).map(text).join(' ').toLocaleLowerCase().includes(search));
-    if (table === 'option_prices') {
-      const generationOptions = [...new Set([...modelNames(), ...campaignEditor.modelNames()])]
-        .filter(name => !names || names.has(name));
-      let defaultGeneration = '';
-      if (model && generationOptions.includes(model)) {
-        // Existing scripts may store prices under the original name of a renamed model.
-        const existing = new Set(draft.option_prices.map(row => row.generation).filter(name => names.has(name)));
-        if (!existing.size || existing.has(model)) defaultGeneration = model;
-        else if (existing.size === 1) defaultGeneration = existing.values().next().value;
-      }
-      prices.render({rows, search, warning: sourceAlert(), scopeNames: names, generationOptions, defaultGeneration});
-      return;
-    }
     const mapping = ['gen_names', 'option_names'].includes(table);
     $('#actions').innerHTML = readonly ? '' : (mapping ? ruleButton('batch', '批量粘贴') : '') +
       ruleButton('add', '新增规则');
@@ -271,7 +246,7 @@ const orderRules = (() => {
       <label data-fixed-price ${conditional ? 'hidden' : ''}>金额（元）<input name="price" type="number" min="0" step="any" required ${conditional ? 'disabled' : ''} value="${esc(conditional ? '' : price ?? 0)}"></label>
       <fieldset class="conditional-prices wide" ${conditional ? '' : 'hidden disabled'}>
         <legend>条件价格</legend>
-        <div data-price-rows>${conditional && !entries.length ? priceRow() : entries.map(([key, amount]) => priceRow(key, amount)).join('')}</div>
+        <div data-price-rows>${entries.map(([key, amount]) => priceRow(key, amount)).join('')}</div>
         <button type="button" data-add-price>添加条件价</button>
         <button type="button" data-add-default ${entries.some(([key]) => key === 'default') ? 'hidden' : ''}>添加默认价</button>
       </fieldset>`;
@@ -324,13 +299,10 @@ const orderRules = (() => {
     return Object.fromEntries(entries);
   }
 
-  function edit(table, id, copy = false, preset = {}) {
-    const current = draft[table].find(row => row.id === id) || preset;
+  function edit(table, id, copy = false) {
+    const current = draft[table].find(row => row.id === id) || {};
     const controls = fields[table].map(field => {
       const caption = label(table, field);
-      if (preset.id && (field === 'generation' || field === 'category')) {
-        return `<input type="hidden" name="${field}" value="${esc(preset[field])}">`;
-      }
       if (list(table, field)) {
         return `<label>${esc(caption)}（每行一项）<textarea name="${field}" rows="3">${esc((current[field] || []).join('\n'))}</textarea></label>`;
       }
@@ -341,7 +313,7 @@ const orderRules = (() => {
       return `<label>${caption}<input name="${field}" maxlength="4000" value="${esc(current[field] ?? '')}" ${field === 'seat' ? '' : 'required'}></label>`;
     });
     modal(copy ? '复制规则' : id ? '编辑规则' : '新增规则', `<form id="rule-form" class="form">${controls.join('')}</form>`, async values => {
-      const row = {id: (id && !copy ? id : preset.id) || newId()};
+      const row = {id: id && !copy ? id : newId()};
       for (const field of fields[table]) {
         const value = values.get(field);
         if (list(table, field)) row[field] = String(value).split(/\r?\n/).map(item => item.trim()).filter(Boolean);
@@ -429,10 +401,8 @@ const orderRules = (() => {
         const record = await api('rules/history/' + id);
         modal('脚本规则 #' + id, diffHTML(record.changes), readonly ? null : async () => {
           if (!ready()) await load();
-          prices.flush();
           const table = Object.keys(fields).find(key => JSON.stringify(draft[key]) !== JSON.stringify(record.data[key]))
             || record.changes[0]?.table || 'gen_names';
-          prices.reset();
           change(record.data, false);
           switchView(sections.generation.includes(table) ? 'generation' : 'options', table);
           notice('规则已恢复到编辑区，尚未保存');
@@ -441,9 +411,6 @@ const orderRules = (() => {
       });
     }
     if (!ready() || readonly) return;
-    if (table === 'option_prices') {
-      try { prices.flush(); } catch (error) { return notice(error.message, true); }
-    }
     if (action === 'batch') return batch(table);
     if (action === 'add') return edit(table);
     if (action === 'edit' || action === 'copy') return edit(table, id, action === 'copy');
@@ -477,13 +444,11 @@ const orderRules = (() => {
   }
 
   async function save() {
-    prices.flush();
     accept(await writeApi('rules/save', {data: draft, revision: state.draft.revision}));
     notice('脚本规则草稿已保存');
   }
 
   async function preparePublish() {
-    prices.flush();
     if (publishAttempted || !isDirty()) {
       const latest = await api('rules/state');
       if (publishAttempted && latest.draft.revision !== state.draft.revision) {
@@ -515,14 +480,10 @@ const orderRules = (() => {
     };
   }
 
-  function openExport() {
-    prices.flush();
-    return download('rules/export', {data: draft}, '脚本规则-当前编辑.xlsx');
-  }
+  const openExport = () => download('rules/export', {data: draft}, '脚本规则-当前编辑.xlsx');
   const template = () => download('rules/template', undefined, '脚本规则-导入模板.xlsx');
 
   async function importFiles(files) {
-    prices.flush();
     const payload = await encodeWorkbooks(files);
     const result = await api('rules/import', {files: payload, revision: state.draft.revision, ...(modified ? {editor:draft} : {})});
     const {summary, issues, changes, errors} = result;
@@ -546,321 +507,3 @@ const orderRules = (() => {
     handleClick, save, preparePublish, reload, syncFromScript, undo, redo, openExport, template, importFiles,
   };
 })();
-
-function createPriceEntry({getRows, commit, formatPrice, editNew}) {
-  const inputs = new Map();
-  const collapsed = new Set();
-  let focusNext = null;
-  let lastGeneration = '';
-
-  const groupKey = (generation, category) => JSON.stringify([generation, category]);
-  const isConditional = row => typeof row.price === 'object' && row.price !== null;
-  const hasInput = input => !input.fresh || Boolean(input.name.trim() || input.amount.trim());
-  const hasPending = () => [...inputs.values()].some(hasInput);
-
-  function reset() {
-    inputs.clear();
-    collapsed.clear();
-    focusNext = null;
-  }
-
-  function discardPending() {
-    const last = [...inputs.values()].reverse().find(hasInput);
-    if (!last) return false;
-    inputs.delete(last.id);
-    return true;
-  }
-
-  function applyInputs(selected) {
-    const changed = selected.filter(hasInput);
-    if (!changed.length) return;
-    const rows = [...getRows()];
-    for (const input of changed) {
-      const index = rows.findIndex(row => row.id === input.id);
-      const original = rows[index];
-      if (!original && !input.fresh) throw Error('此选配已变更，请重新核对');
-      const row = original ? {...original} : {
-        id:input.id, generation:input.generation, category:input.category,
-        default:false, versions:[], match_versions:[], seat:'',
-      };
-      row.name = input.name.trim();
-      const location = [row.generation, row.category, row.name].filter(Boolean).join(' / ');
-      if (!row.name) throw Error(location + '：请填写选配名称');
-      if (!isConditional(row)) {
-        const amount = input.amount.trim();
-        if (!amount || !/^\+?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(amount) || !Number.isFinite(Number(amount))) {
-          throw Error(location + '：请填写大于或等于零的金额');
-        }
-        row.price = Number(amount);
-      }
-      if (original) rows[index] = row;
-      else rows.push(row);
-    }
-    if (rows.length > 10000) throw Error('选配金超过 10000 行');
-    const keys = new Set();
-    for (const row of rows) {
-      const key = JSON.stringify([row.generation, row.category, row.name, row.versions, row.match_versions, row.seat]);
-      if (keys.has(key)) throw Error([row.generation, row.category, row.name].join(' / ') + '：相同适用条件下的选配名称重复');
-      keys.add(key);
-    }
-    changed.forEach(input => inputs.delete(input.id));
-    commit(rows, false);
-    flags();
-  }
-
-  function flush() {
-    applyInputs([...inputs.values()]);
-  }
-
-  function detailsText(row) {
-    return [row.default && '默认选配', row.versions?.length && '版本包含：' + row.versions.join(' / '),
-      row.match_versions?.length && '版本精确：' + row.match_versions.join(' / '),
-      row.seat && '座位：' + row.seat].filter(Boolean).join(' · ');
-  }
-
-  function actions(row) {
-    const buttons = row.fresh
-      ? '<button type="button" class="link" data-price-discard>取消录入</button>'
-      : [['copy','复制'],['delete','删除']].map(([action, label]) =>
-        `<button type="button" class="link" data-rule-action="${action}" data-rule-id="${esc(row.id)}">${label}</button>`).join('');
-    return `<details class="price-more"><summary aria-label="更多操作">⋯</summary><div class="price-menu">${buttons}</div></details>`;
-  }
-
-  function rowHTML(row) {
-    const input = inputs.get(row.id);
-    const name = input?.name ?? row.name;
-    const amount = input?.amount ?? row.price;
-    const details = detailsText(row);
-    const description = details ? `<small class="price-conditions">${esc(details)}</small>` : '';
-    const id = esc(row.id);
-    const parameters = readonly ? '' : `<button type="button" class="link price-parameters" ${row.fresh ? 'data-price-edit-new' : `data-rule-action="edit" data-rule-id="${id}"`}>参数</button>`;
-    let priceCell;
-    if (isConditional(row)) {
-      const summary = esc(formatPrice(row.price));
-      priceCell = readonly ? summary : `<button type="button" class="link price-conditional" aria-label="编辑条件价" data-rule-action="edit" data-rule-id="${id}">${summary}</button>`;
-    } else {
-      priceCell = readonly ? esc(amount) : `<input class="price-amount" aria-label="金额（元）" inputmode="decimal" value="${esc(amount)}">`;
-    }
-    return `<tr data-price-id="${id}"${row.fresh ? ' class="price-new"' : ''}>
-      <td>${readonly ? esc(name) : `<input class="price-name" aria-label="选配名称" maxlength="4000" placeholder="输入选配名称" value="${esc(name)}">`}${description}</td>
-      <td>${priceCell}${parameters}</td>${readonly ? '' : `<td class="price-actions">${actions(row)}</td>`}</tr>`;
-  }
-
-  function groupHTML(group, rows) {
-    const {key, category} = group;
-    const open = !collapsed.has(key);
-    return `<section class="price-group" data-price-group="${esc(key)}">
-      <button type="button" class="price-group-toggle" aria-expanded="${open}">${esc(category)}</button>
-      ${open ? `<table class="price-table"><colgroup><col class="price-name-column"><col class="price-amount-column">${readonly ? '' : '<col class="price-actions-column">'}</colgroup>
-        <thead><tr><th scope="col">选配名称</th><th scope="col">金额（元）</th>${readonly ? '' : '<th scope="col" aria-label="操作"></th>'}</tr></thead>
-        <tbody>${rows.map(rowHTML).join('')}</tbody></table>
-        ${readonly ? '' : '<button type="button" class="link price-add">＋ 添加选配</button>'}` : ''}
-    </section>`;
-  }
-
-  function addRow(generation, category) {
-    const key = groupKey(generation, category);
-    let input = [...inputs.values()].find(item => item.fresh && item.generation === generation && item.category === category);
-    if (input?.name.trim() && input.amount.trim()) {
-      try {
-        applyInputs([input]);
-        input = null;
-      } catch (error) {
-        notice(error.message, true);
-      }
-    }
-    if (!input) {
-      input = {id:newId(), generation, category, name:'', amount:'', fresh:true};
-      inputs.set(input.id, input);
-    }
-    collapsed.delete(key);
-    focusNext = {id:input.id, field:input.name.trim() ? '.price-amount' : '.price-name'};
-    renderKeepingScroll();
-  }
-
-  function addCategory(generationOptions, defaultGeneration, scopeNames) {
-    const choices = generationOptions.map(name => `<option value="${esc(name)}"></option>`).join('');
-    const previous = !scopeNames || scopeNames.has(lastGeneration) ? lastGeneration : '';
-    const generation = defaultGeneration ? '' : `<label>车型代际<input name="generation" required maxlength="4000" value="${esc(previous)}" list="price-generation-options"><datalist id="price-generation-options">${choices}</datalist></label>`;
-    modal('添加分类', `<form class="form">${generation}<label>选配分类<input name="category" maxlength="4000" required></label></form>`, values => {
-      const owner = defaultGeneration || String(values.get('generation')).trim();
-      const category = String(values.get('category')).trim();
-      if (!owner || !category) throw Error('请填写车型代际和选配分类');
-      if (scopeNames && !scopeNames.has(owner)) throw Error('请选择当前车型和年款范围内的代际');
-      lastGeneration = owner;
-      addRow(owner, category);
-    }, '添加');
-    $('#dialog-body form').onsubmit = event => {event.preventDefault(); $('#confirm').click();};
-  }
-
-  function inputInfo(control) {
-    const element = control.closest('tr[data-price-id]');
-    if (!element || !control.matches('.price-name, .price-amount')) return null;
-    return {element, id:element.dataset.priceId};
-  }
-
-  function handleInput(event) {
-    const info = inputInfo(event.target);
-    if (readonly || busy || !info) return;
-    const row = getRows().find(item => item.id === info.id);
-    const input = inputs.get(info.id) || (row && {id:row.id, name:row.name, amount:isConditional(row) ? '' : String(row.price), fresh:false});
-    if (!input) return;
-    if (event.target.matches('.price-name')) input.name = event.target.value;
-    else input.amount = event.target.value;
-    if (row && input.name === row.name && (isConditional(row) || input.amount === String(row.price))) inputs.delete(input.id);
-    else {
-      inputs.delete(input.id);
-      inputs.set(input.id, input);
-    }
-    event.target.removeAttribute('aria-invalid');
-    flags();
-  }
-
-  function finishRow(element, strict) {
-    const id = element.dataset.priceId;
-    const input = inputs.get(id);
-    if (!input) return true;
-    if (!strict && input.fresh && (!input.name.trim() || !input.amount.trim())) return false;
-    if (!hasInput(input)) return false;
-    try {
-      applyInputs([input]);
-    } catch (error) {
-      const field = !input.name.trim() || error.message.includes('重复') ? '.price-name' : '.price-amount';
-      element.querySelector(field)?.setAttribute('aria-invalid', 'true');
-      notice(error.message, true);
-      return false;
-    }
-    // Keep the DOM in place so a blur doesn't swallow the user's next click.
-    if (input.fresh) {
-      element.classList.remove('price-new');
-      element.querySelector('.price-actions').innerHTML = actions({id});
-      const parameters = element.querySelector('.price-parameters');
-      parameters.removeAttribute('data-price-edit-new');
-      parameters.dataset.ruleAction = 'edit';
-      parameters.dataset.ruleId = id;
-    }
-    return true;
-  }
-
-  function wire(editor) {
-    editor.oninput = handleInput;
-    editor.onchange = event => {
-      const info = inputInfo(event.target);
-      if (!readonly && !busy && info && !inputs.get(info.id)?.fresh) finishRow(info.element, false);
-    };
-    editor.onfocusout = event => {
-      const info = inputInfo(event.target);
-      if (!readonly && !busy && info && inputs.get(info.id)?.fresh && !info.element.contains(event.relatedTarget)) {
-        finishRow(info.element, false);
-      }
-    };
-    editor.onkeydown = event => {
-      if (event.isComposing || event.keyCode === 229 || readonly || busy) return;
-      if (event.key === 'Escape' && event.target.closest('.price-more')) {
-        const menu = event.target.closest('.price-more');
-        menu.open = false;
-        menu.querySelector('summary').focus();
-        return;
-      }
-      const info = inputInfo(event.target);
-      if (!info) return;
-      if (event.key === 'Escape') {
-        if (inputs.delete(info.id)) {
-          event.preventDefault();
-          renderKeepingScroll();
-        }
-        return;
-      }
-      if (event.key !== 'Enter' || event.defaultPrevented) return;
-      event.preventDefault();
-      const amount = info.element.querySelector('.price-amount');
-      if (event.target.matches('.price-name') && amount) {
-        amount.focus();
-        amount.select();
-      } else if (finishRow(info.element, true)) {
-        const next = info.element.nextElementSibling?.querySelector('.price-name');
-        if (next) {next.focus(); next.select();}
-        else addRow(...JSON.parse(info.element.closest('.price-group').dataset.priceGroup));
-      }
-    };
-    editor.onclick = event => {
-      if (busy) return;
-      const group = event.target.closest('.price-group');
-      if (!group) return;
-      const key = group.dataset.priceGroup;
-      const toggle = event.target.closest('.price-group-toggle');
-      if (toggle) {
-        if (collapsed.has(key)) collapsed.delete(key); else collapsed.add(key);
-        renderKeepingScroll();
-        $('#content').querySelector(`[data-price-group="${CSS.escape(key)}"] .price-group-toggle`)?.focus({preventScroll:true});
-      } else if (!readonly && event.target.closest('.price-add')) {
-        addRow(...JSON.parse(key));
-      } else if (!readonly && event.target.closest('[data-price-edit-new]')) {
-        const input = inputs.get(event.target.closest('tr').dataset.priceId);
-        if (input) editNew({id:input.id, generation:input.generation, category:input.category,
-          name:input.name, price:input.amount.trim() && Number.isFinite(Number(input.amount)) && Number(input.amount) >= 0 ? Number(input.amount) : {}});
-      } else if (!readonly && event.target.closest('[data-price-discard]')) {
-        inputs.delete(event.target.closest('tr').dataset.priceId);
-        renderKeepingScroll();
-      }
-    };
-  }
-
-  function render({rows, search, warning, generationOptions, defaultGeneration, scopeNames}) {
-    // A new item may have been completed in the full condition / pricing form.
-    const persisted = new Set(getRows().map(row => row.id));
-    for (const [id,input] of inputs) if (input.fresh && persisted.has(id)) inputs.delete(id);
-    const generations = new Map();
-    function append(row) {
-      if (!generations.has(row.generation)) generations.set(row.generation, new Map());
-      const categories = generations.get(row.generation);
-      if (!categories.has(row.category)) categories.set(row.category, {
-        category:row.category, key:groupKey(row.generation, row.category), rows:[],
-      });
-      categories.get(row.category).rows.push(row);
-    }
-    rows.forEach(({row}) => append(row));
-    if (!readonly) inputs.forEach(input => {
-      if (input.fresh && (!scopeNames || scopeNames.has(input.generation))) append(input);
-    });
-    const groups = [...generations.values()].flatMap(categories => [...categories.values()]);
-    const count = groups.reduce((total, group) => total + group.rows.length, 0);
-    if (focusNext) {
-      let offset = 0;
-      for (const group of groups) {
-        const index = group.rows.findIndex(row => row.id === focusNext.id);
-        if (index >= 0) {page = Math.floor((offset + index) / pageSize) + 1; break;}
-        offset += group.rows.length;
-      }
-    }
-    const [start,end] = paginator(count);
-    let offset = 0;
-    const body = [];
-    for (const [generation,categories] of generations) {
-      const sections = [];
-      for (const group of categories.values()) {
-        const visible = group.rows.slice(Math.max(0, start-offset), Math.max(0, end-offset));
-        if (visible.length) sections.push(groupHTML(group, visible));
-        offset += group.rows.length;
-      }
-      if (sections.length) {
-        const title = model && generation === defaultGeneration ? '' : `<h3 class="price-generation-title">${esc(generation)}</h3>`;
-        body.push(`<div class="price-generation">${title}${sections.join('')}</div>`);
-      }
-    }
-    $('#actions').innerHTML = readonly ? '' : '<button type="button" data-price-category>＋ 添加分类</button>';
-    if (!readonly) $('[data-price-category]').onclick = () => !busy && addCategory(generationOptions, defaultGeneration, scopeNames);
-    $('#count').textContent = rows.length ? `${rows.length} 条记录` : '';
-    const empty = `<div class="empty"><strong>${search || scopeNames ? '没有匹配的规则' : '暂无选配金'}</strong>${search ? '<button data-clear>清空搜索</button>' : ''}</div>`;
-    $('#content').innerHTML = warning + (body.length ? `<div class="price-entry">${body.join('')}</div>` : empty);
-    const editor = $('#content .price-entry');
-    if (editor) wire(editor);
-    if (focusNext) {
-      const {id,field} = focusNext;
-      focusNext = null;
-      requestAnimationFrame(() => editor?.querySelector(`[data-price-id="${CSS.escape(id)}"] ${field}`)?.focus());
-    }
-  }
-
-  return {render, flush, reset, discardPending, hasPending};
-}

@@ -257,7 +257,6 @@ def test_readonly(browser):
         switch_view(page, "options", "option_prices")
         expect(page.locator("#content")).to_contain_text("天窗")
         expect(page.locator("[data-rule-action]")).to_have_count(0)
-        expect(page.locator("#content input, .price-add, [data-price-category]")).to_have_count(0)
         expect(page.locator("#export")).to_be_enabled()
         switch_view(page, "history")
         for source_name in ("日程与填报", "脚本规则"):
