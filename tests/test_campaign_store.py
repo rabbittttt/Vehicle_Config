@@ -52,6 +52,40 @@ class CampaignStoreTests(unittest.TestCase):
                       edit(9, '2026-01-01'), edit(10, '2026-01-07'),
                       edit(11, '2026-01-08'), edit(12, '2026-01-31')]
 
+    def test_daily_export_reimport_ignores_total_column_but_detects_changed_observations(self):
+        book = load_workbook(BytesIO(export_workbook(self.store.preview(0, self.edits))))
+        daily = book['小订by天']
+        daily.delete_rows(1, daily.max_row)
+        daily.append(['代际名', '2026-01-01', '总计', '2026-01-02', '二级代际名'])
+        daily.append(['测试车型 2026款', 0, 999, 3])
+        legacy = BytesIO()
+        book.save(legacy)
+        book.close()
+
+        saved = self.store.import_legacy(0, legacy.getvalue(), '甲')
+        revision = saved['revision']
+        raw = self.store.export({}, source='draft')
+        check = self.store.preview_import(revision, raw)
+        self.assertTrue(check['identical'])
+        self.assertFalse(check['requiresConfirmation'])
+        self.assertFalse(any(t['changed'] for t in check['changes']['tables']))
+        self.assertEqual(self.store.import_legacy(revision, raw, '甲'), saved)
+
+        book = load_workbook(BytesIO(raw))
+        daily = book['小订by天']
+        self.assertEqual([cell.value for cell in daily[1]][-1], '二级代际名')
+        self.assertNotIn('合计', [cell.value for cell in daily[1]])
+        daily['B2'] = None  # Clearing a confirmed zero changes the observations.
+        changed = BytesIO()
+        book.save(changed)
+        book.close()
+        check = self.store.preview_import(revision, changed.getvalue())
+        self.assertFalse(check['identical'])
+        self.assertTrue(check['requiresConfirmation'])
+        self.assertTrue(next(t for t in check['changes']['tables'] if t['name'] == '小订by天')['changed'])
+        with self.assertRaisesRegex(ValueError, '确认替换'):
+            self.store.import_legacy(revision, changed.getvalue(), '乙')
+
     def test_legacy_preview_and_import_never_open_unused_worksheets(self):
         quantities = [dict(sheet=sheet, model='测试车型 2026款', day=1, value=count)
                       for sheet, count in [('小转大进度', 3), ('直接大定进度', 4)]]

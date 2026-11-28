@@ -1630,24 +1630,27 @@ def _selected_rows(sheet, models):
     return selected or [(1,rows[0])]
 
 
-def _within_dates(sheet, start_date, end_date):
+def daily_export_sheet(sheet, start_date=None, end_date=None):
+    """Project each daily block using its own header, omitting legacy row totals."""
     rows, projected = sheet['rows'], []
+    filter_dates = bool(start_date or end_date)
     for i,start in enumerate(sheet['headerRows']):
         end = sheet['headerRows'][i+1]-1 if i+1<len(sheet['headerRows']) else len(rows)
         head = rows[start-1]
-        dates = [j for j,v in enumerate(head) if _is_date(v) and
-                 (not start_date or start_date <= v) and (not end_date or v <= end_date)]
-        if not dates:
-            continue
-        secondary = head.index(SECONDARY)
-        selected_head = [PRIMARY, *(head[j] for j in dates), '合计', SECONDARY]
-        projected.append(selected_head)
-        for row in rows[start:end]:
-            primary = _get(row,0)
-            if not primary or primary == '合计':
+        if filter_dates:
+            dates = [j for j,v in enumerate(head) if _is_date(v) and
+                     (not start_date or start_date <= v) and (not end_date or v <= end_date)]
+            if not dates:
                 continue
-            projected.append([primary, *(_get(row,j) for j in dates), None, _get(row,secondary)])
-    return _sheet(DAILY,projected or [[PRIMARY,'合计',SECONDARY]])
+            columns = [0, *dates, head.index(SECONDARY)]
+        else:
+            columns = [j for j,v in enumerate(head) if v not in ('合计','总计')]
+        projected.append(_trim([head[j] for j in columns]))
+        for row in rows[start:end]:
+            if filter_dates and _get(row,0) in (None,'','合计','总计'):
+                continue
+            projected.append(_trim([_get(row,j) for j in columns]) if row else [])
+    return _sheet(DAILY,projected or [[PRIMARY,SECONDARY]])
 
 
 def module_template(scope):
@@ -1693,15 +1696,12 @@ def export_workbook(data, selection=None):
             continue
         if scope == 'schedule':
             sheet = {**sheet, 'rows': [row[:14] for row in sheet['rows']]}
-        if sheet['name'] == DAILY and (start or end):
-            sheet = _within_dates(sheet,start,end)
+        if sheet['name'] == DAILY:
+            sheet = daily_export_sheet(sheet,start,end)
         ws = book.create_sheet(sheet['name'])
         for target,(n,row) in enumerate(_selected_rows(sheet,set(models)),1):
             head = _header(sheet,n)
             is_head = n in sheet['headerRows']
-            if sheet['name'] == DAILY and not is_head and _get(row,0) and '合计' in head:
-                row = row.copy()
-                _daily_total(row,head)
             for j,v in enumerate(row,1):
                 if v is None:
                     continue

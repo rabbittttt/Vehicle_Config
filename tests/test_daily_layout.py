@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import datetime
 from io import BytesIO
 import unittest
 
@@ -6,7 +7,7 @@ from openpyxl import load_workbook
 
 from stage_workbook import (
     DAILY, PRIMARY, SECONDARY, SUMMARY, apply_edits, empty_workbook, export_workbook,
-    import_workbook, module_import_edits, validate_publication,
+    import_workbook, module_import_edits, module_template, validate_publication,
 )
 
 
@@ -153,20 +154,47 @@ class DailyLayoutTests(unittest.TestCase):
                 self.assertCountEqual([(e['model'], e['date'], e['value']) for e in edits],
                                       [('零单', DAYS[1], 0), ('已填', DAYS[0], 3), ('已填', DAYS[1], 2)])
 
-    def test_full_export_recalculates_stored_totals_without_changing_the_edition(self):
+    def test_full_export_omits_totals_by_block_but_keeps_daily_facts_and_footers(self):
         data = empty_workbook()
         daily = data['sheets'][1]
         daily['rows'] = [HEADER.copy(), ['零单', 0, None, 100, '首销'],
                          ['未填', None, None, 123, '首销'], ['已填', 2, 3, 999, '首销'],
-                         ['合计', 8, 9, 77]]
+                         ['合计', 8, 9, 77], [],
+                         [PRIMARY, '总计', SECONDARY, DAYS[1], '合计', DAYS[0]],
+                         ['已填', 88, '增补', 7, 99, 0]]
+        daily['headerRows'] = [1, 7]
         original = deepcopy(data)
-        book = load_workbook(BytesIO(export_workbook(data)), data_only=True)
+        raw = export_workbook(data)
+        book = load_workbook(BytesIO(raw), data_only=True)
         try:
-            self.assertEqual([book[DAILY].cell(row, 4).value for row in range(2, 6)], [0, None, 5, 17])
-            self.assertEqual([book[DAILY].cell(5, col).value for col in (2, 3)], [8, 9])
+            first, second = map(datetime.fromisoformat, DAYS)
+            self.assertEqual(list(book[DAILY].values), [
+                (PRIMARY, first, second, SECONDARY), ('零单', 0, None, '首销'),
+                ('未填', None, None, '首销'), ('已填', 2, 3, '首销'), ('合计', 8, 9, None),
+                (None, None, None, None), (PRIMARY, SECONDARY, second, first), ('已填', '增补', 7, 0)])
         finally:
             book.close()
         self.assertEqual(data, original)
+        restored = import_workbook(raw)['sheets'][1]
+        second_head, second_row = restored['rows'][-2:]
+        restored_values = dict(zip(second_head, second_row))
+        self.assertEqual([restored_values[k] for k in (PRIMARY, SECONDARY, *DAYS)], ['已填', '增补', 0, 7])
+
+    def test_reporting_template_and_empty_export_omit_totals(self):
+        template = load_workbook(BytesIO(module_template('reporting')), read_only=True)
+        try:
+            head, = template[DAILY].values
+            self.assertEqual(head[:2], (PRIMARY, SECONDARY))
+            self.assertEqual(len(head), 3)
+            self.assertIsInstance(head[2], datetime)
+        finally:
+            template.close()
+        raw = export_workbook(empty_workbook(), {'sheets': [DAILY], 'dateFrom': DAYS[0]})
+        book = load_workbook(BytesIO(raw), read_only=True)
+        try:
+            self.assertEqual(list(book[DAILY].values), [(PRIMARY, SECONDARY)])
+        finally:
+            book.close()
 
     def test_note_handling_preserves_validation_of_dates_and_misplaced_quantities(self):
         for rows in ([[PRIMARY,'2026-05-32','说明',SECONDARY],['车型甲',4,'备注','首销']],

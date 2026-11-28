@@ -11,7 +11,7 @@ from catalog import Conflict, now, read_history_page
 from campaign_merge import merge_workbooks, recalled_base, remember_base
 from stage_workbook import (
     DAILY, HEADER_ALIASES, NO_PREORDER, PREORDER_CANCEL_RATE, PREORDER_DATES, SECONDARY, SUMMARY, SUMMARY_FIELDS,
-    apply_edits, backfill_totals, empty_workbook, export_workbook, import_workbook, validate_publication,
+    apply_edits, backfill_totals, daily_export_sheet, empty_workbook, export_workbook, import_workbook, validate_publication,
 )
 
 
@@ -107,6 +107,14 @@ def _stages(summary):
 
 def _stage_list(keys):
     return [{'generation': name, 'subgeneration': subgroup} for name, subgroup in sorted(keys)]
+
+
+def _import_view(data):
+    """Compare daily observations independently of the old calculated total columns."""
+    return {**data, 'sheets': [
+        {**sheet, 'rows': daily_export_sheet(sheet)['rows']} if sheet['name'] == DAILY else sheet
+        for sheet in data['sheets']
+    ]}
 
 
 def import_comparison(current, incoming):
@@ -440,8 +448,9 @@ class CampaignStore:
         self._check(row, revision)
         current = backfill_totals(decode_workbook(row['data']))
         incoming = import_workbook(path)
-        changes = import_comparison(current, incoming)
-        identical = current == incoming
+        before, after = _import_view(current), _import_view(incoming)
+        changes = import_comparison(before, after)
+        identical = before == after
         return {'revision': revision, 'identical': identical,
                 'requiresConfirmation': not identical and current != empty_workbook(),
                 'changes': changes}
@@ -450,11 +459,12 @@ class CampaignStore:
         with closing(self.connect()) as db:
             self._check(self._current(db), revision)
         incoming = import_workbook(path)
+        imported_view = _import_view(incoming)
         with self._write() as db:
             row = self._current(db)
             self._check(row, revision)
             current = backfill_totals(decode_workbook(row['data']))
-            if current != incoming:
+            if _import_view(current) != imported_view:
                 if current != empty_workbook() and confirm_replace is not True:
                     raise ValueError('请预览差异并确认替换现有草稿')
                 self._update(db, row, encode(incoming), '迁入草稿', actor)

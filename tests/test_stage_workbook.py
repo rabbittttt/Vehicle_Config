@@ -427,13 +427,13 @@ class CampaignWorkbookTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'无法匹配'):
             validate_publication(orphan)
 
-    def test_export_absolute_dates_only_and_recalculate_visible_total(self):
+    def test_export_absolute_dates_only_without_total_columns(self):
         data = apply_edits(empty_workbook(),[daily('甲','','2026-03-01',10),
                                              daily('甲','','2026-03-02',3),
                                              daily('乙','','2026-04-01',17)])
         options = {'sheets':[DAILY,'大定进度'],'dateFrom':'2026-03-02','dateTo':'2026-03-02'}
         book = load_workbook(BytesIO(export_workbook(data,options)),read_only=True)
-        self.assertEqual([('代际名',datetime(2026,3,2),'合计','二级代际名'),('甲',3,3,None)],
+        self.assertEqual([('代际名',datetime(2026,3,2),'二级代际名'),('甲',3,None)],
                          list(book[DAILY].values))
         self.assertIn('D1',next(book['大定进度'].values))
         book.close()
