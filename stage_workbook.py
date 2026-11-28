@@ -255,6 +255,11 @@ def _sheet_sources(names, scope):
     return sources
 
 
+def _summary_title(cell):
+    compact = ''.join(str(cell.value or '').split())
+    return ALIAS_TO_HEADER.get(compact,compact)
+
+
 def _summary_layout(cells, scope):
     mapping = {}
     ignored = set()
@@ -265,11 +270,8 @@ def _summary_layout(cells, scope):
         included_fields = {PRIMARY, SECONDARY} | {SUMMARY_FIELDS[col-1] for col in REVIEW_COLUMNS}
     for j,cell in enumerate(cells):
         field = str(cell.value or '').strip()
-        # Excel headers may contain manual line breaks and alignment spaces.
-        compact = ''.join(field.split())
-        title = ALIAS_TO_HEADER.get(compact,compact)
-        if (included_fields is not None and title not in included_fields
-                and (title in SUMMARY_FIELDS or scope == 'schedule' and j >= 14)):
+        title = _summary_title(cell)
+        if (included_fields is not None and title not in included_fields) or title in ('备注','说明','备注说明'):
             ignored.add(j)
             continue
         if not field:
@@ -277,11 +279,13 @@ def _summary_layout(cells, scope):
         if title not in SUMMARY_FIELDS:
             raise ValueError(f'车型汇总 {cell.coordinate} 含未识别字段「{field}」，请核对表头')
         idx = SUMMARY_FIELDS.index(title)
-        if idx in mapping.values() and title != '小订开始日期':
+        if idx in mapping.values() and title != '小订开始日期' and not (scope == 'schedule' and idx in (12,13)):
             raise ValueError(f'车型汇总 {cell.coordinate} 重复对应字段「{title}」')
         mapping[j] = idx
     if 0 not in mapping.values():
         raise ValueError('车型汇总缺少代际名或车型名称')
+    if scope and 1 not in mapping.values():
+        raise ValueError('按阶段导入需要二级代际名列')
     return mapping, ignored
 
 
@@ -355,23 +359,27 @@ def _legacy_ratio_value(formula, cells, caches, n, source_column, division_error
     return _num(numerator/denominator)
 
 
-def _summary_row(cells, caches, mapping, ignored, n, epoch, infer_days=True):
+def _summary_row(cells, caches, mapping, ignored, n, epoch, full_import=True):
     row = [None] * len(SUMMARY_FIELDS)
     override = set()
     zero_fallback = set()
     pending = {}
     template_only = True
-    na_dates = _na_date_columns(cells,caches,(j for j,idx in mapping.items() if idx in (8,9)))
+    na_dates = _na_date_columns(cells,caches,(j for j,idx in mapping.items() if idx in (8,9) and j < len(cells)))
     for j,cell in enumerate(cells):
         if cell.value is None or j in ignored:
             continue
         if j not in mapping:
+            if not full_import:
+                continue
             raise ValueError(f'车型汇总 {cell.coordinate} 所在列有数据但缺少表头，请核对')
         idx = mapping[j]
         col = idx+1
         field = SUMMARY_FIELDS[idx]
         if na_dates and field=='小订天数':
             continue  # No duration applies, including stale Excel formula results.
+        if not full_import and col in (13,14) and (row[idx] is not None or col in pending):
+            raise ValueError(f'车型汇总 {cell.coordinate} 重复对应字段「{field}」')
         cache = caches[j]
         kind = _summary_formula(cell.value,col,n,mapping) if cell.data_type=='f' and col in COMPUTED else None
         division_error = (col in RATIOS or col==25) and cache.data_type=='e' and cache.value=='#DIV/0!'
@@ -431,7 +439,7 @@ def _summary_row(cells, caches, mapping, ignored, n, epoch, infer_days=True):
             override.add(col)
     for a,b,col in ((9,10,13),(11,12,14)):
         expected = _days(row[a-1],row[b-1])
-        if infer_days and col-1 not in mapping.values():
+        if full_import and col-1 not in mapping.values():
             row[col-1] = expected
         elif row[col-1] is not None and row[col-1]!=expected:
             override.add(col)
@@ -439,7 +447,7 @@ def _summary_row(cells, caches, mapping, ignored, n, epoch, infer_days=True):
             [f'{n}:{col}' for col in sorted(zero_fallback - override)])
 
 
-def _detail_head(name,cells,epoch):
+def _detail_head(name,cells,epoch,scope=None):
     head = []
     progress_fields = {*PROGRESS_DATES, *PROGRESS_FIELDS.get(name, []), '小订天数', '首销期天数'}
     for j,cell in enumerate(cells):
@@ -451,7 +459,9 @@ def _detail_head(name,cells,epoch):
         elif value in ('二级代际',SECONDARY):
             value = SECONDARY
         elif name==DAILY:
-            if value in ('总计','合计'):
+            if value in ('备注','说明','备注说明','填报说明','注释'):
+                value = '备注'
+            elif value in ('总计','合计'):
                 value = '合计'
             elif value is not None:
                 value = _import_scalar(cell,'留资',epoch)
@@ -460,15 +470,25 @@ def _detail_head(name,cells,epoch):
         elif value is not None:
             day = re.fullmatch(r'(?:[dD]|第)?0*(\d+)天?',str(value))
             if day and int(day[1])>0:
-                value = 'D'+str(int(day[1]))
+                number = int(day[1])
+                if number > MAX_COLUMNS-20:
+                    raise ValueError(f'{cell.coordinate} 进度天数超出有效范围')
+                value = f'D{number}'
             elif value not in progress_fields:
                 alias = ALIAS_TO_HEADER.get(value)
                 value = alias if alias in progress_fields else None
-        if value in RATE_FIELDS and value in head:
+        if name != DAILY and scope == 'reporting' and value not in (PRIMARY,SECONDARY) and not _quantity_axis(name,value):
             value = None
         if value is not None and value in head:
-            raise ValueError(f'{cell.coordinate} 重复对应「{value}」')
+            if name == DAILY and scope == 'reporting' and value == '合计':
+                value = '备注'
+            elif name != DAILY and (value in RATE_FIELDS or value in ('小订天数','首销期天数')):
+                value = None
+            elif name != DAILY or value != '备注':
+                raise ValueError(f'{cell.coordinate} 重复对应「{value}」')
         head.append(value)
+    if scope and SECONDARY not in head:
+        raise ValueError('按阶段导入需要二级代际名列')
     # Reserve the input column positions before adding an implicit stage key.
     if name == DAILY or SECONDARY in head:
         _trim(head)
@@ -480,11 +500,25 @@ def _detail_head(name,cells,epoch):
     return head,add_total
 
 
-def _daily_note(cells,label,before_header):
-    if any(cell.value is not None for cell in cells[1:]):
+def _daily_note(cells,label,before_header,note_columns):
+    note = isinstance(label,str) and re.match(r'^(?:备注|说明|注)\s*(?:[:：]|$)',label)
+    if not (note or label in (None,'') or before_header and label in (DAILY,'小订按天','每日小订','小订')):
         return False
-    return (label in (None,'') or before_header and label in (DAILY,'小订按天','每日小订','小订') or
-            isinstance(label,str) and re.match(r'^(?:备注|说明|注)\s*[:：]', label) is not None)
+    for j,cell in enumerate(cells[1:],1):
+        if j in note_columns or cell.value is None:
+            continue
+        if not note or cell.data_type not in ('s','inlineStr'):
+            return False
+        try:
+            float(cell.value.strip().removesuffix('%'))
+        except ValueError:
+            continue  # An explicitly labeled note may span multiple text cells.
+        return False
+    return True
+
+
+def _without_note_columns(row,note_columns):
+    return [value for j,value in enumerate(row) if j not in note_columns] if note_columns else row
 
 
 def _quantity_axis(name, field):
@@ -503,8 +537,10 @@ def _read_detail(name,cells,caches,headers,epoch,daily_block=None,columns=None):
     for j in columns:
         if j >= len(cells):
             continue
-        cell,cache_cell = cells[j],caches[j]
         field = _get(headers,j)
+        if name == DAILY and field == '备注':
+            continue
+        cell,cache_cell = cells[j],caches[j]
         if j in na_dates:
             row[j] = NO_PREORDER
             continue
@@ -543,7 +579,45 @@ def _read_detail(name,cells,caches,headers,epoch,daily_block=None,columns=None):
     return _trim(row)
 
 
-def _read_workbook_sheets(path_or_bytes, scope=None):
+def _read_summary(row_pairs, epoch, scope, other_sources, schedule_days):
+    head, _ = next(row_pairs, ((), ()))
+    result = _sheet(SUMMARY, [SUMMARY_FIELDS.copy()])
+    if scope == 'reporting':
+        fields = {SUMMARY_FIELDS[col-1] for col in REVIEW_COLUMNS}
+        quantities = [j for j,cell in enumerate(head) if _summary_title(cell) in fields]
+        if not quantities:
+            if not other_sources:
+                raise ValueError('填报导入需要结果核对字段或逐日数量工作表')
+            return result
+        # An accompanying schedule with no reported quantities contributes no stage keys.
+        mapping = None
+    else:
+        mapping, ignored = _summary_layout(head,scope)
+    if scope == 'schedule':
+        key_columns = [next(j for j,idx in mapping.items() if idx == field) for field in (0,1)]
+        duration_columns = [(j,idx) for j,idx in mapping.items() if idx in (12,13)]
+    for n,(cells,caches) in enumerate(row_pairs,2):
+        if scope == 'reporting':
+            if not any(j < len(cells) and cells[j].value not in (None,'') for j in quantities):
+                continue
+            if mapping is None:
+                mapping, ignored = _summary_layout(head,scope)
+        row_ignored = ignored
+        if scope == 'schedule' and duration_columns:
+            key = tuple(str(cells[j].value or '').strip() if j < len(cells) else '' for j in key_columns)
+            writable = (schedule_days or {}).get(key, ())
+            row_ignored = ignored | {j for j,idx in duration_columns if idx not in writable}
+        row,special,zeros = _summary_row(cells,caches,mapping,row_ignored,n,epoch,full_import=scope is None)
+        result['rows'].append(row)
+        result['literalCells'].extend(special)
+        if zeros:
+            result.setdefault('zeroFallbackCells',[]).extend(zeros)
+    while not result['rows'][-1]:
+        result['rows'].pop()
+    return result
+
+
+def _read_workbook_sheets(path_or_bytes, scope=None, schedule_days=None):
     if isinstance(path_or_bytes, bytes):
         raw = path_or_bytes
     else:
@@ -553,7 +627,8 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
         raw = path.read_bytes()
     included = (SUMMARY,) if scope == 'schedule' else IMPORT_SHEETS
     try:
-        book, cached = WorkbookBatch([{}]).open_selected(raw, lambda name: _canonical_sheet_name(name) in included)
+        batch = WorkbookBatch([{}])
+        book, cached = batch.open_selected(raw, lambda name: _canonical_sheet_name(name) in included)
     except (BadZipFile, KeyError, SyntaxError, OSError) as exc:
         raise ValueError('无法读取历史 XLSX 工作簿') from exc
     try:
@@ -563,51 +638,27 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
         if scope == 'reporting' and not sources:
             raise ValueError('请选择包含可填写数量的工作表')
         result = []
-        footprint = 0
         for name in included:
             if name not in sources:
                 continue
             ws = book[sources[name]]
             cached_ws = cached[sources[name]]
             progress = name in PROGRESS_FIELDS
-            if progress:
-                # Worksheet dimensions also cover the discarded percentage sections.
-                ws.reset_dimensions()
-                cached_ws.reset_dimensions()
-            else:
-                footprint += (ws.max_row or 0) * (ws.max_column or 0)
-                if not ws.max_row or not ws.max_column or ws.max_row > MAX_ROWS or ws.max_column > MAX_COLUMNS or footprint > MAX_CELLS:
-                    raise ValueError(name + '的数据范围超出限制')
-            rows, overrides, headers = [], [], []
-            zero_fallback = []
+            section_headers = (PRIMARY, *HEADER_ALIASES[PRIMARY]) if progress else ()
+            row_pairs = batch.worksheet_value_rows(ws, cached_ws, MAX_ROWS, MAX_COLUMNS, MAX_CELLS, section_headers)
+            if name == SUMMARY:
+                result.append(_read_summary(row_pairs,book.epoch,scope,len(sources)>1,schedule_days))
+                continue
+            rows, headers = [], []
             daily_block = None
             quantity_axes = None
             quantity_columns = None
-            for n,(cells, cache_cells) in enumerate(zip(ws.rows, cached_ws.rows), 1):
-                if name==SUMMARY:
-                    if n==1:
-                        mapping, ignored = _summary_layout(cells, scope)
-                        if scope and 1 not in mapping.values():
-                            raise ValueError('按阶段导入需要二级代际名列')
-                        if scope == 'reporting' and len(sources)==1 and not any(i+1 in REVIEW_COLUMNS for i in mapping.values()):
-                            raise ValueError('填报导入需要结果核对字段或逐日数量工作表')
-                        rows.append(SUMMARY_FIELDS.copy())
-                        continue
-                    row,special,zeros = _summary_row(cells,cache_cells,mapping,ignored,n,book.epoch,infer_days=scope is None)
-                    rows.append(row)
-                    overrides.extend(special)
-                    zero_fallback.extend(zeros)
-                    continue
+            note_columns = set()
+            for n,(cells, cache_cells) in enumerate(row_pairs, 1):
                 raw_label = cells[0].value if cells else None
                 label = raw_label.strip() if isinstance(raw_label,str) else raw_label
                 is_head = label in (PRIMARY,*HEADER_ALIASES[PRIMARY]) or (label=='小订' and name==DAILY)
-                if progress:
-                    if is_head and headers:
-                        break
-                    footprint += len(cells)
-                    if n > MAX_ROWS or len(cells) > MAX_COLUMNS or footprint > MAX_CELLS:
-                        raise ValueError(name + '的数据范围超出限制')
-                if ((name==DAILY and _daily_note(cells,label,not headers)) or
+                if ((name==DAILY and _daily_note(cells,label,not headers,note_columns)) or
                         ((progress or scope=='reporting') and headers and label in ('合计','总计'))):
                     if daily_block is not None:
                         # Preserve physical offsets for formula references in this block.
@@ -616,10 +667,10 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
                     continue
                 try:
                     if is_head:
-                        if scope and not any(cell.value in (SECONDARY,'二级代际') for cell in cells):
-                            raise ValueError('按阶段导入需要二级代际名列')
-                        headers,add_total = _detail_head(name,cells,book.epoch)
+                        headers,add_total = _detail_head(name,cells,book.epoch,scope)
                         width = max((j+1 for j,c in enumerate(cells) if c.value is not None),default=0)
+                        if name == DAILY:
+                            note_columns = {j for j,title in enumerate(headers) if title == '备注'}
                         if scope=='reporting':
                             quantity_axes = [j for j,title in enumerate(headers[:width]) if _quantity_axis(name,title)]
                             quantity_columns = [0,headers.index(SECONDARY),*quantity_axes]
@@ -627,7 +678,7 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
                             quantity_columns = [j for j,field in enumerate(headers[:width])
                                                 if field is not None and field not in RATE_FIELDS
                                                 and field not in ('小订天数','首销期天数')]
-                        rows.append(headers)
+                        rows.append(_without_note_columns(headers,note_columns))
                         if name==DAILY:
                             daily_block = ([],n+1)
                     elif not headers:
@@ -639,7 +690,7 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
                             row = _read_detail(name,cells,cache_cells,headers[:width],book.epoch,daily_block,quantity_columns)
                         if add_total and scope!='reporting' and _get(row,0) not in ('合计',None):
                             _daily_total(row,headers)
-                        rows.append(row)
+                        rows.append(_without_note_columns(row,note_columns))
                         if daily_block is not None:
                             daily_block[0].append(row)
                 except (ValueError,TypeError,OverflowError) as exc:
@@ -649,14 +700,11 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
             if not rows or not rows[0] or rows[0][0] != PRIMARY:
                 raise ValueError(f'{name} 缺少代际名表头')
             sheet = _sheet(name, rows)
-            sheet['literalCells'] = overrides
-            if zero_fallback:
-                sheet['zeroFallbackCells'] = zero_fallback
             for idx in sheet['headerRows']:
                 head = rows[idx - 1]
                 if name != SUMMARY and (SECONDARY not in head or
                                         (name == DAILY and '合计' not in head) or
-                                        (name in PROGRESS_FIELDS and 'D1' not in head)):
+                                        (name in PROGRESS_FIELDS and not any(_quantity_axis(name,title) for title in head))):
                     raise ValueError(f'{name} 第 {idx} 行的表头无法识别')
             if name in PROGRESS_FIELDS:
                 count = 3 if name=='直接大定进度' else 2
@@ -878,8 +926,15 @@ def module_import_edits(data, raw_bytes, scope):
         raise ValueError('未知的导入模块')
     current = {sheet['name']:sheet for sheet in data['sheets']}
     stages = {_key(row,1) for row in current[SUMMARY]['rows'][1:]}
+    schedule_days = {}
+    if scope == 'schedule':
+        summary = current[SUMMARY]
+        for address in summary['literalCells']:
+            n, col = map(int,address.split(':'))
+            if col in (13,14):
+                schedule_days.setdefault(_key(summary['rows'][n-1],1),set()).add(col-1)
     fixed, additions = [], []
-    for source in _read_workbook_sheets(raw_bytes, scope):
+    for source in _read_workbook_sheets(raw_bytes, scope, schedule_days):
         name = source['name']
         changes = (_summary_import_edits(current[name],source,scope) if name==SUMMARY else
                    _report_import_edits(current[name],source,stages))

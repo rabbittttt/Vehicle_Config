@@ -100,6 +100,44 @@ class DailyLayoutTests(unittest.TestCase):
         quantities = [r[15] for r in data['sheets'][0]['rows'][1:]]
         self.assertEqual(quantities, [8, 0])
 
+    def test_note_columns_are_skipped_without_shifting_daily_formula_ranges(self):
+        rows = [['说明', '分阶段填报', '单位为单'],
+                [PRIMARY, DAYS[0], '备注', DAYS[1], '合计', SECONDARY, '填报说明'],
+                ['车型甲', 0, '已核对', 3, '=SUM(B3:D3)', '首销', '#REF!'],
+                ['备注：统计范围', '含早班', '附加说明'],
+                [None, None, '=BAD()'],
+                ['车型乙', 1, '=BAD()', 5, 13, '首销'],
+                ['合计', '=SUM(B3:B6)', None, '=SUM(D3:D6)', '=SUM(E3:E6)']]
+        data = import_workbook(legacy_workbook(rows,['车型甲','车型乙']))
+        daily = data['sheets'][1]
+        self.assertEqual([row for row in daily['rows'] if row], [
+            HEADER, ['车型甲',0,3,3,'首销'], ['车型乙',1,5,13,'首销'], ['合计',1,8,16]])
+        current = apply_edits(empty_workbook(), [
+            dict(sheet=SUMMARY,row=n,col=col,value=value)
+            for n,model in enumerate(['车型甲','车型乙'],2)
+            for col,value in [(1,model),(2,'首销')]])
+        rows[1].append('总计')
+        rows[2].append('=BAD()')
+        rows[2][4] = '#REF!'
+        edits = module_import_edits(current,legacy_workbook(rows,daily_only=True),'reporting')
+        self.assertEqual([(e['model'],e['date'],e['value']) for e in edits], [
+            ('车型甲',DAYS[0],0), ('车型甲',DAYS[1],3), ('车型乙',DAYS[0],1), ('车型乙',DAYS[1],5)])
+
+    def test_note_handling_preserves_validation_of_dates_and_misplaced_quantities(self):
+        for rows in ([[PRIMARY,'2026-05-32','说明',SECONDARY],['车型甲',4,'备注','首销']],
+                     [['说明','0'],HEADER]):
+            with self.subTest(rows=rows):
+                with self.assertRaisesRegex(ValueError,'小订by天 第 1 行'):
+                    import_workbook(legacy_workbook(rows,['车型甲']))
+                with self.assertRaisesRegex(ValueError,'小订by天 第 1 行'):
+                    module_import_edits(empty_workbook(),legacy_workbook(rows,daily_only=True),'reporting')
+        rows = [[PRIMARY, DAYS[0], '备注'], ['车型甲', 1, '#REF!', 42]]
+        with self.assertRaisesRegex(ValueError,'小订by天.*D2'):
+            import_workbook(legacy_workbook(rows))
+        rows = [[PRIMARY, '合计', DAYS[0], '备注', DAYS[1], SECONDARY],
+                ['车型甲', '=SUM(C2:E2)', 1]]
+        self.assertEqual(import_workbook(legacy_workbook(rows))['sheets'][1]['rows'][1], ['车型甲',1,1])
+
     def test_reporting_import_matches_stages_and_dates_across_both_blocks(self):
         current = apply_edits(empty_workbook(), [
             dict(sheet=SUMMARY, row=2, col=1, value='车型甲'),

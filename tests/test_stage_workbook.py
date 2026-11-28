@@ -7,7 +7,7 @@ from xml.etree import ElementTree as ET
 from openpyxl import load_workbook
 
 from stage_workbook import (DAILY, SUMMARY, SUMMARY_FIELDS, apply_edits, empty_workbook, export_workbook,
-                            import_workbook, validate_publication)
+                            import_workbook, module_import_edits, validate_publication)
 
 
 def summary(row, **columns):
@@ -108,6 +108,37 @@ class CampaignWorkbookTests(unittest.TestCase):
                 self.assertIsNone(quantity.get('二级代际名'))
                 self.assertIsNone(quantity.get(title))
                 self.assertNotIn('仅在百分比区', [row[0] for row in sheet['rows'] if row])
+
+    def test_sparse_progress_import_checks_only_columns_used_by_each_scope(self):
+        name = '直接大定进度'
+        target = apply_edits(empty_workbook(), summary(2, **{'1':'甲','2':'一期'}))
+
+        def source(days, extra_fields=(), extra_values=()):
+            def configure(book):
+                progress = book[name]
+                progress.delete_rows(1,progress.max_row)
+                progress.append(['代际名',' 二级代际名 ',*days,*extra_fields])
+                progress.append(['甲','一期',*[0 for _ in days],*extra_values])
+                progress.append(['代际名','二级代际名','D1'])
+                progress.append(['甲','一期','=1/0'])
+            return self.legacy(['代际名','二级代际名'],['甲','一期'],configure=configure)
+
+        raw = source(['第2天'], ['小订天数','小订天数'], ['#REF!','#REF!'])
+        imported = next(s for s in import_workbook(raw)['sheets'] if s['name']==name)
+        self.assertEqual(dict(zip(*imported['rows'][:2]))['D2'],0)
+        self.assertNotIn('D1', imported['rows'][0])
+        raw = source(['第2天'], ['开始大定日期','开始大定日期','大定','大定'], ['#REF!']*4)
+        self.assertEqual(module_import_edits(target,raw,'reporting'), [
+            dict(sheet=name,model='甲',secondary='一期',day=2,value=0)])
+        with self.assertRaisesRegex(ValueError, '重复对应「开始大定日期」'):
+            import_workbook(raw)
+        for days, message in ((['D3','第3天'],'重复对应「D3」'), (['D100000'],'进度天数超出'), ([], '表头无法识别')):
+            with self.subTest(days=days):
+                raw = source(days)
+                with self.assertRaisesRegex(ValueError,message):
+                    module_import_edits(target,raw,'reporting')
+                with self.assertRaisesRegex(ValueError,message):
+                    import_workbook(raw)
 
     def test_legacy_ac31_can_recover_its_ratio_without_a_valid_cache(self):
         def fill(book):
@@ -227,6 +258,9 @@ class CampaignWorkbookTests(unittest.TestCase):
             import_workbook(self.legacy(columns, ['甲','2026-01-02','2026-01-03']))
 
     def test_invalid_import_names_and_caches_locate_the_source(self):
+        raw = self.legacy(['备注','代际名','说明','总小订'],['#REF!','甲','=BROKEN()',0])
+        imported = import_workbook(raw)['sheets'][0]['rows'][1]
+        self.assertEqual((imported[0], imported[15]), ('甲', 0))
         for fields,body,expected in [
             (['代际名','车型名称'],['甲','乙'],'重复对应'),
             (['代际名','锁单率'],['甲',.3],'锁单率'),
@@ -240,6 +274,20 @@ class CampaignWorkbookTests(unittest.TestCase):
         raw=self.legacy(['代际名'],['甲'],configure=lambda b:setattr(b[DAILY],'title','其他汇总'))
         with self.assertRaisesRegex(ValueError,'缺少工作表：小订by天'):
             import_workbook(raw)
+
+    def test_formatting_only_outside_the_data_range_does_not_block_import(self):
+        def format_tail(book):
+            for sheet in book:
+                sheet['XFD20000'].number_format = '0.00'
+        fields = ['代际名', '二级代际名', '产品档位']
+        source = self.legacy(fields, ['甲', '一期', '基础'], configure=format_tail)
+        self.assertEqual(import_workbook(source), import_workbook(self.legacy(fields, ['甲', '一期', '基础'])))
+        edits = module_import_edits(empty_workbook(), source, 'schedule')
+        self.assertIn({'sheet':SUMMARY,'row':2,'col':3,'value':'基础'}, edits)
+        def oversized(book):
+            book[DAILY]['B20000'] = 1
+        with self.assertRaisesRegex(ValueError, '小订by天.*范围超出'):
+            import_workbook(self.legacy(fields, ['甲','一期','基础'], configure=oversized))
 
     def test_full_import_only_reads_used_sheets(self):
         def configure(book):

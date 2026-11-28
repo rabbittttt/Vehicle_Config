@@ -51,13 +51,26 @@ def daily_sum_value(cell, cells, caches, headers, block_rows, first_row, current
     if top == bottom == cell.row and field == '合计':
         if left <= column <= right or right >= len(headers):
             return NotImplemented
+        values = []
         for j in range(left,right+1):
             header = headers[j]
-            if header is None and cells[j].value is None:
+            if header == '备注':
+                # Excel SUM ignores text in a range. A numeric note is a real
+                # dependency only when the workbook's total explicitly includes it.
+                if j >= len(cells):
+                    continue
+                cached = caches[j]
+                if cached.data_type == 'e' or (cells[j].data_type == 'f' and cached.value is None):
+                    return NotImplemented
+                if type(cached.value) in (int,float):
+                    values.append(cached.value)
+                continue
+            if header is None and (j >= len(cells) or cells[j].value is None):
                 continue
             if not isinstance(header,str) or not _DAY.fullmatch(header):
                 return NotImplemented
-        return _sum_quantities(_at(current_row,j) for j in range(left,right+1))
+            values.append(_at(current_row,j))
+        return _sum_quantities(values)
 
     label = cells[0].value
     if (not isinstance(label,str) or label.strip() not in _FOOTERS or left != right or left != column

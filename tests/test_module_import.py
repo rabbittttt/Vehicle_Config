@@ -56,10 +56,14 @@ class ModuleImportTests(unittest.TestCase):
         try:
             summary = book[SUMMARY]
             summary['C2'] = '增配'
+            summary['D1'] = '内部标记'
+            summary['D2'] = '#REF!'
+            summary['M2'] = '=BROKEN()'
             summary['P2'] = '=NA()'
             summary['AD1'] = '总小订'
             summary['AE1'] = '临时指标'
             summary['AE2'] = '#REF!'
+            summary['AF2'] = '#DIV/0!'
             book.create_sheet('小订按天')['XFD1'] = '=NA()'
             out = BytesIO()
             book.save(out)
@@ -71,6 +75,17 @@ class ModuleImportTests(unittest.TestCase):
                 module_import_edits(self.data, out.getvalue(), 'schedule')
         finally:
             book.close()
+
+    def test_schedule_duration_is_read_only_for_stages_with_a_historical_override(self):
+        summary = self.data['sheets'][0]
+        summary['literalCells'] = ['2:13']
+        changes = [(SUMMARY,'M2',4), (SUMMARY,'N2','=BROKEN()'), (SUMMARY,'M3','#REF!'),
+                   (SUMMARY,'O1','小订期天数'), (SUMMARY,'O3','#DIV/0!')]
+        raw = change_export(self.data, {'scope':'schedule'}, changes)
+        self.assert_import_matches_edits(raw,'schedule',[summary_cell(2,13,4)])
+        bad = change_export(self.data, {'scope':'schedule'}, [(SUMMARY,'M2','#REF!')])
+        with self.assertRaisesRegex(ValueError,'车型汇总 M2'):
+            module_import_edits(self.data,bad,'schedule')
 
     def test_reporting_daily_round_trip_preserves_other_dates_and_accepts_zero(self):
         selection = {'sheets': [DAILY], 'models': ['一期'], 'dateFrom': '2026-11-02', 'dateTo': '2026-11-02'}
@@ -118,6 +133,35 @@ class ModuleImportTests(unittest.TestCase):
         for daily_value, progress_value, address in (('=BROKEN()',7,'B2'), (5,'=BROKEN()','E2')):
             with self.subTest(address=address), self.assertRaisesRegex(ValueError,address):
                 module_import_edits(self.data,workbook(daily_value,progress_value),'reporting')
+
+    def test_reporting_requires_stage_identity_only_for_rows_that_supply_quantities(self):
+        book = Workbook()
+        try:
+            daily = book.active
+            daily.title = DAILY
+            daily.append(['代际名','二级代际名','2026-11-02'])
+            daily.append(['测试车型','一期',3])
+            sheet = book.create_sheet(SUMMARY)
+            sheet.append(['内部注记','产品档位'])
+            sheet.append(['#REF!','过往阶段'])
+            def read():
+                stream = BytesIO()
+                book.save(stream)
+                return module_import_edits(self.data,stream.getvalue(),'reporting')
+            expected = apply_edits(self.data,[daily_entry('一期','2026-11-02',3)])
+            self.assertEqual(apply_edits(self.data,read()),expected)
+            sheet['C1'] = '总小订'
+            self.assertEqual(apply_edits(self.data,read()),expected)
+            sheet['C2'] = 0
+            with self.assertRaisesRegex(ValueError,'缺少代际名'):
+                read()
+            sheet['D1'], sheet['E1'] = '车型名称','二级代际名'
+            sheet['D2'], sheet['E2'] = '测试车型','二期'
+            sheet['D3'], sheet['E3'] = '#REF!','忽略行'
+            expected = apply_edits(expected,[summary_cell(3,16,0)])
+            self.assertEqual(apply_edits(self.data,read()),expected)
+        finally:
+            book.close()
 
     def test_duplicate_daily_observations_only_accept_unchanged_values(self):
         data = empty_workbook()
