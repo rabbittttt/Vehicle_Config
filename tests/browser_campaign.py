@@ -153,9 +153,7 @@ def check_configuration(page):
     assert row[2] == '中大型' and row[12] == 3
 
 
-def check_result_review(page):
-    view(page, 'businessTotals')
-    expect(page.locator('[data-view=businessTotals]')).to_have_text('结果核对')
+def check_stage_summary(page):
     expect(page.locator('#content')).not_to_contain_text('小订待转单')
     expect(page.locator('#content')).not_to_contain_text('小订转化率')
     metrics = {SUMMARY_FIELDS[col-1]: '可自动回填' if col in BACKFILLED else '手动填报'
@@ -166,6 +164,7 @@ def check_result_review(page):
         expect(headings.nth(i).locator('.review-mode')).to_have_text(mode)
     action(page, 'totals').click()
     dialog = page.locator('#dialog')
+    expect(dialog.get_by_role('heading')).to_contain_text('阶段汇总')
     expect(dialog.locator('input[type=number]')).to_have_count(7)
     for metric, mode in metrics.items():
         field = dialog.get_by_label(metric, exact=True)
@@ -221,14 +220,13 @@ def check_quantity_progress(page):
 
 def check_reporting(page):
     tab(page, 'reporting')
-    expect(page.locator('[data-view=dailyOrders]')).to_have_attribute('aria-pressed', 'true')
-    expect(page.locator('[data-view=dailyOrders]')).to_have_text('小订进度')
-    expect(page.locator('[data-view=stageProgress]')).to_have_count(0)
-    check_result_review(page)
-    view(page, 'dailyOrders')
     expect(page.locator('#view-tabs button')).to_have_text([
-        '小订进度', '小订期退订进度', '小转大进度', '直接大定进度', '首销期退订进度', '结果核对',
+        '阶段汇总', '小订进度', '小订期退订进度', '小转大进度', '直接大定进度', '首销期退订进度',
     ])
+    expect(page.locator('[data-view=businessTotals]')).to_have_attribute('aria-pressed', 'true')
+    expect(page.locator('[data-view=stageProgress]')).to_have_count(0)
+    check_stage_summary(page)
+    view(page, 'dailyOrders')
     expect(page.get_by_role('combobox', name='指标')).to_have_count(0)
     page.get_by_role('button', name='批量粘贴').click()
     expect(page.get_by_role('dialog')).to_have_accessible_name('批量粘贴 · 小订进度')
@@ -332,7 +330,8 @@ def check_rule_context(page):
     expect(page.locator('#content')).to_contain_text('未保存的调整')
     page.set_viewport_size({'width': 390, 'height': 844})
     tab(page, 'reporting')
-    expect(page.locator('[data-view=dailyOrders]')).to_be_visible()
+    expect(page.locator('[data-view=businessTotals]')).to_be_in_viewport(ratio=0.95)
+    expect(page.locator('[data-view=businessTotals]')).to_have_attribute('aria-pressed', 'true')
     view(page, 'launchCancellations')
     expect(page.locator('[data-view=launchCancellations]')).to_be_in_viewport(ratio=0.95)
     expect(page.locator('#report-axis')).to_have_count(0)
@@ -424,6 +423,7 @@ def check_stage_matrix(browser):
             expect(page.get_by_label('小订开始日期', exact=True)).to_have_value(start)
             page.locator('#cancel').click()
         tab(page, 'reporting')
+        view(page, 'dailyOrders')
         rows = page.locator('.report-matrix tbody tr[data-model]')
         expect(rows).to_have_count(2)
         row = report_row(page, '矩阵车型')
@@ -714,6 +714,7 @@ def check_concurrent_editors(browser):
 
         edit_stage(first, {'产品档位':'甲档位', '能源类型':'甲能源'})
         tab(first, 'reporting')
+        view(first, 'dailyOrders')
         edit_daily(first, [(dates[0],10), (dates[2],30)])
         first.locator('#save').click()
         ready(first)
@@ -728,6 +729,7 @@ def check_concurrent_editors(browser):
         edit_stage(second, {'产品档位':'乙档位', '小订发布时段':'下午'})
         expect(second.locator('#content')).to_contain_text('原能源')
         tab(second, 'reporting')
+        view(second, 'dailyOrders')
         expect(second.locator('#reload')).to_be_hidden()
         row = report_row(second, model)
         expect(report_cell(row, 'D3')).to_have_text('3')

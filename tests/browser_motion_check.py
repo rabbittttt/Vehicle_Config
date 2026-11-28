@@ -173,6 +173,7 @@ def main():
             page.goto(url)
             ready(page)
             page.locator('header nav [data-tab=reporting]').click()
+            page.locator('[data-view=dailyOrders]').click()
             if width <= 700:
                 page.get_by_role('button', name='筛选', exact=True).click()
             expect(page.locator('.report-matrix tbody tr[data-model]')).to_have_count(MODELS)

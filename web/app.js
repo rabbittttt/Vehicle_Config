@@ -6,12 +6,12 @@ const sections = {
   schedule: ['schedule'],
   generation: ['gen_names', 'merge_groups'],
   options: ['battery_rules', 'option_names', 'option_prices'],
-  reporting: [...Object.keys(campaignEditor.reportMetrics), 'businessTotals'],
+  reporting: ['businessTotals', ...Object.keys(campaignEditor.reportMetrics)],
   history: ['campaign_history', 'rule_history'],
 };
 const viewLabels = {
   ...orderRules.titles,
-  ...campaignEditor.reportMetrics, dailyOrders:'小订进度', businessTotals:'结果核对', campaign_history:'日程与填报发布',
+  ...campaignEditor.reportMetrics, dailyOrders:'小订进度', businessTotals:'阶段汇总', campaign_history:'日程与填报发布',
 };
 let tab='schedule', view=sections.schedule[0], csrf='', readonly=true, busy=false, confirmAction=null;
 let sessionUser = '';

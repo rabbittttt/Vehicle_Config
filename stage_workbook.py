@@ -580,7 +580,7 @@ def _read_summary(row_pairs, epoch, scope, other_sources, schedule_days):
         quantities = [j for j,cell in enumerate(head) if _summary_title(cell) in fields]
         if not quantities:
             if not other_sources:
-                raise ValueError('填报导入需要结果核对字段或逐日数量工作表')
+                raise ValueError('填报导入需要阶段汇总字段或逐日数量工作表')
             return result
         # An accompanying schedule with no reported quantities contributes no stage keys.
         mapping = None

@@ -297,7 +297,7 @@ const campaignEditor = (() => {
     const noOrders=noSmallOrders(record);
     const groups=noOrders ? totalsGroups.map(([name,cols])=>[name,cols.filter(i=>!smallOrderTotals.includes(i) || used(record[i]))])
       .filter(([,cols])=>cols.length) : totalsGroups;
-    rowForm(info,row,totalColumns,subject+' · 结果核对',groups);
+    rowForm(info,row,totalColumns,subject+' · '+viewLabels.businessTotals,groups);
     const form=$('#dialog-body form');
     const historical=new Set(info.literalCells || []);
     for(const input of form.querySelectorAll('input[type="number"]')) input.step='1';
