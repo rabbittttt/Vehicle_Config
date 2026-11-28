@@ -1365,7 +1365,7 @@ def _progress_before(sheets, name, key, section, field, pending):
     return None
 
 
-def apply_edits(data, edits):
+def apply_edits(data, edits, *, observe=None):
     if not isinstance(edits,list) or len(edits)>20000:
         raise ValueError('单次最多修改 20000 个单元格')
     result = backfill_totals(deepcopy(data))
@@ -1389,6 +1389,8 @@ def apply_edits(data, edits):
             if sheet['name'] == SUMMARY:
                 raise ValueError('车型汇总使用行和列定位')
             key = (_text(edit.get('model')),_text(edit.get('secondary') or '') or '')
+            if observe is not None:
+                observe(sheet,edit)
             curves = pending if defer else {}
             _progress_before(sheets,sheet['name'],key,edit.get('section',1),f'D{edit.get("day")}',curves)
             _series_edit(sheets,sheet,edit)
@@ -1412,6 +1414,8 @@ def apply_edits(data, edits):
             raise ValueError('合计行不可填写')
         if col==1 and edit['value'] in (PRIMARY,'合计'):
             raise ValueError('该名称为保留表头')
+        if observe is not None:
+            observe(sheet,edit)
         key = _key(rows[n-1],header.index(SECONDARY))
         curves = {}
         _progress_before(sheets,sheet['name'],key,bisect_right(sheet['headerRows'],n),header[col-1],curves)

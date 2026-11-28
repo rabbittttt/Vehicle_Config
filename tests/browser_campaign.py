@@ -675,6 +675,121 @@ def check_module_imports(browser):
         page.close()
 
 
+def check_concurrent_editors(browser):
+    model = '并发验收车型'
+    dates = ['2026-11-01', '2026-11-02', '2026-11-03']
+
+    def edit_stage(page, fields):
+        action(page, 'stage').click()
+        for field, value in fields.items():
+            page.get_by_label(field, exact=True).fill(value)
+        confirm(page)
+
+    def edit_daily(page, quantities):
+        action(page, 'batch').click()
+        page.locator('[name=rows]').fill('\n'.join(f'{day}\t{quantity}' for day, quantity in quantities))
+        confirm(page)
+
+    def stored_values():
+        sheets = {sheet['name']:sheet['rows'] for sheet in campaign.get()['sheets']}
+        stage = sheets['车型汇总'][1]
+        head, row = sheets['小订by天']
+        return stage[2:6], [row[head.index(day)] for day in dates]
+
+    with TemporaryDirectory() as directory, isolated_server(directory) as (url, store, *_):
+        campaign = CampaignStore(store.root)
+        fields = {1:model, 3:'原档位', 4:'原能源', 5:'原发布', 6:'上午', 9:dates[0], 10:dates[-1]}
+        campaign.save(0, [dict(sheet='车型汇总', row=2, col=col, value=value) for col,value in fields.items()]
+                      + [dict(sheet='小订by天', model=model, date=day, value=i) for i,day in enumerate(dates, 1)], '测试')
+        first, second = browser.new_page(), browser.new_page()
+        for page, owner in [(first, '维护人甲'), (second, '维护人乙')]:
+            page.goto(url)
+            ready(page)
+            page.locator('#data-tools').click()
+            page.get_by_label('维护人', exact=True).fill(owner)
+            page.locator('#data-tools').click()
+            expect(page.locator('#reload')).to_be_hidden()
+            expect(page.locator('#save')).to_be_visible()
+            expect(page.locator('#publish')).to_be_visible()
+
+        edit_stage(first, {'产品档位':'甲档位', '能源类型':'甲能源'})
+        tab(first, 'reporting')
+        edit_daily(first, [(dates[0],10), (dates[2],30)])
+        first.locator('#save').click()
+        ready(first)
+        expect(first.locator('#save')).to_be_disabled()
+        edit_stage(second, {'发布类型':'乙发布'})
+        second.locator('#save').click()
+        ready(second)
+        expect(second.locator('#save')).to_be_disabled()
+        expect(second.locator('#content')).to_contain_text('原能源')
+        assert stored_values() == (['甲档位','甲能源','乙发布','上午'], [10,2,30])
+
+        edit_stage(second, {'产品档位':'乙档位', '小订发布时段':'下午'})
+        expect(second.locator('#content')).to_contain_text('原能源')
+        tab(second, 'reporting')
+        expect(second.locator('#reload')).to_be_hidden()
+        row = report_row(second, model)
+        expect(report_cell(row, 'D3')).to_have_text('3')
+        edit_daily(second, [(dates[0],0), (dates[1],8)])
+        second.locator('#save').click()
+        dialog = second.get_by_role('dialog', name='解决保存冲突')
+        conflicts = dialog.locator('fieldset[data-save-conflict]')
+        expect(conflicts).to_have_count(2)
+        expect(conflicts.locator('input:checked')).to_have_count(0)
+        dialog.get_by_role('button', name='取消', exact=True).click()
+        expect(dialog).to_be_hidden()
+        expect(second.locator('#save')).to_be_enabled()
+        expect(report_cell(row, 'D1')).to_have_text('0')
+        expect(report_cell(row, 'D2')).to_have_text('8')
+        assert stored_values() == (['甲档位','甲能源','乙发布','上午'], [10,2,30])
+
+        second.locator('#save').click()
+        conflicts.filter(has_text='产品档位').locator('input[value=mine]').check()
+        conflicts.filter(has_text=dates[0]).locator('input[value=theirs]').check()
+        dialog.get_by_role('button', name='保存所选结果').click()
+        expect(dialog).to_be_hidden()
+        ready(second)
+        expect(second.locator('#save')).to_be_disabled()
+        expect(report_cell(row, 'D1')).to_have_text('10')
+        expect(report_cell(row, 'D2')).to_have_text('8')
+        expect(report_cell(row, 'D3')).to_have_text('3')
+        tab(second, 'schedule')
+        for value in ['乙档位','原能源','乙发布','下午']:
+            expect(second.locator('#content')).to_contain_text(value)
+        assert stored_values() == (['乙档位','甲能源','乙发布','下午'], [10,8,30])
+
+        second.locator('#publish').click()
+        review = second.get_by_role('dialog', name='核对发布变更')
+        expect(review).to_be_visible()
+        tab(first, 'schedule')
+        edit_stage(first, {'能源类型':'甲的新能源'})
+        first.locator('#save').click()
+        ready(first)
+        review.get_by_role('button', name='确认发布').click()
+        retry = second.get_by_role('dialog', name='发布结果')
+        expect(retry).to_contain_text('请重新核对')
+        assert campaign.published()['revision'] == 0
+        retry.get_by_role('button', name='重新核对').click()
+        review.get_by_role('button', name='确认发布').click()
+        expect(review).to_be_hidden()
+        ready(second)
+        self_view = second.locator('#content')
+        expect(self_view).to_contain_text('原能源')
+        expect(self_view).not_to_contain_text('甲的新能')
+        assert campaign.published()['sheets'][0]['rows'][1][2:6] == ['乙档位','甲的新能源','乙发布','下午']
+        tab(second, 'generation')
+        expect(second.locator('#reload')).to_have_text('重新载入草稿')
+        expect(second.locator('#reload')).to_be_visible()
+        tab(second, 'history')
+        for record_view in ('campaign_history', 'rule_history'):
+            view(second, record_view)
+            expect(second.locator('#reload')).to_have_text('刷新记录')
+            expect(second.locator('#reload')).to_be_visible()
+        first.close()
+        second.close()
+
+
 def check_running_previous_backend(browser):
     with TemporaryDirectory() as directory, isolated_server(directory) as (url, store, *_):
         CampaignStore(store.root).import_legacy(0, legacy_file('已导入车型'), '测试迁入')
@@ -703,6 +818,7 @@ if __name__ == '__main__':
         check_review_backfill(browser)
         check_readonly(browser)
         check_module_imports(browser)
+        check_concurrent_editors(browser)
         check_running_previous_backend(browser)
         browser.close()
     print('Campaign configuration, reporting, rule-draft isolation and scoped Excel exports passed.')

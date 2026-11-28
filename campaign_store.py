@@ -8,6 +8,7 @@ import sqlite3
 from tempfile import NamedTemporaryFile
 
 from catalog import Conflict, now, read_history_page
+from campaign_merge import merge_workbooks, recalled_base, remember_base
 from stage_workbook import (
     DAILY, HEADER_ALIASES, NO_PREORDER, PREORDER_CANCEL_RATE, PREORDER_DATES, SECONDARY, SUMMARY, SUMMARY_FIELDS,
     apply_edits, backfill_totals, empty_workbook, export_workbook, import_workbook, validate_publication,
@@ -82,8 +83,8 @@ def decode_workbook(payload):
     return data
 
 
-def _edited_workbook(draft, edits):
-    data = apply_edits(draft, edits)
+def _edited_workbook(draft, edits, *, observe=None):
+    data = apply_edits(draft, edits, observe=observe)
     # Keep editor previews and restored editions identical after report padding.
     for row in data['sheets'][0]['rows'][1:]:
         if NO_PREORDER in row[8:10]:
@@ -219,6 +220,11 @@ class CampaignStore:
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     import_revision INTEGER NOT NULL, previous_data TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS edit_bases (
+                    token TEXT PRIMARY KEY, revision INTEGER NOT NULL, digest TEXT NOT NULL,
+                    data BLOB, saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS cached_edit_bases ON edit_bases(saved_at) WHERE data IS NOT NULL;
             """)
             with db:
                 initial = encode(empty_workbook())
@@ -285,7 +291,7 @@ class CampaignStore:
                 temporary.unlink(missing_ok=True)
 
     @staticmethod
-    def _response(row, data=None, error=''):
+    def _response(row, data=None, error='', *, shared=None):
         if data is None:
             data = backfill_totals(decode_workbook(row['data']))
         return {
@@ -293,7 +299,7 @@ class CampaignStore:
             'available': True,
             'revision': row['revision'],
             'publishedRevision': row['published_revision'],
-            'hasUnpublishedChanges': data != decode_workbook(row['published_data']),
+            'hasUnpublishedChanges': (data if shared is None else shared) != decode_workbook(row['published_data']),
             'canImportLegacy': True,
             'canUndoImport': row['undo_revision'] is not None,
             'projectionPending': bool(error),
@@ -301,11 +307,14 @@ class CampaignStore:
             'edits': [],
         }
 
+    def _needs_projection(self, row):
+        return row['published_revision'] and (
+            row['projected_revision'] != row['published_revision'] or not self.snapshot.is_file())
+
     def get(self):
         with closing(self.connect()) as db:
             row = self._current(db)
-        if row['published_revision'] and (
-                row['projected_revision'] != row['published_revision'] or not self.snapshot.is_file()):
+        if self._needs_projection(row):
             error = self._project()
             with closing(self.connect()) as db:
                 row = self._current(db)
@@ -335,9 +344,24 @@ class CampaignStore:
         if row['revision'] != revision:
             raise Conflict('车型日程与填报草稿已被其他人修改，请重新载入后核对')
 
-    def preview(self, revision, edits):
+    @staticmethod
+    def _base(db,row,revision,view_token,base_sheets,current=None):
+        if type(revision) is not int or revision<0:
+            raise ValueError('缺少有效的草稿版本')
+        if revision==row['revision'] and view_token is None:
+            return current if current is not None else backfill_totals(decode_workbook(row['data']))
+        return recalled_base(db,revision,view_token,base_sheets)
+
+    def preview(self, revision, edits, *, merge=False, view_token=None, base_sheets=None):
         with closing(self.connect()) as db:
             row = self._current(db)
+            if merge:
+                base = self._base(db,row,revision,view_token,base_sheets)
+                response = self._response(row,_edited_workbook(base,edits))
+                response['revision'] = revision
+                if view_token:
+                    response['viewToken'] = view_token
+                return response
         self._check(row, revision)
         data = _edited_workbook(decode_workbook(row['data']), edits)
         return self._response(row, data)
@@ -357,7 +381,10 @@ class CampaignStore:
         return {'revision':revision, 'publishedRevision':row['published_revision'], 'changes':changes, 'error':error}
 
     @staticmethod
-    def _update(db, row, data, action, actor):
+    def _update(db, row, data, action, actor, *, previous=None):
+        if previous is None:
+            previous = backfill_totals(decode_workbook(row['data']))
+        remember_base(db,row['revision'],previous)
         revision = row['revision'] + 1
         edition = row['published_revision']
         timestamp = now()
@@ -369,9 +396,32 @@ class CampaignStore:
                    (revision, edition, data))
         db.execute('INSERT INTO activity VALUES (?, ?, ?, ?)', (revision, action, actor, timestamp))
 
-    def save(self, revision, edits, actor, publish=False):
+    def _save_merged(self, revision, edits, actor, view_token, resolutions, base_sheets):
+        if resolutions is not None and not isinstance(resolutions,dict):
+            raise ValueError('冲突处理选择无效')
         with self._write() as db:
             row = self._current(db)
+            current = backfill_totals(decode_workbook(row['data']))
+            base = self._base(db,row,revision,view_token,base_sheets,current)
+            merged,visible = merge_workbooks(base,current,edits,resolutions or {},row['revision'],_edited_workbook)
+            if merged!=current:
+                self._update(db,row,encode(merged),'草稿',actor,previous=current)
+                row = self._current(db)
+            token = None if visible==merged else remember_base(db,row['revision'],visible,private=True)
+        error = self._project() if self._needs_projection(row) else ''
+        result = self._response(row,visible,error,shared=merged)
+        if token:
+            result['viewToken'] = token
+        return result
+
+    def save(self, revision, edits, actor, publish=False, *, merge=False, view_token=None,
+             resolutions=None, base_sheets=None):
+        if merge and not publish:
+            return self._save_merged(revision,edits,actor,view_token,resolutions,base_sheets)
+        with self._write() as db:
+            row = self._current(db)
+            if publish and view_token is not None:
+                raise Conflict('请核对最新共享草稿后发布')
             self._check(row, revision)
             draft = decode_workbook(row['data'])
             data = _edited_workbook(draft, edits)

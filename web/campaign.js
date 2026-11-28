@@ -24,7 +24,15 @@ const campaignEditor = (() => {
   const canUndoImport = () => Boolean(saved?.canUndoImport && !isDirty());
   const sheet = name => current?.sheets.find(item => item.name === name);
   const reportingSheets = () => current.sheets.filter(info=>Object.values(reportMetrics).includes(info.name));
-  const payload = () => ({revision:saved.revision, edits});
+  async function draftRequest(path,changes,extra={},request=api) {
+    const body={revision:saved.revision,viewToken:saved.viewToken,merge:true,edits:changes,...extra};
+    try {
+      return await request(path,body);
+    } catch(error) {
+      if (error.status!==409 || !error.details?.needsBase) throw error;
+      return request(path,{...body,baseSheets:saved.sheets});
+    }
+  }
 
   function accept(result) {
     saved = current = result;
@@ -41,7 +49,7 @@ const campaignEditor = (() => {
   async function apply(changes) {
     if (!changes.length) return;
     const next = edits.concat(changes);
-    const result = await api('campaign/preview',{revision:saved.revision,edits:next});
+    const result = await draftRequest('campaign/preview',next);
     undo.push(edits.length);
     if (undo.length > 30) undo.shift();
     redo = [];
@@ -53,37 +61,88 @@ const campaignEditor = (() => {
     if (busy || readonly || (back ? !undo.length : !redo.length)) return;
     run(async () => {
       const next = back ? edits.slice(0,undo.at(-1)) : edits.concat(redo.at(-1));
-      const result = next.length ? await api('campaign/preview',{revision:saved.revision,edits:next}) : saved;
+      const result = next.length ? await draftRequest('campaign/preview',next) : saved;
       if (back) redo.push(edits.slice(undo.pop()));
       else { undo.push(edits.length); redo.pop(); }
       edits = next; current = result; renderKeepingScroll();
     });
   }
-  async function save() {
-    accept(await writeApi('campaign/save',payload()));
+  function conflictValue(value) {
+    if (value===null || value===undefined || value==='') return '（空）';
+    if (Array.isArray(value)) {
+      if (value.every(date=>date==='NA')) return '无小订';
+      return '开始 '+conflictValue(value[0])+'　结束 '+conflictValue(value[1]);
+    }
+    if (typeof value==='object') return conflictValue(value.value)+(value.manual?'（手动核定）':'（自动回填）');
+    return String(value);
+  }
+  function chooseConflicts(conflicts,previous,owner) {
+    const fields=conflicts.map((item,i)=>{
+      const heading=[item.sheet,item.model,item.secondary,item.field].filter(Boolean).map(esc).join(' · ');
+      const choice=(key,label,value)=>`<label><input type="radio" name="c${i}" value="${key}" required><span>${label}<strong>${esc(conflictValue(value))}</strong></span></label>`;
+      if (item.structural) return `<fieldset data-save-conflict><legend>${heading}</legend>
+        <p>${esc(conflictValue(item.current))}</p><p class="muted">我的修改　${esc(conflictValue(item.local))}</p>
+        <label><input type="radio" name="c${i}" value="theirs" required>放弃此处修改</label></fieldset>`;
+      return `<fieldset data-save-conflict><legend>${heading}</legend>
+        <p class="muted">原值　${esc(conflictValue(item.base))}</p>
+        ${choice('mine','保留我的值',item.local)}${choice('theirs','采用当前草稿值',item.current)}
+      </fieldset>`;
+    }).join('');
+    writeModal('解决保存冲突',`<form data-save-conflicts>${fields}</form>`,values=>{
+      const choices={...previous};
+      conflicts.forEach((item,i)=>{choices[item.id]={choice:values.get('c'+i),current:item.current};});
+      return saveWithChoices(choices);
+    },'保存所选结果');
+    if (owner && !sessionUser) $('#write-owner').value=owner;
+  }
+  async function saveWithChoices(resolutions) {
+    const owner=($('#dialog[open] #write-owner') || $('#owner')).value.trim();
+    try {
+      accept(await draftRequest('campaign/save',edits,{resolutions},writeApi));
+    } catch(error) {
+      if (error.status!==409 || !error.details?.conflicts?.length) throw error;
+      chooseConflicts(error.details.conflicts,resolutions,owner);
+      return false;
+    }
     notice(draftName+'已保存');
   }
+  const save=()=>saveWithChoices({});
   const hasPendingPublish = () => Boolean(current?.hasUnpublishedChanges);
+  function acceptPublication(result,visible) {
+    accept({...result,revision:visible.revision,viewToken:visible.viewToken,sheets:visible.sheets});
+  }
   async function preparePublish() {
     const attempt = uncertainPublish?.edits === edits ? uncertainPublish : null;
-    if (!isDirty() || attempt) {
-      const latest = await api('campaign/state');
-      if (attempt && latest.publishedRevision >= attempt.edition) {
-        const edition = await api('campaign/published?view=editor&revision='+attempt.edition);
-        if (JSON.stringify(edition.sheets) === JSON.stringify(current.sheets)) {
-          accept(latest);
-          return null;
-        }
+    const latest=await api('campaign/state');
+    if (attempt && latest.publishedRevision >= attempt.edition) {
+      const edition=await api('campaign/published?view=editor&revision='+attempt.edition);
+      if (JSON.stringify(edition.sheets)===JSON.stringify(attempt.sheets)) {
+        acceptPublication(latest,attempt.visible);
+        return null;
       }
-      if (attempt && latest.revision !== saved.revision) {
-        throw Error(draftName+'已被其他人修改，请重新载入后核对');
-      }
-      if (!isDirty() && (!saved || latest.revision !== saved.revision)) accept(latest);
     }
-    if (!hasPendingPublish()) return null;
-    const candidate = payload();
-    const preview = await api('campaign/publish-preview', candidate);
+    const dirty=isDirty();
+    const differentBase=(saved.viewToken || latest.revision!==saved.revision) &&
+      JSON.stringify(saved.sheets)!==JSON.stringify(latest.sheets);
+    if (dirty && differentBase) {
+      throw Error(draftName+'有并发修改，请先保存草稿，再核对发布变更。');
+    }
+    if (!(dirty?current:latest).hasUnpublishedChanges) {
+      if (!dirty) acceptPublication(latest,saved);
+      return null;
+    }
+    const candidate={revision:latest.revision,edits};
+    const changedDuringReview=()=>Error(dirty?'草稿已更新，请先保存本地修改，再核对发布变更。':'草稿已更新，请重新核对发布变更。');
+    let preview;
+    try {
+      preview=await api('campaign/publish-preview',candidate);
+    } catch(error) {
+      if (error.status===409) throw changedDuringReview();
+      throw error;
+    }
     if (!preview.changes.length) return null;
+    const visible=differentBase ? saved :
+      {revision:preview.revision+1,sheets:current.sheets};
 
     function sample(values, total, unit) {
       return esc(values.join('、') + (values.length < total ? `等 ${total} ${unit}` : ''));
@@ -106,12 +165,14 @@ const campaignEditor = (() => {
       try {
         result = await writeApi('campaign/publish', candidate);
       } catch (error) {
+        if (error.status===409) throw changedDuringReview();
         if (!error.status || error.status >= 500) {
-          uncertainPublish = {edits:candidate.edits, edition:preview.publishedRevision+1};
+          uncertainPublish = {edits:candidate.edits,edition:preview.publishedRevision+1,
+            sheets:dirty?current.sheets:latest.sheets,visible};
         }
         throw error;
       }
-      accept(result);
+      acceptPublication(result,visible);
       return result.projectionPending ? result.projectionError || '数据已发布，下游同步待重试' : '';
     }};
   }
@@ -915,7 +976,7 @@ const campaignEditor = (() => {
   async function importModule(files,scope) {
     if (files.length!==1) throw Error('请选择一份 Excel 工作簿');
     const [file]=await encodeWorkbooks(files);
-    const {edits:changes}=await api('campaign/module-import-preview',{...payload(),...file,scope});
+    const {edits:changes}=await draftRequest('campaign/module-import-preview',edits,{...file,scope});
     const counts=new Map();
     for (const edit of changes) counts.set(edit.sheet,(counts.get(edit.sheet)||0)+1);
     const summary=[...counts].map(([name,count])=>`<dt>${esc(name)}</dt><dd>${count} 处更改</dd>`).join('');

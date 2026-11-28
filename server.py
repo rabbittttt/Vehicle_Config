@@ -7,6 +7,7 @@ from catalog import CATALOG_DB, Store, Conflict, PUBLISH_REQUIRED, IDENTITY_FIEL
 from shared_rules import RuleStore, validate as validate_rules
 from rules_excel import rules_excel, preview_rules_import
 from campaign_store import CampaignStore
+from campaign_merge import MergeConflict
 from stage_workbook import module_import_edits, module_template
 from xlsx_input import WorkbookBatch
 ROOT=Path(__file__).resolve().parent
@@ -137,6 +138,9 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 size=int(self.headers.get('Content-Length',0))
                 # A preview can include both a full editor snapshot and encoded workbooks.
                 limit_mb = 16 if path in ('/api/import-batch', '/api/rules/import','/api/campaign/import','/api/campaign/import-preview','/api/campaign/module-import-preview') else 8
+                # An evicted, signed-by-digest baseline may be supplied alongside edits.
+                if path in ('/api/campaign/save','/api/campaign/preview','/api/campaign/module-import-preview'):
+                    limit_mb = 64
                 if size <= 0 or size > limit_mb * 1_000_000:
                     raise ValueError(f'请求正文不能为空或超过 {limit_mb} MB')
                 raw=self.rfile.read(size);path=self.route()
@@ -146,9 +150,11 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 body=json.loads(raw)
                 if path.startswith('/api/campaign/'):
                     if not isinstance(body,dict):raise ValueError('小订与首销请求格式无效')
+                    merge_args = dict(merge=body.get('merge') is True,view_token=body.get('viewToken'),
+                                      base_sheets=body.get('baseSheets'))
                     if path=='/api/campaign/module-import-preview':
                         _,content=WorkbookBatch([body]).decode(body)
-                        base=campaigns.preview(body['revision'],body.get('edits',[]))
+                        base=campaigns.preview(body['revision'],body.get('edits',[]),**merge_args)
                         edits=module_import_edits(base,content,body.get('scope'))
                         return self.send(200,{'revision':base['revision'],'edits':edits})
                     if path in ('/api/campaign/import','/api/campaign/import-preview'):
@@ -161,10 +167,12 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     if path=='/api/campaign/undo-import':
                         return self.send(200,campaigns.undo_import(body['revision'],operation_owner(frame_user, body)))
                     if path in ('/api/campaign/save','/api/campaign/publish'):
-                        return self.send(200,campaigns.save(body['revision'],body['edits'],operation_owner(frame_user, body),publish=path.endswith('/publish')))
+                        return self.send(200,campaigns.save(body['revision'],body['edits'],operation_owner(frame_user, body),
+                                              publish=path.endswith('/publish'),resolutions=body.get('resolutions'),**merge_args))
                     if path=='/api/campaign/preview':
-                        return self.send(200,campaigns.preview(body['revision'],body['edits']))
+                        return self.send(200,campaigns.preview(body['revision'],body['edits'],**merge_args))
                     if path=='/api/campaign/publish-preview':
+                        if body.get('viewToken') is not None:raise Conflict('请核对最新共享草稿后发布')
                         return self.send(200,campaigns.publish_preview(body['revision'],body['edits']))
                     if path=='/api/campaign/export':
                         selection={key:body[key] for key in ('scope','sheets','models','dateFrom','dateTo') if key in body}
@@ -202,6 +210,7 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                 if path=='/api/preview':return self.send(200,store.preview(body['data'],body.get('revision')))
                 if path in ['/api/save','/api/publish']:return self.send(200,store.save(body['data'],body['revision'],operation_owner(frame_user, body),path.endswith('publish')))
                 self.send(404,{'error':'未找到'})
+            except MergeConflict as e:self.send(409,{'error':str(e),**e.details})
             except Conflict as e:self.send(409,{'error':str(e)})
             except PermissionError as e:self.send(403,{'error':str(e)})
             except (ValueError,KeyError,TypeError,zipfile.BadZipFile) as e:self.send(400,{'error':str(e)})

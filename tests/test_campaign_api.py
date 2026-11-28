@@ -14,6 +14,14 @@ from server import make_server
 from stage_workbook import DAILY, GROSS, PROGRESS_FIELDS, REVIEW_COLUMNS, SUMMARY, SUMMARY_FIELDS
 
 
+def stage_field(row, col, value):
+    return {'sheet': SUMMARY, 'row': row, 'col': col, 'value': value}
+
+
+def daily_count(day, value):
+    return {'sheet': DAILY, 'model': '车型甲', 'date': day, 'value': value}
+
+
 class CampaignApiTests(unittest.TestCase):
     def setUp(self):
         temp = TemporaryDirectory()
@@ -33,6 +41,111 @@ class CampaignApiTests(unittest.TestCase):
     def post(self, action, body, token=None):
         return urlopen(Request(self.base + 'campaign/' + action, data=json.dumps(body).encode(),
                                headers={'X-CSRF-Token': self.token if token is None else token}))
+
+    def draft(self):
+        with urlopen(self.base + 'campaign/state') as response:
+            return json.load(response)
+
+    def save_edits(self, base, edits, **options):
+        body = {'revision':base['revision'], 'owner':'协同验收', 'edits':edits, 'merge':True, **options}
+        if base.get('viewToken'):
+            body['viewToken'] = base['viewToken']
+        with self.post('save', body) as response:
+            return json.load(response)
+
+    def conflicts(self, base, edits, **options):
+        with self.assertRaises(HTTPError) as failed:
+            self.save_edits(base, edits, **options)
+        with failed.exception as response:
+            self.assertEqual(response.code, 409)
+            return json.load(response)['conflicts']
+
+    def test_same_row_number_for_concurrent_new_models(self):
+        base = self.draft()
+        self.save_edits(base, [stage_field(2,1,'甲'),stage_field(2,4,'纯电')])
+        self.save_edits(base, [stage_field(2,1,'乙'),stage_field(2,4,'增程')])
+        rows = self.draft()['sheets'][0]['rows'][1:]
+        self.assertEqual({r[0]:r[3] for r in rows}, {'甲':'纯电', '乙':'增程'})
+
+    def test_conflict_choice_is_tied_to_the_value_seen_and_save_is_atomic(self):
+        self.save_edits(self.draft(), [stage_field(2,1,'车型甲'),stage_field(2,3,'原档位')])
+        base = self.draft()
+        self.save_edits(base, [stage_field(2,3,'档位甲')])
+        edits = [stage_field(2,3,'我的档位'),stage_field(2,4,'增程')]
+        only, = self.conflicts(base, edits)
+        self.assertEqual((only['base'], only['local'], only['current']), ('原档位','我的档位','档位甲'))
+        self.assertNotIn('增程', self.draft()['sheets'][0]['rows'][1])
+        self.save_edits(self.draft(), [stage_field(2,3,'档位乙')])
+        choices = {only['id']:{'choice':'mine','current':only['current']}}
+        revised, = self.conflicts(base, edits, resolutions=choices)
+        self.assertEqual(revised['current'], '档位乙')
+        choices = {revised['id']:{'choice':'theirs','current':revised['current']}}
+        self.save_edits(base, edits, resolutions=choices)
+        self.assertEqual(self.draft()['sheets'][0]['rows'][1][2:4], ['档位乙','增程'])
+
+    def test_same_daily_value_is_idempotent_and_days_merge(self):
+        self.save_edits(self.draft(), [stage_field(2,1,'车型甲')])
+        base = self.draft()
+        first = daily_count('2026-11-26', 0)
+        self.save_edits(base, [first])
+        revision = self.draft()['revision']
+        self.save_edits(base, [first])
+        self.assertEqual(self.draft()['revision'], revision)
+        self.save_edits(base, [daily_count('2026-11-27',5)])
+        daily_sheet = next(s for s in self.draft()['sheets'] if s['name'] == DAILY)
+        head, row = daily_sheet['rows'][:2]
+        self.assertEqual([row[head.index(day)] for day in ('2026-11-26','2026-11-27')], [0,5])
+
+    def test_second_save_compares_against_visible_values(self):
+        self.save_edits(self.draft(), [stage_field(2,1,'车型甲'),stage_field(2,3,'原档位'),stage_field(2,4,'纯电')])
+        base = self.draft()
+        self.save_edits(base, [stage_field(2,3,'其他人已改')])
+        local = self.save_edits(base, [stage_field(2,4,'增程')])
+        self.assertEqual(local['sheets'][0]['rows'][1][2:4], ['原档位','增程'])
+        self.assertEqual(self.draft()['sheets'][0]['rows'][1][2:4], ['其他人已改','增程'])
+        edits = [stage_field(2,3,'我的新档位')]
+        only, = self.conflicts(local, edits)
+        self.assertEqual((only['base'], only['current']), ('原档位','其他人已改'))
+        self.save_edits(local, edits, resolutions={only['id']:{'choice':'mine','current':only['current']}})
+        self.assertEqual(self.draft()['sheets'][0]['rows'][1][2:4], ['我的新档位','增程'])
+
+    def test_existing_daily_cell_follows_its_date_when_an_earlier_column_is_added(self):
+        self.save_edits(self.draft(), [
+            stage_field(2,1,'车型甲'), daily_count('2026-11-27', 3)])
+        base = self.draft()
+        daily_rows = next(s['rows'] for s in base['sheets'] if s['name'] == DAILY)
+        local = {'sheet':DAILY, 'row':2, 'col':daily_rows[0].index('2026-11-27')+1, 'value':8}
+        self.save_edits(base, [daily_count('2026-11-26', 9)])
+        self.save_edits(base, [local])
+        head, row = next(s['rows'] for s in self.draft()['sheets'] if s['name'] == DAILY)
+        self.assertEqual([row[head.index(day)] for day in ('2026-11-26', '2026-11-27')], [9, 8])
+
+    def test_rename_merges_with_another_stage_and_preserves_reporting(self):
+        base = self.draft()
+        self.save_edits(base,[stage_field(2,1,'车型甲'),stage_field(3,1,'车型乙'),
+                              daily_count('2026-11-26',4)])
+        base = self.draft()
+        self.save_edits(base,[stage_field(3,3,'他人的档位')])
+        visible = self.save_edits(base,[stage_field(2,1,'甲新名'), stage_field(3,4,'我的能源')])
+        self.assertNotIn('他人的档位', visible['sheets'][0]['rows'][2])
+        shared = self.draft()
+        self.assertEqual(shared['sheets'][0]['rows'][2][2:4], ['他人的档位','我的能源'])
+        report = next(s for s in shared['sheets'] if s['name'] == DAILY)
+        head, row = report['rows'][:2]
+        self.assertEqual((row[0], row[head.index('2026-11-26')]), ('甲新名',4))
+
+    def test_conflicting_rename_does_not_discard_other_edits(self):
+        self.save_edits(self.draft(),[stage_field(2,1,'车型甲'),stage_field(3,1,'车型乙')])
+        base = self.draft()
+        self.save_edits(base,[stage_field(2,1,'甲的新名称'),stage_field(3,3,'他人的档位')])
+        edits = [stage_field(2,1,'我的甲名称'),stage_field(3,4,'我的能源')]
+        conflict, = self.conflicts(base, edits)
+        visible = self.save_edits(base, edits, resolutions={
+            conflict['id']:{'choice':'theirs','current':conflict['current']}})
+        rows = {row[0]:row for row in self.draft()['sheets'][0]['rows'][1:]}
+        self.assertEqual(set(rows), {'甲的新名称','车型乙'})
+        self.assertEqual(rows['车型乙'][2:4], ['他人的档位','我的能源'])
+        self.assertNotIn('他人的档位', next(row for row in visible['sheets'][0]['rows'] if row[0]=='车型乙'))
 
     def test_publish_versions_and_custom_export_without_excel_source(self):
         edits = [{'sheet':'车型汇总','row':2,'col':1,'value':'测试车型'},

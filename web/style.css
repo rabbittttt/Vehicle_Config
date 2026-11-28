@@ -659,6 +659,12 @@ footer #error-notice {
 }
 .campaign-field-group{border:0;margin:0;padding:0;min-width:0}
 .campaign-field-group legend{font-weight:600;margin-bottom:.5rem;padding:0}
+[data-save-conflicts] { display:grid; gap:16px; }
+[data-save-conflict] { border:1px solid var(--border); border-radius:var(--control-radius); min-width:0; padding:8px 12px; }
+[data-save-conflict] legend { padding-inline:4px; font-weight:600; }
+[data-save-conflict] p { margin:0 0 6px; }
+[data-save-conflict] label { display:flex; align-items:center; gap:8px; min-height:44px; }
+[data-save-conflict] strong { display:block; color:var(--text); font-weight:500; white-space:pre-wrap; }
 .schedule-list :is(th,td) { padding-inline:clamp(8px,1.1vw,18px); }
 .schedule-list .operation { min-width:0; }
 .schedule-list .identity-name { font-weight:600; }
@@ -790,6 +796,7 @@ footer #error-notice {
   .report-timeline { --report-model-width:100px; --report-actions-width:68px; }
   .report-timeline tr > th:first-child { width:auto; min-width:0; max-width:none; }
   body:has(.report-matrix) .save-actions { display:grid; grid-template-columns:auto 1fr 1fr; gap:4px; }
+  body:has(.report-matrix) .save-actions:has(#reload[hidden]) { grid-template-columns:1fr 1fr; }
   body:has(.report-matrix) .save-actions button { padding-inline:5px; font-size:12px; }
 }
 @media (max-width:319px) {

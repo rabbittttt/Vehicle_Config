@@ -63,7 +63,7 @@ function serviceFetch(path,body) {
 async function api(path,body) {
   const response=await serviceFetch(path,body);
   const result=await response.json();
-  if(!response.ok) throw Object.assign(new Error(result.error||'请求失败'),{status:response.status});
+  if(!response.ok) throw Object.assign(new Error(result.error||'请求失败'),{status:response.status,details:result});
   return result;
 }
 async function writeApi(path, body) {
@@ -93,7 +93,8 @@ function flags() {
   $('#undo').disabled=readonly || history || !editor.canUndo();
   $('#redo').disabled=readonly || history || !editor.canRedo();
   updateDraftStatus();
-  setText($('#reload'),history?'刷新记录':'重新载入草稿');
+  $('#reload').hidden=isCampaignView() && (busy || (Boolean(csrf) && ready && !campaignEditor.hasPendingProjection()));
+  setText($('#reload'),tab==='history'?'刷新记录':'重新载入草稿');
   document.body.setAttribute('aria-busy',String(busy));
   if(busy) document.querySelectorAll('button,input,select,textarea').forEach(e=>{e.dataset.requestDisabled=String(e.disabled);e.disabled=true;});
 }
@@ -325,7 +326,7 @@ $('#dialog').addEventListener('close',()=>{
   (opener?.getClientRects().length&&!opener.disabled?opener:$('#view-tabs .active') || nav.querySelector('.active'))?.focus({preventScroll:true});
 });
 function formSnapshot() {
-  const form=$('#dialog-body form');
+  const form=$('#dialog-body form:not([data-save-conflicts])');
   return form?JSON.stringify([...new FormData(form)]):null;
 }
 function hasFormInput() {
@@ -502,7 +503,7 @@ $('#save').onclick=()=>{
 };
 $('#error-detail').onclick=()=>modal('操作未完成',`<p class="error">${esc($('#error-notice').textContent)}</p>`);
 $('#publish').onclick=()=>run(()=>reviewPublication(),'正在核对发布差异…');
-$('#reload').onclick=()=>!csrf?run(start):view==='campaign_history'?renderHistory():activeEditor().reload();
+$('#reload').onclick=()=>!csrf?run(start):tab==='history'?render():activeEditor().reload();
 $('#undo').onclick=()=>activeEditor().undo();
 $('#redo').onclick=()=>activeEditor().redo();
 $('#export').onclick=()=>{

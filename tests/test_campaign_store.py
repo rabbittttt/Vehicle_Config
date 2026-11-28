@@ -1,5 +1,6 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,6 +12,7 @@ from zipfile import ZipFile
 from openpyxl import load_workbook
 
 from campaign_store import CampaignStore, encode
+from campaign_merge import MergeConflict
 from catalog import Conflict
 from stage_workbook import export_workbook
 
@@ -20,6 +22,28 @@ def edit(column, value):
 
 
 class CampaignStoreTests(unittest.TestCase):
+    def test_concurrent_new_progress_rows_keep_their_independent_end_dates(self):
+        name = '小转大进度'
+        def quantity(model, value):
+            return dict(sheet=name,model=model,day=1,value=value)
+        def progress(state):
+            return next(sheet for sheet in state['sheets'] if sheet['name']==name)['rows']
+        initial = self.store.save(0,[edit(1,'车型甲'),dict(sheet='车型汇总',row=3,col=1,value='车型乙')],'初始')
+        revision = initial['revision']
+        pending = [quantity('车型甲',4)]
+        rows = progress(self.store.preview(revision,pending))
+        row = next(i for i,r in enumerate(rows,1) if r and r[0]=='车型甲')
+        col = rows[0].index('小转大结束日期')+1
+        pending.append(dict(sheet=name,row=row,col=col,value='2026-12-21'))
+        self.store.save(revision,[quantity('车型乙',9)],'编辑乙')
+        visible = self.store.save(revision,pending,'编辑甲',merge=True)
+        self.assertFalse(any(r and r[0]=='车型乙' for r in progress(visible)))
+        shared = progress(self.store.get())
+        day = shared[0].index('D1')
+        section = shared[1:next(n for n,r in enumerate(shared[1:],1) if r and r[0]=='代际名')]
+        values = {r[0]:(r[day],r[col-1]) for r in section if r and r[0]}
+        self.assertEqual(values, {'车型甲':(4,'2026-12-21'),'车型乙':(9,None)})
+
     def setUp(self):
         self.temp = TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -203,6 +227,8 @@ class CampaignStoreTests(unittest.TestCase):
         with patch.object(self.store, '_replace_snapshot', side_effect=PermissionError):
             state = self.store.save(state['revision'], [edit(12, '2026-02-01')], '甲', publish=True)
             self.assertTrue(state['projectionPending'])
+            state = self.store.save(state['revision'], [edit(5, '新发布类型')], '甲', merge=True)
+            self.assertTrue(state['projectionPending'])
             self.assertEqual(json.loads(self.store.snapshot.read_text('utf-8')), old)
         self.assertEqual(self.store.published(1), old)
         repaired = CampaignStore(self.temp.name)
@@ -277,6 +303,47 @@ class CampaignStoreTests(unittest.TestCase):
             self.assertCountEqual(pool.map(persist, ['甲', '乙']), ['saved', 'conflict'])
         self.assertEqual(self.store.get()['revision'], 1)
         self.assertEqual(self.store.published()['revision'], 0)
+
+    def test_simultaneous_nonoverlapping_saves_keep_the_editor_views_separate(self):
+        start = self.store.save(0,self.edits,'初始化')
+        barrier = Barrier(2)
+
+        def save(change):
+            barrier.wait(timeout=10)
+            return self.store.save(start['revision'],[change],'编辑',merge=True)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            a,b = pool.map(save,[edit(3,'高配'),edit(4,'纯电')])
+        self.assertEqual(a['sheets'][0]['rows'][1][2:4], ['高配',None])
+        self.assertEqual(b['sheets'][0]['rows'][1][2:4], [None,'纯电'])
+        latest = self.store.get()
+        self.assertEqual(latest['sheets'][0]['rows'][1][2:4], ['高配','纯电'])
+        detached = a if 'viewToken' in a else b
+        self.assertEqual(detached['revision'],latest['revision'])
+        with self.assertRaises(Conflict):
+            self.store.save(detached['revision'],[],'编辑',publish=True,merge=True,view_token=detached['viewToken'])
+        self.assertEqual(self.store.published()['revision'],0)
+
+    def test_expired_view_recovers_from_verified_browser_copy_after_restart(self):
+        first = self.store.save(0,self.edits,'初始化')
+        self.store.save(first['revision'],[edit(3,'他人的档位')],'甲')
+        private = self.store.save(first['revision'],[edit(4,'纯电')],'乙',merge=True)
+        token = private['viewToken']
+        with closing(self.store.connect()) as db, db:
+            db.execute("UPDATE edit_bases SET saved_at=datetime('now','-31 days') WHERE token=?",(token,))
+        self.store.save(private['revision'],[edit(5,'其他类型')],'甲')
+        reopened = CampaignStore(self.temp.name)
+        pending = [edit(6,'上午')]
+        with self.assertRaises(MergeConflict) as refresh:
+            reopened.preview(private['revision'],pending,merge=True,view_token=token)
+        self.assertTrue(refresh.exception.details['needsBase'])
+        with self.assertRaises(Conflict):
+            reopened.save(private['revision'],pending,'乙',merge=True,view_token=token,
+                          base_sheets=reopened.get()['sheets'])
+        mine = reopened.save(private['revision'],pending,'乙',merge=True,view_token=token,
+                             base_sheets=private['sheets'])
+        self.assertEqual(mine['sheets'][0]['rows'][1][2:6],[None,'纯电','标准发布','上午'])
+        self.assertEqual(reopened.get()['sheets'][0]['rows'][1][2:6],['他人的档位','纯电','其他类型','上午'])
 
 
 if __name__ == '__main__':
