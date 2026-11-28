@@ -620,8 +620,8 @@ function createPriceEntry({getRows, commit, formatPrice, editNew}) {
 
   function actions(row) {
     const buttons = row.fresh
-      ? '<button type="button" class="link" data-price-edit-new>编辑条件与价格</button><button type="button" class="link" data-price-discard>取消录入</button>'
-      : [['edit','编辑'],['copy','复制'],['delete','删除']].map(([action, label]) =>
+      ? '<button type="button" class="link" data-price-discard>取消录入</button>'
+      : [['copy','复制'],['delete','删除']].map(([action, label]) =>
         `<button type="button" class="link" data-rule-action="${action}" data-rule-id="${esc(row.id)}">${label}</button>`).join('');
     return `<details class="price-more"><summary aria-label="更多操作">⋯</summary><div class="price-menu">${buttons}</div></details>`;
   }
@@ -633,6 +633,7 @@ function createPriceEntry({getRows, commit, formatPrice, editNew}) {
     const details = detailsText(row);
     const description = details ? `<small class="price-conditions">${esc(details)}</small>` : '';
     const id = esc(row.id);
+    const parameters = readonly ? '' : `<button type="button" class="link price-parameters" ${row.fresh ? 'data-price-edit-new' : `data-rule-action="edit" data-rule-id="${id}"`}>参数</button>`;
     let priceCell;
     if (isConditional(row)) {
       const summary = esc(formatPrice(row.price));
@@ -642,7 +643,7 @@ function createPriceEntry({getRows, commit, formatPrice, editNew}) {
     }
     return `<tr data-price-id="${id}"${row.fresh ? ' class="price-new"' : ''}>
       <td>${readonly ? esc(name) : `<input class="price-name" aria-label="选配名称" maxlength="4000" placeholder="输入选配名称" value="${esc(name)}">`}${description}</td>
-      <td>${priceCell}</td>${readonly ? '' : `<td class="price-actions">${actions(row)}</td>`}</tr>`;
+      <td>${priceCell}${parameters}</td>${readonly ? '' : `<td class="price-actions">${actions(row)}</td>`}</tr>`;
   }
 
   function groupHTML(group, rows) {
@@ -733,6 +734,10 @@ function createPriceEntry({getRows, commit, formatPrice, editNew}) {
     if (input.fresh) {
       element.classList.remove('price-new');
       element.querySelector('.price-actions').innerHTML = actions({id});
+      const parameters = element.querySelector('.price-parameters');
+      parameters.removeAttribute('data-price-edit-new');
+      parameters.dataset.ruleAction = 'edit';
+      parameters.dataset.ruleId = id;
     }
     return true;
   }

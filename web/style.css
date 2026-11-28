@@ -946,6 +946,11 @@ footer #error-notice {
   overflow-wrap: anywhere;
 }
 
+.price-table .price-parameters {
+  min-height: 38px;
+  padding: 4px 8px;
+}
+
 .price-actions { text-align: end; }
 .price-more { position: relative; }
 
@@ -1028,5 +1033,5 @@ footer #error-notice {
     scroll-margin-block-end: calc(148px + env(safe-area-inset-bottom));
   }
   .price-table :is(.price-name, .price-amount), .price-add,
-  .price-more > summary, .price-menu button { min-height: 44px; }
+  .price-more > summary, .price-menu button, .price-table .price-parameters { min-height: 44px; }
 }

@@ -135,6 +135,15 @@ def check_grouped_price_entry(browser):
         expect(groups.locator('.price-group-toggle')).to_contain_text('舒适/功能选配')
         expect(groups.locator('tbody input[value="车型甲 2026款"], tbody input[value="舒适/功能选配"]')).to_have_count(0)
 
+        groups.get_by_role('button', name='参数', exact=True).click()
+        form = page.locator('#rule-form')
+        expect(form.locator('[name=default]')).to_have_value('false')
+        expect(form.locator('[name=versions]')).to_have_value('长续航')
+        expect(form.locator('[name=match_versions]')).to_have_value('长续航版')
+        expect(form.locator('[name=seat]')).to_have_value('五座')
+        expect(form.locator('[name=price_mode]')).to_have_value('fixed')
+        page.locator('#cancel').click()
+
         # Only the category and model context are shared. Changing an amount preserves all restrictions.
         groups.locator('.price-amount').fill('3200')
         groups.locator('.price-amount').press('Tab')
@@ -206,8 +215,7 @@ def check_grouped_price_entry(browser):
         expect(groups.locator('.price-amount')).to_have_value('1200')
         groups.locator('.price-add').click()
         name.fill('轮毂')
-        new_row.locator('summary').click()
-        new_row.get_by_role('button', name='编辑条件与价格').click()
+        new_row.get_by_role('button', name='参数', exact=True).click()
         form = page.locator('#rule-form')
         expect(form.locator('[name=name]')).to_have_value('轮毂')
         expect(form.locator('[name=price_mode]')).to_have_value('conditional')
