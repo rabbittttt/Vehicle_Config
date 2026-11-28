@@ -7,11 +7,11 @@ const sections = {
   generation: ['gen_names', 'merge_groups'],
   options: ['battery_rules', 'option_names', 'option_prices'],
   reporting: ['businessTotals', ...Object.keys(campaignEditor.reportMetrics)],
-  history: ['campaign_history', 'rule_history'],
+  history: ['history'],
 };
 const viewLabels = {
   ...orderRules.titles,
-  ...campaignEditor.reportMetrics, dailyOrders:'小订进度', businessTotals:'阶段汇总', campaign_history:'日程与填报发布',
+  ...campaignEditor.reportMetrics, dailyOrders:'小订进度', businessTotals:'阶段汇总',
 };
 let tab='schedule', view=sections.schedule[0], csrf='', readonly=true, busy=false, confirmAction=null;
 let sessionUser = '';
@@ -79,7 +79,7 @@ async function writeApi(path, body) {
 // Disable all live inputs for the entire request, including dialogs. Never let a save response replace newer edits.
 function flags() {
   document.querySelectorAll('[data-request-disabled]').forEach(e=>{e.disabled=e.dataset.requestDisabled==='true';delete e.dataset.requestDisabled;});
-  const editor=activeEditor(), ready=editor.ready(), history=view==='campaign_history';
+  const editor=activeEditor(), ready=editor.ready(), history=tab==='history';
   $('#save').disabled=readonly || history || !ready || !editor.isDirty();
   $('#publish').disabled=readonly || !csrf || !publishGroups.some(({editor})=>!editor.ready() || editor.hasPendingPublish());
   for(const id of ['save','undo','redo']) $('#'+id).hidden=history;
@@ -192,7 +192,7 @@ function switchView(nextTab, nextView=sections[nextTab]?.[0]) {
   notice();
   render();
   revealView();
-  if(!activeEditor().ready() && view!=='campaign_history')run(activeEditor().load,'正在读取数据…');
+  if(tab!=='history' && !activeEditor().ready())run(activeEditor().load,'正在读取数据…');
 }
 function revealActiveTab(row) {
   const active = row.querySelector('.active');
@@ -277,17 +277,9 @@ function paginator(total, rowsPerPage=pageSize) {
   return [(page-1)*rowsPerPage,page*rowsPerPage];
 }
 let historyRequest=0;
-async function renderHistory(search=searchValue(), warning='') {
+async function renderHistory(search=searchValue()) {
   const request=++historyRequest, requestedView=view;
-  const rules=requestedView==='rule_history';
-  const path=rules?'rules/history':'campaign/history';
   const content=$('#content');
-  if(!rules && !scheduleToolsAvailable) {
-    $('#count').textContent='';
-    $('#pagination').replaceChildren();
-    content.textContent='重启车型配置服务后可查看发布记录。';
-    return;
-  }
   content.setAttribute('aria-busy','true');
   if(content.dataset.historyView!==requestedView) {
     $('#count').textContent='';
@@ -296,18 +288,23 @@ async function renderHistory(search=searchValue(), warning='') {
     content.dataset.historyView=requestedView;
   }
   try {
-    const result=await api(path+'?'+new URLSearchParams({page,q:search}));
+    const result=await api('change-history?'+new URLSearchParams({page,q:search}));
     if(request!==historyRequest || view!==requestedView)return;
     page=result.page;
     paginator(result.total);
     $('#count').textContent=result.total ? `${result.total} 条记录` : '';
     const rows=result.history.map(record=>{
-      const link=rules?`<td><button class="link" data-rule-action="history" data-rule-id="${esc(record.id)}">差异与恢复</button></td>`:'';
-      return `<tr><td>#${esc(record.id)}</td><td>${esc(record.kind)}</td><td>${esc(record.actor)}</td><td>${esc(new Date(record.time).toLocaleString())}</td>${link}</tr>`;
+      const rules=record.source==='rules';
+      const link=rules?`<button class="link" data-rule-action="history" data-rule-id="${esc(record.id)}">查看差异</button>`:'';
+      return `<tr><td>${rules?'脚本规则':'日程与填报'} <small>#${esc(record.id)}</small></td><td>${esc(record.kind)}</td><td>${esc(record.actor)}</td><td>${esc(new Date(record.time).toLocaleString())}</td><td>${link}</td></tr>`;
     });
-    $('#content').innerHTML=warning+(rows.length?`<div class="scroll"><table><thead><tr><th>记录</th><th>操作</th><th>操作人</th><th>时间</th>${rules?'<th>操作</th>':''}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`:`<div class="empty"><strong>${rules?'暂无变更记录':'暂无发布记录'}</strong></div>`);
+    const empty=search?'<strong>没有匹配的变更记录</strong><button data-clear>清空搜索</button>':'<strong>暂无变更记录</strong>';
+    content.innerHTML=rows.length?`<div class="scroll"><table><thead><tr><th>来源</th><th>变更</th><th>操作人</th><th>时间</th><th>详情</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`:`<div class="empty">${empty}</div>`;
   } catch(error) {
-    if(request===historyRequest && view===requestedView)$('#content').textContent=error.message;
+    if(request!==historyRequest || view!==requestedView)return;
+    $('#count').textContent='';
+    $('#pagination').replaceChildren();
+    content.textContent=error.status===404?'请重启车型配置服务后刷新记录。':error.message;
   } finally {
     if(request===historyRequest && view===requestedView)content.removeAttribute('aria-busy');
   }
@@ -467,7 +464,7 @@ document.addEventListener('click',e=>{
   if(b.dataset.tab)return switchView(b.dataset.tab);
   if(b.dataset.view)return switchView(tab,b.dataset.view);
   if(b.dataset.campaignAction && isCampaignView())return campaignEditor.handle(b);
-  if(b.dataset.ruleAction && isRuleView())return orderRules.handleClick(b,view);
+  if(b.dataset.ruleAction && (isRuleView() || tab==='history'))return orderRules.handleClick(b,view);
   if(b.dataset.page){page=Number(b.dataset.page);render();}
   if(b.hasAttribute('data-clear'))clearSearch();
 });

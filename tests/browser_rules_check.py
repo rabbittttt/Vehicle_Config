@@ -90,12 +90,16 @@ def fill_owner(page):
     page.locator('#data-tools').click()
 
 
-def switch_view(page, tab, view):
+def switch_view(page, tab, view=None):
     page.locator(f'[data-tab="{tab}"]').click()
-    page.locator(f'[data-view="{view}"]').click()
+    if view:
+        page.locator(f'[data-view="{view}"]').click()
     ready(page)
     expect(page.locator(f'[data-tab="{tab}"]')).to_have_attribute('aria-current', 'page')
-    expect(page.locator(f'[data-view="{view}"]')).to_have_attribute('aria-pressed', 'true')
+    if view:
+        expect(page.locator(f'[data-view="{view}"]')).to_have_attribute('aria-pressed', 'true')
+    else:
+        expect(page.locator('#view-tabs')).to_be_hidden()
 
 
 def add_vehicle(page):
@@ -370,10 +374,13 @@ def main():
             year.select_option('2028')
         switch_view(page, 'options', 'option_names')
         expect(content).to_contain_text('旧选配名称')
-        for history, actor in [('campaign_history', '首发维护人'), ('rule_history', '后续操作人')]:
-            switch_view(page, 'history', history)
-            expect(year).to_have_value('2028')
-            expect(content).to_contain_text(actor)
+        switch_view(page, 'history')
+        expect(year).to_have_value('2028')
+        for actor, source_name in [('首发维护人', '日程与填报'), ('后续操作人', '脚本规则')]:
+            search.fill(actor)
+            row = content.get_by_role('row').filter(has_text=actor).first
+            expect(row.get_by_role('cell', name=source_name)).to_be_visible()
+        search.fill('')
         header.locator('[data-tab=schedule]').click()
         ready(page)
         expect(year).to_have_value('2028')
@@ -410,10 +417,9 @@ def main():
         switch_view(page, 'options', 'option_names')
         expect(content).to_contain_text('旧选配名称')
         model.select_option('未保存车型甲')
-        for history, actor in [('campaign_history', '首发维护人'), ('rule_history', '后续操作人')]:
-            switch_view(page, 'history', history)
-            expect(model).to_have_value('未保存车型甲')
-            expect(content).to_contain_text(actor)
+        switch_view(page, 'history')
+        expect(model).to_have_value('未保存车型甲')
+        expect(content).to_contain_text('后续操作人')
         model.select_option('已保存车型乙 2027款')
         header.locator('[data-tab=schedule]').click()
         expect(search).to_have_value('未保存车型甲')
@@ -484,16 +490,27 @@ def main():
         assert values['OPTION_CONFIG']['车型甲 2026款']['舒适/功能选配'][0][1] == 4500
         assert values['VERSION_NAME_MAP'] == {'标准旧名': '标准版'}
 
-        switch_view(page, 'history', 'rule_history')
-        expect(content.get_by_role('button', name='差异与恢复').first).to_be_visible()
-        page.get_by_role('button',name='下一页').click()
+        switch_view(page, 'history')
+        expect(content.get_by_role('button', name='查看差异').first).to_be_visible()
+        page.get_by_role('button', name='下一页').click()
         expect(content).to_contain_text('早期操作人')
-        header.locator('#search').fill('早期操作人')
+        search.fill('首发维护人')
         expect(page.locator('#count')).to_have_text('1 条记录')
-        content.get_by_role('button',name='差异与恢复').click()
+        campaign_record = content.get_by_role('row').filter(has_text='首发维护人')
+        expect(campaign_record).to_contain_text('日程与填报')
+        expect(campaign_record.get_by_role('button')).to_have_count(0)
+        search.fill('早期操作人')
+        expect(page.locator('#count')).to_have_text('1 条记录')
+        historical_rule = content.get_by_role('row').filter(has_text='早期操作人')
+        historical_rule.get_by_role('button', name='查看差异').click()
         expect(page.locator('#dialog')).to_be_visible()
-        page.locator('#cancel').click()
-        header.locator('#search').fill('')
+        page.locator('#dialog').get_by_role('button', name='恢复到编辑区').click()
+        expect(page.locator('#dialog')).to_be_hidden()
+        expect(header.locator('[data-tab=generation]')).to_have_attribute('aria-current', 'page')
+        expect(page.locator('#save')).to_be_enabled()
+        assert assignments(source) == values
+        page.locator('#undo').click()
+        expect(page.locator('#save')).to_be_disabled()
         switch_view(page, 'options', 'option_prices')
         source.write_text(source.read_text(encoding='utf-8') + '\n# external\n', encoding='utf-8')
         content.locator('.price-amount').fill('5000')

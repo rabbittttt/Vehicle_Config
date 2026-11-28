@@ -7,7 +7,6 @@ const orderRules = (() => {
     battery_rules: '电池包规则',
     option_names: '选配名称合并',
     option_prices: '选配金',
-    rule_history: '脚本变更记录',
   };
   const fields = {
     gen_names: ['source', 'target'],
@@ -204,11 +203,6 @@ const orderRules = (() => {
     }
 
     const search = query.toLocaleLowerCase();
-    if (table === 'rule_history') {
-      renderHistory(search, sourceAlert());
-      return;
-    }
-
     const names = table==='option_names' ? null : filteredModelNames();
     const rows = draft[table]
       .map((row, index) => ({row, index}))
@@ -417,10 +411,11 @@ const orderRules = (() => {
       if (JSON.stringify(current.draft.data) !== JSON.stringify(current.published.data)) overwritten.push('已保存但尚未发布的规则');
       if (isDirty()) overwritten.push('本地未保存的规则编辑');
       const warning = overwritten.length ? `<p class="error">${overwritten.join('、')}会一并替换。</p>` : '';
-      const recovery = pending ? '<p>上次中断的发布将存入脚本变更记录。</p>' : '';
+      const recovery = pending ? '<p>上次中断的发布将存入变更记录。</p>' : '';
       writeModal('从脚本重新载入', `<p>用脚本中的五类规则替换规则草稿 r${current.draft.revision}，并更新规则的已发布版本。</p>
         <dl><dt>替换范围</dt><dd>${esc(tables)}</dd><dt>来源脚本</dt><dd>${esc(current.source.path)}</dd></dl>${warning}${recovery}`, async () => {
         accept(await writeApi('rules/reload', {revision: current.draft.revision, source_hash: current.source.hash, pending_token: pending}));
+        if (tab==='history') await renderHistory();
         notice('已从脚本重新载入');
       }, '替换规则并载入');
     }, '正在核对脚本规则…');
@@ -428,18 +423,24 @@ const orderRules = (() => {
 
   function handleClick(button, table) {
     const {ruleAction: action, ruleId: id} = button.dataset;
-    if (!ready() || busy || button.disabled || !action) return;
+    if (busy || button.disabled || !action) return;
     if (action === 'history') {
       return run(async () => {
         const record = await api('rules/history/' + id);
-        modal('脚本变更记录 #' + id, diffHTML(record.changes), readonly ? null : () => {
+        modal('脚本规则 #' + id, diffHTML(record.changes), readonly ? null : async () => {
+          if (!ready()) await load();
+          prices.flush();
+          const table = Object.keys(fields).find(key => JSON.stringify(draft[key]) !== JSON.stringify(record.data[key]))
+            || record.changes[0]?.table || 'gen_names';
           prices.reset();
-          change(record.data);
+          change(record.data, false);
+          switchView(sections.generation.includes(table) ? 'generation' : 'options', table);
           notice('规则已恢复到编辑区，尚未保存');
         }, '恢复到编辑区');
+        if (readonly) $('#cancel').textContent='关闭';
       });
     }
-    if (readonly) return;
+    if (!ready() || readonly) return;
     if (table === 'option_prices') {
       try { prices.flush(); } catch (error) { return notice(error.message, true); }
     }

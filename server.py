@@ -3,7 +3,7 @@ import argparse, json, os, secrets, sys, zipfile
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 from excel_io import excel, read_excel, preview_import
-from catalog import CATALOG_DB, Store, Conflict, PUBLISH_REQUIRED, IDENTITY_FIELDS, identity, validate as validate_catalog
+from catalog import CATALOG_DB, Store, Conflict, PUBLISH_REQUIRED, IDENTITY_FIELDS, identity, combined_history_page, validate as validate_catalog
 from shared_rules import RuleStore, validate as validate_rules
 from rules_excel import rules_excel, preview_rules_import
 from campaign_store import CampaignStore
@@ -101,11 +101,14 @@ def make_server(store,host='127.0.0.1',port=8790,prefix='/vehicle-config/',origi
                     requested=params.get('revision')
                     editor=params.get('view')==['editor']
                     return self.send(200,campaigns.published(int(requested[0]) if requested else None,editor=editor))
-                if path in ('/api/history','/api/rules/history','/api/campaign/history'):
+                if path in ('/api/change-history','/api/history','/api/rules/history','/api/campaign/history'):
                     params=parse_qs(urlsplit(self.path).query)
                     page=int(params.get('page',['1'])[0])
+                    query=params.get('q',[''])[0]
+                    if path=='/api/change-history':
+                        return self.send(200,combined_history_page(campaigns.path,rules.path,page,query))
                     owner={'/api/history':store,'/api/rules/history':rules,'/api/campaign/history':campaigns}[path]
-                    return self.send(200,owner.history_page(page,params.get('q',[''])[0]))
+                    return self.send(200,owner.history_page(page,query))
                 if path.startswith('/api/rules/history/'):return self.send(200,rules.history(int(path.rsplit('/',1)[1])))
                 if path=='/api/rules/template':return self.send(200,rules_excel(rules.get()['draft']['data'],template=True),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 if path.startswith('/api/history/'):return self.send(200,store.history(int(path.rsplit('/',1)[1])))

@@ -234,8 +234,11 @@ def test_global_tools(browser):
 
 
 def test_readonly(browser):
-    with tempfile.TemporaryDirectory() as directory, isolated_server(directory, readonly=True) as (url, store, _, _):
+    with tempfile.TemporaryDirectory() as directory, isolated_server(directory, readonly=True) as (url, store, rules, _):
         CampaignStore(store.root).save(0, [dict(sheet="车型汇总", row=2, col=1, value="已发布车型")], "验收", publish=True)
+        draft = rules.get()["draft"]
+        draft["data"]["gen_names"][0]["target"] = "历史名称"
+        rules.save(draft["data"], draft["revision"], "验收")
         page = browser.new_page()
         page.goto(url)
         ready(page)
@@ -256,6 +259,15 @@ def test_readonly(browser):
         expect(page.locator("[data-rule-action]")).to_have_count(0)
         expect(page.locator("#content input, .price-add, [data-price-category]")).to_have_count(0)
         expect(page.locator("#export")).to_be_enabled()
+        switch_view(page, "history")
+        for source_name in ("日程与填报", "脚本规则"):
+            expect(page.get_by_role("cell", name=source_name)).to_be_visible()
+        page.get_by_role("button", name="查看差异").click()
+        expect(page.locator("#dialog")).to_contain_text("历史名称")
+        expect(page.get_by_role("button", name="恢复到编辑区")).to_have_count(0)
+        expect(page.locator("#cancel")).to_have_text("关闭")
+        page.locator("#cancel").click()
+        expect(page.locator("#dialog")).to_be_hidden()
         page.close()
 
 
@@ -305,7 +317,7 @@ def test_publication_retry(browser, *, lose_campaign_response=False):
             ready(page)
             check_draft_status_everywhere(page, "配置草稿 · 待发布")
         add_vehicle(page)
-        switch_view(page, "history", "campaign_history")
+        switch_view(page, "history")
         expect(page.locator("#status")).to_have_text("配置草稿 · 有未保存修改")
         publish = page.get_by_role("button", name="发布", exact=True)
         confirm = page.get_by_role("button", name="确认发布", exact=True)
@@ -358,6 +370,12 @@ def test_publication_retry(browser, *, lose_campaign_response=False):
         assert rules.get()["published"]["data"]["gen_names"][0]["target"] == "待发布代际"
         assert campaign.history_page()["history"][0]["actor"] == "统一发布维护人"
         assert rules.history_page()["history"][0]["actor"] == "统一发布维护人"
+        switch_view(page, "history")
+        page.locator("header #search").fill("统一发布维护人")
+        records = page.locator("#content tbody tr")
+        expect(records).to_have_count(2)
+        for source_name in ("日程与填报", "脚本规则"):
+            expect(records.filter(has_text=source_name)).to_contain_text("统一发布维护人")
         page.close()
 
 

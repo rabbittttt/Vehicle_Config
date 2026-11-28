@@ -150,7 +150,9 @@ def check_account_change(browser, url, *, legacy_portal=False):
     app.locator('#confirm').click()
     expect(app.locator('#dialog')).to_be_hidden()
     app.locator('[data-tab=history]').click()
-    expect(app.locator('#content tbody tr').first.locator('td').nth(2)).to_have_text('业务乙')
+    expect(app.locator('#view-tabs')).to_be_hidden()
+    latest = app.locator('#content tbody tr').filter(has_text='日程与填报').first
+    expect(latest.get_by_role('cell', name='业务乙', exact=True)).to_be_visible()
     page.close()
 
 

@@ -1,5 +1,6 @@
 """Versioned vehicle catalog. IDs are stable; records are retired, never removed."""
 import copy, json, sqlite3, threading, uuid, os
+from contextlib import closing
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -48,20 +49,37 @@ def recent_history(db):
     rows=db.execute('SELECT id,kind,actor,time FROM events ORDER BY id DESC LIMIT ?', (HISTORY_PAGE_SIZE,))
     return [dict(zip(EVENT_FIELDS,row)) for row in rows]
 
-def read_history_page(db, page=1, query=''):
+def combined_history_page(campaign_path, rules_path, page=1, query=''):
+    with closing(sqlite3.connect(campaign_path.resolve().as_uri() + '?mode=ro', uri=True, timeout=15)) as db:
+        db.execute('ATTACH DATABASE ? AS rules', (rules_path.resolve().as_uri() + '?mode=ro',))
+        db.execute('BEGIN')  # Keep the count and page on the same snapshot.
+        return read_history_page(db, page, query, combined=True)
+
+def read_history_page(db, page=1, query='', *, combined=False):
     if page < 1:
         raise ValueError('历史页码必须为正整数')
+    table = 'events'
+    fields = EVENT_FIELDS
+    order = 'id DESC'
+    search = "id || ' ' || kind || ' ' || actor || ' ' || time"
+    if combined:
+        table = """(SELECT id,kind,actor,time,'campaign' AS source,'日程与填报 车型与日程 小订首销填报' AS label FROM main.events
+                    UNION ALL
+                    SELECT id,kind,actor,time,'rules' AS source,'脚本规则 脚本变更记录' AS label FROM rules.events)"""
+        fields = (*EVENT_FIELDS, 'source')
+        order = 'time DESC, source, id DESC'
+        search = "'#' || " + search + " || ' ' || label"
     where = ''
     args = ()
     if query:
         db.create_function('casefold',1,str.casefold,deterministic=True)
-        where = " WHERE instr(casefold(id || ' ' || kind || ' ' || actor || ' ' || time), ?) > 0"
+        where = f" WHERE instr(casefold({search}), ?) > 0"
         args = (query.casefold(),)
-    total = db.execute('SELECT COUNT(*) FROM events' + where, args).fetchone()[0]
+    total = db.execute(f'SELECT COUNT(*) FROM {table}{where}', args).fetchone()[0]
     page = min(page, max(1, (total + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE))
-    rows = db.execute('SELECT id,kind,actor,time FROM events' + where + ' ORDER BY id DESC LIMIT ? OFFSET ?',
+    rows = db.execute(f"SELECT {','.join(fields)} FROM {table}{where} ORDER BY {order} LIMIT ? OFFSET ?",
                       (*args, HISTORY_PAGE_SIZE, (page - 1) * HISTORY_PAGE_SIZE))
-    return {'history':[dict(zip(EVENT_FIELDS,row)) for row in rows], 'total':total, 'page':page}
+    return {'history':[dict(zip(fields,row)) for row in rows], 'total':total, 'page':page}
 
 def validate(data, publish=False):
     return [message for _,_,message in validation_issues(data,publish)]

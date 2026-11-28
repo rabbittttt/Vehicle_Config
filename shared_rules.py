@@ -347,7 +347,8 @@ class RuleStore:
         self.source_path=Path(source_path).resolve() if source_path else None
         self.lock=threading.RLock();self.recovery_error=''
         self._parsed_source=None
-        self.db=sqlite3.connect(self.root/'rules.sqlite3',check_same_thread=False,timeout=15)
+        self.path=self.root/'rules.sqlite3'
+        self.db=sqlite3.connect(self.path,check_same_thread=False,timeout=15)
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.executescript('CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY,revision INTEGER NOT NULL,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT); CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,kind TEXT,actor TEXT,time TEXT,data TEXT,changes TEXT); CREATE TABLE IF NOT EXISTS journal(id INTEGER PRIMARY KEY,payload TEXT NOT NULL);')
         if not self.db.execute('SELECT 1 FROM state WHERE id=1').fetchone():

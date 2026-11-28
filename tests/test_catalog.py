@@ -205,6 +205,12 @@ class CatalogTests(unittest.TestCase):
                 self.assertIn('请从计划工作台重新打开', json.load(response)['error'])
             with get('/api/campaign/state', headers) as response:
                 self.assertEqual(json.load(response)['revision'], 0)
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                get('/api/change-history', transport)
+            with denied.exception as response:
+                self.assertEqual(response.code, 403)
+            with get('/api/change-history', headers) as response:
+                self.assertEqual(json.load(response)['total'], 0)
             with get('/vehicle-config/', transport) as response:
                 self.assertEqual(response.status, 200)
             invalid_identity = [{}, {**identity, 'account':' '}, {**identity, 'roleCode':0},

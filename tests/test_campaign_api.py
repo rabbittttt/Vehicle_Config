@@ -1,11 +1,14 @@
 import base64
 import json
+import sqlite3
+from contextlib import closing
 from datetime import datetime
 from io import BytesIO
 from tempfile import TemporaryDirectory
 from threading import Thread
 import unittest
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from openpyxl import load_workbook
@@ -27,6 +30,7 @@ class CampaignApiTests(unittest.TestCase):
         temp = TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         catalog = Store(temp.name)
+        self.root = catalog.root
         self.addCleanup(catalog.db.close)
         self.server = make_server(catalog, port=0)
         self.addCleanup(self.server.server_close)
@@ -45,6 +49,36 @@ class CampaignApiTests(unittest.TestCase):
     def draft(self):
         with urlopen(self.base + 'campaign/state') as response:
             return json.load(response)
+
+    def test_combined_history_filters_and_paginates_both_sources_together(self):
+        def history(**params):
+            with urlopen(self.base + 'change-history?' + urlencode(params)) as response:
+                return json.load(response)
+
+        self.assertEqual(history(), {'history': [], 'total': 0, 'page': 1})
+        with closing(sqlite3.connect(self.root / 'campaigns' / 'campaigns.sqlite3')) as campaign, \
+             closing(sqlite3.connect(self.root / 'rules' / 'rules.sqlite3')) as rules:
+            with campaign, rules:
+                for index in range(1, 24):
+                    stamp = f'2026-11-20T00:00:{index:02d}+00:00'
+                    campaign.execute('INSERT INTO publications VALUES(?,?,?,?)', (index, '{}', 'Operator', stamp))
+                    rules.execute('INSERT INTO events VALUES(?,?,?,?,?,?)',
+                                  (index, '保存草稿', 'operator', stamp, '{}', '[]'))
+
+        first = history()
+        last = history(page=99)
+        self.assertEqual((first['total'], len(first['history']), last['page'], len(last['history'])), (46, 40, 2, 6))
+        events = first['history'] + last['history']
+        self.assertEqual([(event['id'], event['source']) for event in events],
+                         [(index, source) for index in range(23, 0, -1) for source in ('campaign', 'rules')])
+        self.assertEqual(history(q='OPERATOR')['total'], 46)
+        self.assertEqual(history(q='脚本')['total'], 23)
+        self.assertEqual(history(q='#23')['history'], events[:2])
+        self.assertEqual(history(page=2, q='无匹配'), {'history': [], 'total': 0, 'page': 1})
+        with self.assertRaises(HTTPError) as error:
+            history(page=0)
+        with error.exception as response:
+            self.assertEqual(response.code, 400)
 
     def save_edits(self, base, edits, **options):
         body = {'revision':base['revision'], 'owner':'协同验收', 'edits':edits, 'merge':True, **options}

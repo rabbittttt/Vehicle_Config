@@ -29,12 +29,7 @@ def view(page, name):
 
 def check_draft_status_everywhere(page, expected):
     status = page.locator('footer #status')
-    tab(page, 'history')
-    for name in ('campaign_history', 'rule_history'):
-        view(page, name)
-        expect(status).to_be_visible()
-        expect(status).to_have_text(expected)
-    for name in ('generation', 'options', 'reporting', 'schedule'):
+    for name in ('history', 'generation', 'options', 'reporting', 'schedule'):
         tab(page, name)
         expect(status).to_be_visible()
         expect(status).to_have_text(expected)
@@ -784,10 +779,9 @@ def check_concurrent_editors(browser):
         expect(second.locator('#reload')).to_have_text('重新载入草稿')
         expect(second.locator('#reload')).to_be_visible()
         tab(second, 'history')
-        for record_view in ('campaign_history', 'rule_history'):
-            view(second, record_view)
-            expect(second.locator('#reload')).to_have_text('刷新记录')
-            expect(second.locator('#reload')).to_be_visible()
+        expect(second.locator('#view-tabs')).to_be_hidden()
+        expect(second.locator('#reload')).to_have_text('刷新记录')
+        expect(second.locator('#reload')).to_be_visible()
         first.close()
         second.close()
 
