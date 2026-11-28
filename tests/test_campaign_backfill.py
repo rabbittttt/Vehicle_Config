@@ -31,6 +31,35 @@ def review(data,col):
 
 
 class BackfillTests(unittest.TestCase):
+    def test_compact_quantity_sheet_uses_stage_total_and_stops_at_a_missing_day(self):
+        base = apply_edits(empty_workbook(), schedule()+[header_edit(17,20)])
+        book = load_workbook(BytesIO(export_workbook(base)))
+        try:
+            progress = book['小转大进度']
+            progress.delete_rows(1,progress.max_row)
+            progress.append(['代际名','二级代际名','开始大定日期','小转大结束日期','首销期天数','D1','D2','D3','D4'])
+            progress.append(['甲','一期','2026-01-31','2026-02-05',None,2,0,None,5])
+            stream = BytesIO()
+            book.save(stream)
+            book[SUMMARY]['Q2'] = None
+            no_total = BytesIO()
+            book.save(no_total)
+        finally:
+            book.close()
+        imported = import_workbook(stream.getvalue())
+        waiting = import_workbook(no_total.getvalue())
+        progress = sheet(waiting,'小转大进度')
+        self.assertEqual(len(progress['rows']),progress['headerRows'][1])
+        filled = apply_edits(waiting,[header_edit(17,20)])
+        for data in (imported,filled):
+            progress = sheet(data,'小转大进度')
+            quantity = dict(zip(*progress['rows'][:2]))
+            self.assertEqual((quantity['小转大结束日期'],quantity['首销期天数']),('2026-02-05',3))
+            rate_header = progress['headerRows'][1]-1
+            rates = dict(zip(progress['rows'][rate_header],progress['rows'][rate_header+1]))
+            self.assertEqual([rates.get(day) for day in ('D1','D2','D3','D4')],[.1,.1,None,None])
+        self.assertEqual(import_workbook(export_workbook(imported)),imported)
+
     def test_quantity_series_write_preview_totals_but_never_assume_missing_days(self):
         names = ['小转大进度','直接大定进度']
         base = apply_edits(empty_workbook(),schedule()+[header_edit(16,10)])

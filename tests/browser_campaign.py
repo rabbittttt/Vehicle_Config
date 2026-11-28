@@ -61,13 +61,13 @@ def legacy_file(model):
     edits.append({'sheet': '小转大进度', 'model': model, 'secondary': '纯电版',
                   'section': 1, 'day': 1, 'value': 6})
     book = load_workbook(BytesIO(export_workbook(apply_edits(empty_workbook(), edits))))
-    # These independently maintained legacy values must survive a trip through the editor.
+    # Keep independent summary overrides; daily progress percentages come from quantities.
     summary = book['车型汇总']
     summary['F1'], summary['F2'] = '小订发布时间', '上午'
     summary['X2'], summary['Y2'], summary['AA2'] = 91, .59, .46
     curve = book['小转大进度']
     d1 = next(cell.column for cell in curve[1] if cell.value == 'D1')
-    curve.cell(curve.max_row, d1).value = .18
+    curve.cell(curve.max_row, d1).value = '=1/0'
     history = book.create_sheet('小订进度')
     for value in (63, .37):
         history.append(['代际名', 'D1', '二级代际名'])
@@ -275,7 +275,7 @@ def check_reporting(page):
     result = dict(zip(headers, row))
     assert (result['小订待转单'], result['小订待转单占比'], result['净大定率']) == (91, .59, .46)
     curve = complete['小转大进度']
-    assert curve[-1][curve[0].index('D1')] == .18
+    assert abs(curve[-1][curve[0].index('D1')] - 8 / 60) < 1e-12
     page.locator('#export').click()
     ready(page)
     for box in page.locator('[name=sheets]').all():

@@ -80,6 +80,51 @@ class CampaignStoreTests(unittest.TestCase):
         gross = next(sheet for sheet in result['sheets'] if sheet['name'] == '大定进度')
         self.assertEqual(gross['rows'][1][gross['rows'][0].index('D1')], 7)
 
+    def test_legacy_import_reads_daily_counts_and_skips_percentage_errors(self):
+        inputs = [('小订期退订进度', '小订结束日退订率', 0, 0), ('小转大进度', '小订转化率', 7, .5),
+                  ('直接大定进度', '直接大定占比', 3, .5), ('首销期退订进度', '退订率', 1, .05)]
+        data = self.store.preview(0, self.edits + [edit(16, 20), edit(17, 14), edit(20, 6)])
+        book = load_workbook(BytesIO(export_workbook(data)))
+        try:
+            for name, rate, count, _ in inputs:
+                sheet = book[name]
+                sheet.delete_rows(1, sheet.max_row)
+                sheet.append(['代际名', '二级代际名', 'D1', 'D2', rate])
+                sheet.append(['测试车型 2026款', None, count, None, '#REF!'])
+                sheet.append(['代际名', '二级代际名', '旧百分比列'])
+                sheet.append(['仅在百分比区', None, '=1/0'])
+            book['首销期退订进度']['C10001'] = '#DIV/0!'
+            stream = BytesIO()
+            book.save(stream)
+            book['小转大进度']['C2'] = '#REF!'
+            invalid = BytesIO()
+            book.save(invalid)
+        finally:
+            book.close()
+        raw = stream.getvalue()
+        self.assertFalse(self.store.preview_import(0, raw)['identical'])
+        result = self.store.import_legacy(0, raw, '测试')
+        sheets = {s['name']:s for s in result['sheets']}
+        for name, _, count, expected_rate in inputs:
+            with self.subTest(sheet=name):
+                rows = sheets[name]['rows']
+                quantity = dict(zip(*rows[:2]))
+                self.assertEqual(quantity['D1'], count)
+                self.assertIsNone(quantity.get('D2'))
+                self.assertNotIn('仅在百分比区', [row[0] for row in rows if row])
+                curve = rows[sheets[name]['headerRows'][1]]
+                self.assertEqual(curve[rows[0].index('D1')], expected_rate)
+        direct = sheets['直接大定进度']
+        daily_share = direct['rows'][direct['headerRows'][2]]
+        self.assertEqual(daily_share[direct['rows'][0].index('D1')], 3 / (3 + 7))
+        revision = result['revision']
+        self.assertTrue(self.store.preview_import(revision, raw)['identical'])
+        with self.assertRaisesRegex(ValueError, '小转大进度.*C2.*#REF!'):
+            self.store.preview_import(revision, invalid.getvalue())
+        with self.assertRaisesRegex(ValueError, '小转大进度.*C2.*#REF!'):
+            self.store.import_legacy(revision, invalid.getvalue(), '测试', confirm_replace=True)
+        self.assertEqual(self.store.get(), result)
+
     def test_preview_draft_then_publish(self):
         initial = self.store.get()
         preview = self.store.preview(0, self.edits)

@@ -88,7 +88,7 @@ class CampaignWorkbookTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'AD1.*重复对应.*小订后退定占比'):
                     import_workbook(self.legacy(fields, row))
 
-    def test_cancel_rate_imports_both_progress_sections_and_exports_as_percentage(self):
+    def test_cancel_rate_aliases_do_not_import_percentages_from_either_section(self):
         name = '小订期退订进度'
         title = '小订结束日退订率'
         for source_title in (title, '小订期期结束日退订率', '小订期结束日退订率'):
@@ -96,19 +96,18 @@ class CampaignWorkbookTests(unittest.TestCase):
                 def configure(book):
                     sheet = book[name]
                     sheet.delete_rows(1, sheet.max_row)
-                    for rate in ('12.5%', 0):
-                        sheet.append(['代际名', source_title, '二级代际名', 'D1'])
-                        sheet.append(['甲', rate])
+                    sheet.append(['代际名', source_title, 'D1', '参考百分比'])
+                    sheet.append(['甲', '12.5%', 4, '#REF!'])
+                    sheet.append(['代际名', source_title, '二级代际名', 'D1'])
+                    sheet.append(['仅在百分比区', 0, None, .75])
                 raw = self.legacy(['代际名'], ['甲'], configure=configure)
                 data = import_workbook(raw)
-                book = load_workbook(BytesIO(export_workbook(data)))
-                try:
-                    sheet = book[name]
-                    self.assertEqual([sheet[f'B{i}'].value for i in (1, 2, 3, 4)],
-                                     [title, .125, title, 0])
-                    self.assertEqual([sheet[f'B{i}'].number_format for i in (2, 4)], ['0.00%'] * 2)
-                finally:
-                    book.close()
+                sheet = next(s for s in data['sheets'] if s['name']==name)
+                quantity = dict(zip(*sheet['rows'][:2]))
+                self.assertEqual(quantity['D1'], 4)
+                self.assertIsNone(quantity.get('二级代际名'))
+                self.assertIsNone(quantity.get(title))
+                self.assertNotIn('仅在百分比区', [row[0] for row in sheet['rows'] if row])
 
     def test_legacy_ac31_can_recover_its_ratio_without_a_valid_cache(self):
         def fill(book):
@@ -321,8 +320,17 @@ class CampaignWorkbookTests(unittest.TestCase):
         self.assertEqual([15,'二期'],sheet['rows'][1][-2:])
         self.assertEqual([.02,'二期'],sheet['rows'][3][-2:])
         raw = export_workbook(data)
-        imported = import_workbook(raw)
-        self.assertEqual(sheet,imported['sheets'][2])
+        book = load_workbook(BytesIO(raw))
+        try:
+            rate = book[sheet['name']].cell(4, sheet['rows'][0].index('D72')+1)
+            self.assertEqual((rate.value, rate.number_format), (.02, '0.00%'))
+        finally:
+            book.close()
+        imported = import_workbook(raw)['sheets'][2]
+        quantity = dict(zip(*imported['rows'][:2]))
+        self.assertEqual((quantity['D72'], quantity['二级代际名']), (15, '二期'))
+        rates = imported['rows'][imported['headerRows'][1]:]
+        self.assertFalse(any(.02 in row for row in rates))
         with self.assertRaisesRegex(ValueError,'整数'):
             apply_edits(data,[entry(1,1.1)])
 

@@ -441,8 +441,9 @@ def _summary_row(cells, caches, mapping, ignored, n, epoch, infer_days=True):
 
 def _detail_head(name,cells,epoch):
     head = []
+    progress_fields = {*PROGRESS_DATES, *PROGRESS_FIELDS.get(name, []), '小订天数', '首销期天数'}
     for j,cell in enumerate(cells):
-        value = _import_scalar(cell,None,epoch)
+        value = _import_scalar(cell,None,epoch) if name == DAILY else cell.value
         if isinstance(value,str):
             value = value.strip() or None
         if j==0:
@@ -460,15 +461,17 @@ def _detail_head(name,cells,epoch):
             day = re.fullmatch(r'(?:[dD]|第)?0*(\d+)天?',str(value))
             if day and int(day[1])>0:
                 value = 'D'+str(int(day[1]))
-            elif value not in PROGRESS_DATES+PROGRESS_FIELDS.get(name,[])+['小订天数','首销期天数']:
-                alias = ALIAS_TO_HEADER.get(value,value)
-                if alias not in PROGRESS_DATES+PROGRESS_FIELDS.get(name,[])+['小订天数','首销期天数']:
-                    raise ValueError(f'{cell.coordinate} 的进度字段「{value}」无法识别')
-                value = alias
+            elif value not in progress_fields:
+                alias = ALIAS_TO_HEADER.get(value)
+                value = alias if alias in progress_fields else None
+        if value in RATE_FIELDS and value in head:
+            value = None
         if value is not None and value in head:
             raise ValueError(f'{cell.coordinate} 重复对应「{value}」')
         head.append(value)
-    _trim(head)
+    # Reserve the input column positions before adding an implicit stage key.
+    if name == DAILY or SECONDARY in head:
+        _trim(head)
     add_total = name==DAILY and '合计' not in head
     if add_total:
         head.append('合计')
@@ -496,8 +499,10 @@ def _read_detail(name,cells,caches,headers,epoch,daily_block=None,columns=None):
     if columns is None:
         columns = range(len(cells))
     date_columns = [j for j,field in enumerate(headers) if field in PREORDER_DATES and j in columns]
-    na_dates = _na_date_columns(cells,caches,date_columns)
+    na_dates = _na_date_columns(cells,caches,(j for j in date_columns if j < len(cells)))
     for j in columns:
+        if j >= len(cells):
+            continue
         cell,cache_cell = cells[j],caches[j]
         field = _get(headers,j)
         if j in na_dates:
@@ -519,10 +524,10 @@ def _read_detail(name,cells,caches,headers,epoch,daily_block=None,columns=None):
         if value is not None and field is None and _get(cells,0).value:
             raise ValueError(f'{cell.coordinate} 所在列有数据但缺少字段名')
         if numeric and value is not None and field not in DATE_FIELDS and cells[0].value not in ('合计','总计',None):
-            if isinstance(value,str) and value.endswith('%'):
+            if name == DAILY and isinstance(value,str) and value.endswith('%'):
                 value = _num(value[:-1])/100
             else:
-                value = _num(value)
+                value = _num(value, integer=name in PROGRESS_FIELDS)
         row[j] = value
     # Resolve vertical footer sums before a row total which may reference them.
     for j in sorted(sums,key=lambda index: headers[index]=='合计'):
@@ -563,15 +568,22 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
             if name not in sources:
                 continue
             ws = book[sources[name]]
-            footprint += (ws.max_row or 0) * (ws.max_column or 0)
-            if not ws.max_row or not ws.max_column or ws.max_row > MAX_ROWS or ws.max_column > MAX_COLUMNS or footprint > MAX_CELLS:
-                raise ValueError(name + '的数据范围超出限制')
+            cached_ws = cached[sources[name]]
+            progress = name in PROGRESS_FIELDS
+            if progress:
+                # Worksheet dimensions also cover the discarded percentage sections.
+                ws.reset_dimensions()
+                cached_ws.reset_dimensions()
+            else:
+                footprint += (ws.max_row or 0) * (ws.max_column or 0)
+                if not ws.max_row or not ws.max_column or ws.max_row > MAX_ROWS or ws.max_column > MAX_COLUMNS or footprint > MAX_CELLS:
+                    raise ValueError(name + '的数据范围超出限制')
             rows, overrides, headers = [], [], []
             zero_fallback = []
             daily_block = None
             quantity_axes = None
             quantity_columns = None
-            for n,(cells, cache_cells) in enumerate(zip(ws.rows, cached[sources[name]].rows), 1):
+            for n,(cells, cache_cells) in enumerate(zip(ws.rows, cached_ws.rows), 1):
                 if name==SUMMARY:
                     if n==1:
                         mapping, ignored = _summary_layout(cells, scope)
@@ -586,20 +598,24 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
                     overrides.extend(special)
                     zero_fallback.extend(zeros)
                     continue
-                raw_label = cells[0].value
+                raw_label = cells[0].value if cells else None
                 label = raw_label.strip() if isinstance(raw_label,str) else raw_label
+                is_head = label in (PRIMARY,*HEADER_ALIASES[PRIMARY]) or (label=='小订' and name==DAILY)
+                if progress:
+                    if is_head and headers:
+                        break
+                    footprint += len(cells)
+                    if n > MAX_ROWS or len(cells) > MAX_COLUMNS or footprint > MAX_CELLS:
+                        raise ValueError(name + '的数据范围超出限制')
                 if ((name==DAILY and _daily_note(cells,label,not headers)) or
-                        (scope=='reporting' and headers and label in ('合计','总计'))):
+                        ((progress or scope=='reporting') and headers and label in ('合计','总计'))):
                     if daily_block is not None:
                         # Preserve physical offsets for formula references in this block.
                         daily_block[0].append([])
                         rows.append([])
                     continue
-                is_head = label in (PRIMARY,*HEADER_ALIASES[PRIMARY]) or (label=='小订' and name==DAILY)
                 try:
                     if is_head:
-                        if scope=='reporting' and headers and name!=DAILY:
-                            break  # Remaining progress blocks contain rates, not input quantities.
                         if scope and not any(cell.value in (SECONDARY,'二级代际') for cell in cells):
                             raise ValueError('按阶段导入需要二级代际名列')
                         headers,add_total = _detail_head(name,cells,book.epoch)
@@ -607,13 +623,17 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
                         if scope=='reporting':
                             quantity_axes = [j for j,title in enumerate(headers[:width]) if _quantity_axis(name,title)]
                             quantity_columns = [0,headers.index(SECONDARY),*quantity_axes]
+                        elif progress:
+                            quantity_columns = [j for j,field in enumerate(headers[:width])
+                                                if field is not None and field not in RATE_FIELDS
+                                                and field not in ('小订天数','首销期天数')]
                         rows.append(headers)
                         if name==DAILY:
                             daily_block = ([],n+1)
                     elif not headers:
                         raise ValueError('第一行须包含代际名或车型表头')
                     else:
-                        if quantity_axes is not None and not any(cells[j].value not in (None,'') for j in quantity_axes):
+                        if quantity_axes is not None and not any(j < len(cells) and cells[j].value not in (None,'') for j in quantity_axes):
                             row = []
                         else:
                             row = _read_detail(name,cells,cache_cells,headers[:width],book.epoch,daily_block,quantity_columns)
@@ -640,8 +660,6 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
                     raise ValueError(f'{name} 第 {idx} 行的表头无法识别')
             if name in PROGRESS_FIELDS:
                 count = 3 if name=='直接大定进度' else 2
-                if len(sheet['headerRows'])>count:
-                    raise ValueError(f'{name} 有 {len(sheet["headerRows"])} 个分区，额外分区的业务含义无法识别')
                 while len(sheet['headerRows'])<count:
                     rows.append(rows[0].copy())
                     sheet['headerRows'].append(len(rows))
@@ -665,9 +683,7 @@ def import_workbook(path_or_bytes):
                        and any(isinstance(v,(int,float)) for v in row[1:])]
             if footers:
                 sheet['totalRows'] = footers
-    data = backfill_totals({'sheets': result})
-    _mark_derived({s['name']:s for s in data['sheets']})
-    return data
+    return backfill_totals({'sheets': result}, imported_quantities=True)
 
 
 def _days(start, end):
@@ -1004,7 +1020,7 @@ def _reconcile_totals(sheets, previous, manual):
         summary.pop('reportedTotals',None)
 
 
-def backfill_totals(data):
+def backfill_totals(data, *, imported_quantities=False):
     """Fill previously empty draft totals without changing a published edition."""
     sheets = {s['name']:s for s in data['sheets']}
     if GROSS not in sheets:
@@ -1016,6 +1032,9 @@ def backfill_totals(data):
     curves = {}
     _sync_gross(sheets,curves,identify_reported=True)
     _reconcile_totals(sheets,None,set(summary.get('reportedTotals',[])))
+    if imported_quantities:
+        _rebuild_imported_curves(sheets)
+        return data
     _refresh_progress_totals(sheets,before,curves)
     # Old quantity rows may have had no corresponding progress curve. Fill
     # only missing rates; independently recorded history remains in its cells.
@@ -1235,13 +1254,17 @@ def _sync_gross(sheets, pending, *, identify_reported=False):
 
 def _ratios(sheets, name, key, section):
     source = _section_record(sheets[name],key,1)
-    days = sorted(int(h[1:]) for h in source if isinstance(h,str) and re.fullmatch(r'D\d+',h))
     if section == 3:
-        totals = _section_record(sheets['大定进度'],key,1)
-        stage_start = _stage_starts(sheets).get(key)
+        totals = _section_record(sheets[GROSS],key,1)
+        return _quantity_ratios(source,DENOMINATORS[name],totals,_stage_starts(sheets).get(key))
+    return _quantity_ratios(source,DENOMINATORS[name])
+
+
+def _quantity_ratios(source, denominator_field, totals=None, stage_start=None):
+    days = sorted(int(h[1:]) for h in source if isinstance(h,str) and re.fullmatch(r'D\d+',h))
+    if totals is not None:
         offset = _day_offset(source.get('开始大定日期') or stage_start,totals.get('开始大定日期') or stage_start)
-    else:
-        denominator = source.get(DENOMINATORS[name])
+    denominator = source.get(denominator_field)
     result, cumulative, contiguous = {}, 0, True
     for index,day in enumerate(days,1):
         field = f'D{day}'
@@ -1251,14 +1274,68 @@ def _ratios(sheets, name, key, section):
         if not isinstance(qty,(int,float)):
             continue
         cumulative += qty
-        if section == 3:
+        if totals is not None:
             denominator = totals.get(f'D{day+offset}') if offset is not None else None
         if isinstance(denominator,(int,float)) and denominator > 0:
-            if section == 3:
+            if totals is not None:
                 result[day] = qty/denominator
             elif contiguous:
                 result[day] = cumulative/denominator
     return result
+
+
+def _rebuild_imported_curves(sheets):
+    """Generate fresh rate blocks from the imported quantity rows and their own windows."""
+    stages = {}
+    for row in sheets[SUMMARY]['rows'][1:]:
+        key = _key(row,1)
+        stages[key] = None if key in stages else row
+    gross = {key:dict(zip(*record)) for key,record in _quantity_records(sheets[GROSS]).items() if record}
+    for name,denominator in DENOMINATORS.items():
+        sheet = sheets[name]
+        head = sheet['rows'][0]
+        quantities = _quantity_records(sheet)
+        # A compact input can omit the reference column entirely. Retain that
+        # denominator in the draft so later edits use the same reference.
+        if denominator not in head:
+            head.append(denominator)
+        day_columns = {j:int(field[1:]) for j,field in enumerate(head) if _quantity_axis(name,field)}
+        sections = [[] for _ in sheet['headerRows'][1:]]
+        derived = []
+        for key,record in quantities.items():
+            if record is None:
+                continue
+            _,row = record
+            stage = stages.get(key) or []
+            fields = dict(zip(head,row))
+            for col,field in TOTAL_FIELDS.items():
+                value = _get(stage,col-1)
+                if field in head and fields.get(field) is None and value is not None:
+                    _put(row,head.index(field),value)
+            for field,start,end,a,b in (('小订天数',*PREORDER_DATES,8,9),
+                                        ('首销期天数','开始大定日期','首销结束日期',10,11)):
+                if field in head:
+                    duration = _days(fields.get(start) or _get(stage,a),fields.get(end) or _get(stage,b))
+                    if duration is not None:
+                        _put(row,head.index(field),duration)
+            fields = dict(zip(head,row))
+            for i,section in enumerate(sections):
+                totals = gross.get(key,{}) if i == 1 else None
+                ratios = _quantity_ratios(fields,denominator,totals,_get(stage,10))
+                if ratios:
+                    curve = [ratios.get(day_columns[j]) if j in day_columns else value for j,value in enumerate(row)]
+                    section.append(_trim(curve))
+        rows = sheet['rows'][:sheet['headerRows'][1]-1]
+        sheet['headerRows'] = [1]
+        for section in sections:
+            sheet['headerRows'].append(len(rows)+1)
+            rows.append(head.copy())
+            for curve in section:
+                rows.append(curve)
+                derived.extend(f'{len(rows)}:{j+1}' for j in day_columns if _get(curve,j) is not None)
+        sheet['rows'] = rows
+        if derived:
+            sheet['derivedCells'] = derived
 
 
 def _curve_targets(name):
