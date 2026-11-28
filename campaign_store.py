@@ -9,7 +9,8 @@ from tempfile import NamedTemporaryFile
 
 from catalog import Conflict, now, read_history_page
 from stage_workbook import (
-    DAILY, NO_PREORDER, PREORDER_DATES, SECONDARY, SUMMARY, SUMMARY_FIELDS, apply_edits, backfill_totals, empty_workbook, export_workbook, import_workbook, validate_publication,
+    DAILY, HEADER_ALIASES, NO_PREORDER, PREORDER_CANCEL_RATE, PREORDER_DATES, SECONDARY, SUMMARY, SUMMARY_FIELDS,
+    apply_edits, backfill_totals, empty_workbook, export_workbook, import_workbook, validate_publication,
 )
 
 
@@ -54,6 +55,12 @@ def _report_payload(editor_payload):
 def decode_workbook(payload):
     data = json.loads(payload)
     for sheet in data['sheets']:
+        if sheet['name'] == '小订期退订进度':
+            for number in sheet['headerRows']:
+                header = sheet['rows'][number-1]
+                for i, field in enumerate(header):
+                    if field in HEADER_ALIASES[PREORDER_CANCEL_RATE]:
+                        header[i] = PREORDER_CANCEL_RATE
         marked = set(sheet.pop('noPreorderRows', []))
         if not marked:
             continue

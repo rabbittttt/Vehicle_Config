@@ -76,7 +76,7 @@ class CampaignWorkbookTests(unittest.TestCase):
         self.assertEqual(.1,edited['sheets'][0]['rows'][1][17])
 
     def test_wrapped_canonical_and_legacy_summary_headers(self):
-        for header in ('小订后退定\n 占比', '小订后退订\r\n\u3000占比'):
+        for header in ('小订后退定占比', '小订后退定\n 占比', '小订后退订\r\n\u3000占比'):
             with self.subTest(header=header):
                 fields = SUMMARY_FIELDS.copy()
                 fields[22] = header
@@ -87,6 +87,28 @@ class CampaignWorkbookTests(unittest.TestCase):
                 fields[29] = '退订\n占比'
                 with self.assertRaisesRegex(ValueError, 'AD1.*重复对应.*小订后退定占比'):
                     import_workbook(self.legacy(fields, row))
+
+    def test_cancel_rate_imports_both_progress_sections_and_exports_as_percentage(self):
+        name = '小订期退订进度'
+        title = '小订结束日退订率'
+        for source_title in (title, '小订期期结束日退订率', '小订期结束日退订率'):
+            with self.subTest(source_title=source_title):
+                def configure(book):
+                    sheet = book[name]
+                    sheet.delete_rows(1, sheet.max_row)
+                    for rate in ('12.5%', 0):
+                        sheet.append(['代际名', source_title, '二级代际名', 'D1'])
+                        sheet.append(['甲', rate])
+                raw = self.legacy(['代际名'], ['甲'], configure=configure)
+                data = import_workbook(raw)
+                book = load_workbook(BytesIO(export_workbook(data)))
+                try:
+                    sheet = book[name]
+                    self.assertEqual([sheet[f'B{i}'].value for i in (1, 2, 3, 4)],
+                                     [title, .125, title, 0])
+                    self.assertEqual([sheet[f'B{i}'].number_format for i in (2, 4)], ['0.00%'] * 2)
+                finally:
+                    book.close()
 
     def test_legacy_ac31_can_recover_its_ratio_without_a_valid_cache(self):
         def fill(book):

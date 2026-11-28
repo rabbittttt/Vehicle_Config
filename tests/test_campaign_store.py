@@ -97,6 +97,31 @@ class CampaignStoreTests(unittest.TestCase):
         self.assertEqual((rows[0][5], rows[1][5], rows[1][8]), ('小订发布时段','晚上','2026-01-01'))
         self.assertEqual(self.store.published(1)['sheets'], legacy['sheets'])
 
+    def test_old_cancel_rate_headers_in_stored_draft_and_published_edition(self):
+        published = self.store.save(0, self.edits, '甲', publish=True)
+        legacy = {'sheets': published['sheets']}
+        name = '小订期退订进度'
+        title = '小订结束日退订率'
+        old = '小订期期结束日退订率'
+        def rate_headers(data):
+            sheet = next(s for s in data['sheets'] if s['name'] == name)
+            return [sheet['rows'][number-1] for number in sheet['headerRows']]
+        for header in rate_headers(legacy):
+            header[header.index(title)] = old
+        payload = encode(legacy)
+        with self.store._write() as db:
+            db.execute('UPDATE draft SET data=?', (payload,))
+            db.execute('UPDATE publications SET data=? WHERE revision=1', (payload,))
+
+        draft = self.store.get()
+        self.assertFalse(draft['hasUnpublishedChanges'])
+        self.assertEqual(self.store.publish_preview(draft['revision'], [])['changes'], [])
+        for view in (draft, self.store.published(1, editor=True)):
+            self.assertTrue(all(title in header and old not in header for header in rate_headers(view)))
+        self.store.save(draft['revision'], [edit(6, '上午')], '乙', publish=True)
+        self.assertTrue(all(title in header for header in rate_headers(self.store.published())))
+        self.assertTrue(all(old in header for header in rate_headers(self.store.published(1))))
+
     def test_failed_publish_validation_keeps_existing_state(self):
         before = self.store.save(0, self.edits, '甲')
         with patch('campaign_store.validate_publication', side_effect=ValueError('日期错误')):
