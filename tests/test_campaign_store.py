@@ -29,12 +29,15 @@ class CampaignStoreTests(unittest.TestCase):
                       edit(11, '2026-01-08'), edit(12, '2026-01-31')]
 
     def test_legacy_preview_and_import_never_open_unused_worksheets(self):
-        data = self.store.preview(0, self.edits)
+        quantities = [dict(sheet=sheet, model='测试车型 2026款', day=1, value=count)
+                      for sheet, count in [('小转大进度', 3), ('直接大定进度', 4)]]
+        data = self.store.preview(0, self.edits + quantities)
         workbook = load_workbook(BytesIO(export_workbook(data)))
         ignored_paths = set()
-        for title in ('小订进度', '比武参考'):
-            workbook.create_sheet(title)['A1'] = '#REF!'
-            ignored_paths.add(f'xl/worksheets/sheet{len(workbook.worksheets)}.xml')
+        for title in ('大定进度', '总大定进度', '小订进度', '比武参考'):
+            sheet = workbook[title] if title in workbook.sheetnames else workbook.create_sheet(title)
+            sheet['A1'] = '#REF!'
+            ignored_paths.add(f'xl/worksheets/sheet{workbook.index(sheet) + 1}.xml')
         stream = BytesIO()
         workbook.save(stream)
         workbook.close()
@@ -50,6 +53,8 @@ class CampaignStoreTests(unittest.TestCase):
             self.assertFalse(preview['identical'])
             result = self.store.import_legacy(0, raw, '测试')
         self.assertEqual(result['sheets'][0]['rows'][1][0], '测试车型 2026款')
+        gross = next(sheet for sheet in result['sheets'] if sheet['name'] == '大定进度')
+        self.assertEqual(gross['rows'][1][gross['rows'][0].index('D1')], 7)
 
     def test_preview_draft_then_publish(self):
         initial = self.store.get()

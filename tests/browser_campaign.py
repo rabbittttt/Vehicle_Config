@@ -87,6 +87,8 @@ def legacy_preview(page):
                            'mimeType': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                            'buffer': legacy_file('替换车型')})
     expect(page.get_by_role('heading', name='旧表导入预览')).to_be_visible()
+    expect(page.get_by_role('columnheader', name='导入后记录数')).to_be_visible()
+    expect(page.get_by_role('cell', name='大定进度（计算结果）', exact=True)).to_be_visible()
     expect(page.locator('#dialog-body')).to_contain_text('移出车型阶段')
     expect(page.locator('#confirm')).to_have_text('替换草稿')
 

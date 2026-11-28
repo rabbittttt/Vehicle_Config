@@ -51,7 +51,7 @@ RATE_FIELDS = {'小订转化率', '直接大定占比', '小订后退定占比',
 MAX_COLUMNS = 1024
 MAX_ROWS = 10000
 MAX_CELLS = 1200000
-SHEETS = [SUMMARY, DAILY, *PROGRESS_FIELDS]
+IMPORT_SHEETS = (SUMMARY, DAILY, '小订期退订进度', CONVERTED, DIRECT, '首销期退订进度')
 SHEET_ALIASES = {'传播名汇总':SUMMARY, '小订按天':DAILY, '小订期退定进度':'小订期退订进度',
                  '小订转大定进度':'小转大进度', '总大定进度':'大定进度',
                  '首销期退定进度':'首销期退订进度'}
@@ -247,7 +247,7 @@ def _sheet_sources(names, scope):
         if canonical in sources:
             raise ValueError(f'{sources[canonical]} 与 {raw} 同时对应 {canonical}，请核对工作表')
         sources[canonical] = raw
-    missing = [name for name in SHEETS if scope is None and name != GROSS and name not in sources]
+    missing = [name for name in IMPORT_SHEETS if name not in sources] if scope is None else []
     if missing:
         raise ValueError('缺少工作表：'+'、'.join(missing))
     return sources
@@ -544,11 +544,7 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
         if path.stat().st_size > MAX_BYTES:
             raise ValueError('历史文件超过 8MB')
         raw = path.read_bytes()
-    included = set(SHEETS)
-    if scope == 'schedule':
-        included = {SUMMARY}
-    elif scope == 'reporting':
-        included.remove(GROSS)
+    included = (SUMMARY,) if scope == 'schedule' else IMPORT_SHEETS
     try:
         book, cached = WorkbookBatch([{}]).open_selected(raw, lambda name: _canonical_sheet_name(name) in included)
     except (BadZipFile, KeyError, SyntaxError, OSError) as exc:
@@ -561,7 +557,7 @@ def _read_workbook_sheets(path_or_bytes, scope=None):
             raise ValueError('请选择包含可填写数量的工作表')
         result = []
         footprint = 0
-        for name in SHEETS:
+        for name in included:
             if name not in sources:
                 continue
             ws = book[sources[name]]

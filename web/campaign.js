@@ -940,8 +940,8 @@ const campaignEditor = (() => {
     const content=await fileBase64(file);
     const result=await api('campaign/import-preview',{revision:latest.revision,content});
     const changes=result.changes;
-    const rows=changes.tables.map(t=>`<tr><td>${esc(t.name)}</td><td>${esc(t.before)}</td><td>${esc(t.after)}</td><td>${t.changed?'有变更':'相同'}</td></tr>`).join('');
-    const comparison=table(['工作表','草稿记录数','旧表记录数','内容'],rows);
+    const rows=changes.tables.map(t=>`<tr><td>${esc(t.name)}${t.name==='大定进度'?'（计算结果）':''}</td><td>${esc(t.before)}</td><td>${esc(t.after)}</td><td>${t.changed?'有变更':'相同'}</td></tr>`).join('');
+    const comparison=table(['工作表','导入前记录数','导入后记录数','内容'],rows);
     const description=result.identical?'旧表与当前草稿相同。':result.requiresConfirmation
       ? `确认后，整份${draftName}将替换为旧表内容。核对后可另行发布。`
       : `旧表将导入为${draftName}。`;

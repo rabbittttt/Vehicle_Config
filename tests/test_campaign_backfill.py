@@ -92,7 +92,7 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(read(custom,1,'大定'),20)
         self.assertEqual(read(custom,2,'D2'),12/20)
 
-    def test_legacy_import_or_existing_draft_fills_blanks_only_for_unique_rows(self):
+    def test_legacy_import_derives_gross_despite_duplicate_rows_on_the_unused_sheet(self):
         name = '大定进度'
         source = '直接大定进度'
         complete = apply_edits(empty_workbook(),schedule()+[observation(source,1,5),observation(source,2,1),
@@ -109,7 +109,7 @@ class BackfillTests(unittest.TestCase):
         output=BytesIO()
         book.save(output)
         book.close()
-        self.assertIsNone(review(import_workbook(output.getvalue()),19))
+        self.assertEqual(review(import_workbook(output.getvalue()),19),6)
         sheet(complete,SUMMARY)['rows'][1][18]=14
         self.assertEqual(review(apply_edits(complete,[observation(source,2,9)]),19),14)
         matched=apply_edits(complete,[observation(source,2,9)])
@@ -147,10 +147,18 @@ class BackfillTests(unittest.TestCase):
         direct = sheet(shifted,'直接大定进度')
         rate_head = direct['headerRows'][2]-1
         self.assertEqual(direct['rows'][rate_head+1][direct['rows'][rate_head].index('D1')],.3)
-        # A pre-existing independent gross observation remains visible in exports.
+        # Existing databases can retain independent quantities from earlier imports.
         gross['rows'][1][gross['rows'][0].index('D2')] = 12
-        imported = import_workbook(export_workbook(shifted))
-        changed = apply_edits(imported,[observation('小转大进度',2,9)])
+        archive = export_workbook(shifted)
+        archived_book = load_workbook(BytesIO(archive), read_only=True, data_only=True)
+        try:
+            archived_head, archived_row = list(archived_book['大定进度'].values)[:2]
+            self.assertEqual(archived_row[archived_head.index('D2')],12)
+        finally:
+            archived_book.close()
+        imported = sheet(import_workbook(archive),'大定进度')
+        self.assertEqual(imported['rows'][1][imported['rows'][0].index('D2')],10)
+        changed = apply_edits(shifted,[observation('小转大进度',2,8)])
         gross = sheet(changed,'大定进度')
         self.assertIn('2:D2',gross['reportedQuantities'])
         self.assertEqual(gross['rows'][1][gross['rows'][0].index('D2')],12)
